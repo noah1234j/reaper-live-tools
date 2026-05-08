@@ -28,44 +28,53 @@ void CSurfConfigDlg_SetInstance(HINSTANCE hInst)
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-static void PopulateMIDIDevices(HWND hDlg, int selIn, int selOut)
+static void PopulateMIDIDevices(HWND hDlg, int selIn, int selOut, int selIn2, int selOut2)
 {
-    HWND hIn  = GetDlgItem(hDlg, IDC_CSURF_MIDI_IN);
-    HWND hOut = GetDlgItem(hDlg, IDC_CSURF_MIDI_OUT);
+    HWND hIn   = GetDlgItem(hDlg, IDC_CSURF_MIDI_IN);
+    HWND hOut  = GetDlgItem(hDlg, IDC_CSURF_MIDI_OUT);
+    HWND hIn2  = GetDlgItem(hDlg, IDC_CSURF_MIDI_IN2);
+    HWND hOut2 = GetDlgItem(hDlg, IDC_CSURF_MIDI_OUT2);
 
-    SendMessageA(hIn, CB_RESETCONTENT, 0, 0);
+    auto fillInputs = [&](HWND hw, int selDev)
     {
-        int idx = (int)SendMessageA(hIn, CB_ADDSTRING, 0, (LPARAM)"(none)");
-        SendMessageA(hIn, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)-1);
-        SendMessageA(hIn, CB_SETCURSEL, 0, 0);
-    }
-    int nIn = GetNumMIDIInputs ? GetNumMIDIInputs() : 0;
-    for (int i = 0; i < nIn; ++i)
-    {
-        char name[256] = "";
-        if (GetMIDIInputName) GetMIDIInputName(i, name, (int)sizeof(name));
-        if (!name[0]) snprintf(name, sizeof(name), "MIDI Input %d", i);
-        int idx = (int)SendMessageA(hIn, CB_ADDSTRING, 0, (LPARAM)name);
-        SendMessageA(hIn, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
-        if (i == selIn) SendMessageA(hIn, CB_SETCURSEL, (WPARAM)idx, 0);
-    }
+        SendMessageA(hw, CB_RESETCONTENT, 0, 0);
+        int idx = (int)SendMessageA(hw, CB_ADDSTRING, 0, (LPARAM)"(none)");
+        SendMessageA(hw, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)-1);
+        SendMessageA(hw, CB_SETCURSEL, 0, 0);
+        int n = GetNumMIDIInputs ? GetNumMIDIInputs() : 0;
+        for (int i = 0; i < n; ++i)
+        {
+            char name[256] = "";
+            if (GetMIDIInputName) GetMIDIInputName(i, name, (int)sizeof(name));
+            if (!name[0]) snprintf(name, sizeof(name), "MIDI Input %d", i);
+            int ci = (int)SendMessageA(hw, CB_ADDSTRING, 0, (LPARAM)name);
+            SendMessageA(hw, CB_SETITEMDATA, (WPARAM)ci, (LPARAM)i);
+            if (i == selDev) SendMessageA(hw, CB_SETCURSEL, (WPARAM)ci, 0);
+        }
+    };
 
-    SendMessageA(hOut, CB_RESETCONTENT, 0, 0);
+    auto fillOutputs = [&](HWND hw, int selDev)
     {
-        int idx = (int)SendMessageA(hOut, CB_ADDSTRING, 0, (LPARAM)"(none)");
-        SendMessageA(hOut, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)-1);
-        SendMessageA(hOut, CB_SETCURSEL, 0, 0);
-    }
-    int nOut = GetNumMIDIOutputs ? GetNumMIDIOutputs() : 0;
-    for (int i = 0; i < nOut; ++i)
-    {
-        char name[256] = "";
-        if (GetMIDIOutputName) GetMIDIOutputName(i, name, (int)sizeof(name));
-        if (!name[0]) snprintf(name, sizeof(name), "MIDI Output %d", i);
-        int idx = (int)SendMessageA(hOut, CB_ADDSTRING, 0, (LPARAM)name);
-        SendMessageA(hOut, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
-        if (i == selOut) SendMessageA(hOut, CB_SETCURSEL, (WPARAM)idx, 0);
-    }
+        SendMessageA(hw, CB_RESETCONTENT, 0, 0);
+        int idx = (int)SendMessageA(hw, CB_ADDSTRING, 0, (LPARAM)"(none)");
+        SendMessageA(hw, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)-1);
+        SendMessageA(hw, CB_SETCURSEL, 0, 0);
+        int n = GetNumMIDIOutputs ? GetNumMIDIOutputs() : 0;
+        for (int i = 0; i < n; ++i)
+        {
+            char name[256] = "";
+            if (GetMIDIOutputName) GetMIDIOutputName(i, name, (int)sizeof(name));
+            if (!name[0]) snprintf(name, sizeof(name), "MIDI Output %d", i);
+            int ci = (int)SendMessageA(hw, CB_ADDSTRING, 0, (LPARAM)name);
+            SendMessageA(hw, CB_SETITEMDATA, (WPARAM)ci, (LPARAM)i);
+            if (i == selDev) SendMessageA(hw, CB_SETCURSEL, (WPARAM)ci, 0);
+        }
+    };
+
+    fillInputs (hIn,   selIn);
+    fillOutputs(hOut,  selOut);
+    if (hIn2)  fillInputs (hIn2,  selIn2);
+    if (hOut2) fillOutputs(hOut2, selOut2);
 }
 
 static int ComboGetDeviceId(HWND hCombo)
@@ -89,6 +98,8 @@ static CSurfSettings ReadSettings(HWND hDlg)
 
     s.midiInDev  = ComboGetDeviceId(GetDlgItem(hDlg, IDC_CSURF_MIDI_IN));
     s.midiOutDev = ComboGetDeviceId(GetDlgItem(hDlg, IDC_CSURF_MIDI_OUT));
+    s.midiInDev2  = ComboGetDeviceId(GetDlgItem(hDlg, IDC_CSURF_MIDI_IN2));
+    s.midiOutDev2 = ComboGetDeviceId(GetDlgItem(hDlg, IDC_CSURF_MIDI_OUT2));
 
     s.followSel = IsDlgButtonChecked(hDlg, IDC_CSURF_FOLLOW_SEL) == BST_CHECKED;
     s.showVU    = IsDlgButtonChecked(hDlg, IDC_CSURF_SHOW_VU)    == BST_CHECKED;
@@ -127,7 +138,7 @@ static INT_PTR CALLBACK CSurfConfigDlgProc(HWND hDlg, UINT msg, WPARAM wParam, L
         CheckRadioButton(hDlg, IDC_CSURF_PROTO_MCU, IDC_CSURF_PROTO_HUI,
             s.proto == CSurfProtocol::HUI ? IDC_CSURF_PROTO_HUI : IDC_CSURF_PROTO_MCU);
 
-        PopulateMIDIDevices(hDlg, s.midiInDev, s.midiOutDev);
+        PopulateMIDIDevices(hDlg, s.midiInDev, s.midiOutDev, s.midiInDev2, s.midiOutDev2);
 
         CheckDlgButton(hDlg, IDC_CSURF_FOLLOW_SEL, s.followSel ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_CSURF_SHOW_VU,    s.showVU    ? BST_CHECKED : BST_UNCHECKED);

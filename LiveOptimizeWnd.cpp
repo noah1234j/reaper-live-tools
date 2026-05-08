@@ -15,6 +15,7 @@
 
 #include <commctrl.h>
 #include <windowsx.h>
+#include <intrin.h>        // __cpuid for hypervisor detection
 #include <powrprof.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -78,6 +79,10 @@ static float     g_totalScore = 0.f;
 static int       g_selectedCheck = -1;
 
 static std::vector<LiveOptCheck> g_checks;
+
+// Sort state: column index and direction
+static int  g_sortCol = -1;     // -1 = default (priority/weight descending)
+static bool g_sortAsc = false;
 
 // ListView timer ID
 static const UINT LO_TIMER_ID = 42;
@@ -292,20 +297,30 @@ static void RunChecks()
 
     // --- Check 1: Driver mode (12 pts) ---
     {
-        char modeStr[64] = {};
-        if (GetAudioDeviceInfo) GetAudioDeviceInfo("MODE", modeStr, (int)sizeof(modeStr));
-        int   mode   = atoi(modeStr);
-        // Also read from INI as fallback
-        if (!modeStr[0]) mode = GetIniInt("audioconfig", "mode", 0);
+        // GetAudioDeviceInfo returns false if device not open; fall back to INI
+        char modeStr[16] = {};
+        int mode = 0;
+        if (GetAudioDeviceInfo && GetAudioDeviceInfo("MODE", modeStr, sizeof(modeStr)))
+            mode = atoi(modeStr);
+        if (!mode)
+            mode = GetIniInt("audioconfig", "mode", 0);
+        // If still 0, try get_config_var_string
+        if (!mode && get_config_var_string)
+        {
+            char buf[16] = {};
+            if (get_config_var_string("audiomode", buf, sizeof(buf)))
+                mode = atoi(buf);
+        }
 
-        const char* modeName = "Unknown";
-        int status = STATUS_BAD;
-        float pts  = 0.f;
+        const char* modeName;
+        int status;
+        float pts;
         if      (mode == 3) { modeName = "ASIO";        status = STATUS_GOOD; pts = 12.f; }
         else if (mode == 5) { modeName = "WASAPI";       status = STATUS_WARN; pts =  6.f; }
         else if (mode == 4) { modeName = "KS";           status = STATUS_WARN; pts =  6.f; }
         else if (mode == 2) { modeName = "DirectSound";  status = STATUS_BAD;  pts =  0.f; }
         else if (mode == 1) { modeName = "WaveOut";      status = STATUS_BAD;  pts =  0.f; }
+        else                { modeName = "Unknown";      status = STATUS_INFO; pts =  0.f; }
 
         Add("Audio Device", "Driver Mode",
             "ASIO drivers bypass Windows audio stack, giving lowest latency and most stable "
@@ -318,10 +333,15 @@ static void RunChecks()
 
     // --- Check 2: Buffer size (10 pts) ---
     {
-        char bsStr[64] = {};
-        if (GetAudioDeviceInfo) GetAudioDeviceInfo("BSIZE", bsStr, (int)sizeof(bsStr));
-        int bs = atoi(bsStr);
+        char bsStr[16] = {};
+        int bs = 0;
+        if (GetAudioDeviceInfo && GetAudioDeviceInfo("BSIZE", bsStr, sizeof(bsStr)))
+            bs = atoi(bsStr);
+        // INI fallback — try all driver-specific keys
+        if (!bs) bs = GetIniInt("audioconfig", "bsize", 0);
         if (!bs) bs = GetIniInt("audioconfig", "asio_bsize", 0);
+        if (!bs) bs = GetIniInt("audioconfig", "wasapi_bsize", 0);
+        if (!bs) bs = GetIniInt("audioconfig", "ks_bsize", 0);
 
         int status = STATUS_INFO;
         float pts  = 0.f;
@@ -344,10 +364,30 @@ static void RunChecks()
 
     // --- Check 3: Sample rate (3 pts) ---
     {
-        char srStr[64] = {};
-        if (GetAudioDeviceInfo) GetAudioDeviceInfo("SRATE", srStr, (int)sizeof(srStr));
-        int sr = atoi(srStr);
-        if (!sr) sr = GetIniInt("audioconfig", "srate", 0);
+        char srStr[16] = {};
+        int sr = 0;
+        // GetAudioDeviceInfo("SRATE") returns the live running device rate
+        if (GetAudioDeviceInfo && GetAudioDeviceInfo("SRATE", srStr, sizeof(srStr)))
+            sr = atoi(srStr);
+        if (!sr)
+        {
+            // REAPER stores sample rate per driver (no generic "srate" key)
+            // Read the active driver mode then pick the matching key
+            int drvMode = GetIniInt("audioconfig", "mode", 0);
+            const char* srKey = nullptr;
+            switch (drvMode) {
+            case 1: srKey = "waveout_srate"; break;
+            case 2: srKey = "dsound_srate";  break;
+            case 3: srKey = "asio_srate";    break;
+            case 4: srKey = "ks_srate";      break;
+            case 5: srKey = "wasapi_srate";  break;
+            }
+            if (srKey) sr = GetIniInt("audioconfig", srKey, 0);
+            // Final fallback: try all driver-specific keys
+            if (!sr) sr = GetIniInt("audioconfig", "asio_srate",   0);
+            if (!sr) sr = GetIniInt("audioconfig", "wasapi_srate", 0);
+            if (!sr) sr = GetIniInt("audioconfig", "ks_srate",     0);
+        }
 
         int status = (sr == 44100 || sr == 48000) ? STATUS_GOOD : STATUS_WARN;
         float pts  = (sr == 44100 || sr == 48000) ? 3.f : 0.f;
@@ -367,7 +407,7 @@ static void RunChecks()
         bool running = Audio_IsRunning ? (Audio_IsRunning() != 0) : false;
         Add("Audio Device", "Audio Engine",
             "REAPER's audio engine must be running for any live monitoring.  "
-            "If stopped, use Audio → Start audio engine.",
+            "If stopped, use Audio > Start audio engine.",
             3.f,
             running ? STATUS_GOOD : STATUS_BAD,
             running ? 3.f : 0.f,
@@ -402,50 +442,117 @@ static void RunChecks()
 
     // --- Check 6: Anticipative FX (8 pts) ---
     {
-        std::string val = GetConfigVar("anticipativefx", "audio", "anticipativefx", "0");
-        bool enabled = (val == "1" || val == "true");
+        // get_config_var returns a live int* into REAPER's memory for int-type vars.
+        // get_config_var_string does not reliably convert int vars; use the raw version.
+        // If the var is not found, assume enabled (REAPER default = on).
+        bool enabled  = true;
+        bool varFound = false;
+        if (get_config_var)
+        {
+            int sz  = 0;
+            void* raw = get_config_var("anticipativefx", &sz);
+            if (raw && sz == sizeof(int))
+            {
+                varFound = true;
+                enabled  = (*(int*)raw != 0);
+            }
+        }
         Add("REAPER Prefs", "Anticipative FX",
             "Anticipative FX pre-renders plugin output ahead of the playhead, reducing "
             "the chance of audio dropouts.  Should always be ON for live use.  "
-            "Found in: Preferences → Audio → Buffering.",
+            "Found in: Preferences > Audio > Buffering.",
             8.f,
             enabled ? STATUS_GOOD : STATUS_WARN,
             enabled ? 8.f : 0.f,
-            enabled ? "Enabled" : "Disabled",
-            enabled ? "Optimal" : "Enable in Preferences → Audio → Buffering",
-            false, nullptr);
+            varFound ? (enabled ? "Enabled" : "Disabled") : "Enabled (assumed)",
+            enabled ? "Optimal" : "Enable in Preferences > Audio > Buffering",
+            !enabled && get_config_var != nullptr,
+            [](){
+                if (get_config_var) {
+                    int sz2 = 0;
+                    void* raw2 = get_config_var("anticipativefx", &sz2);
+                    if (raw2 && sz2 == sizeof(int)) *(int*)raw2 = 1;
+                }
+            });
     }
 
     // --- Check 7: Process priority (5 pts) ---
     {
-        std::string val = GetConfigVar("priorhigh", "reaper", "priorhigh", "0");
-        bool high = (val == "1" || val == "2");
+        // Since reaper_transitions.dll is loaded inside REAPER, GetCurrentProcess()
+        // IS the REAPER process.  GetPriorityClass() gives the real running priority
+        // regardless of what is written in the INI.
+        DWORD pclass = GetPriorityClass(GetCurrentProcess());
+        bool high = (pclass == HIGH_PRIORITY_CLASS ||
+                     pclass == REALTIME_PRIORITY_CLASS ||
+                     pclass == ABOVE_NORMAL_PRIORITY_CLASS);
+        const char* priLabel;
+        if      (pclass == REALTIME_PRIORITY_CLASS)     priLabel = "Realtime";
+        else if (pclass == HIGH_PRIORITY_CLASS)         priLabel = "High";
+        else if (pclass == ABOVE_NORMAL_PRIORITY_CLASS) priLabel = "Above Normal";
+        else if (pclass == BELOW_NORMAL_PRIORITY_CLASS) priLabel = "Below Normal";
+        else if (pclass == IDLE_PRIORITY_CLASS)         priLabel = "Idle";
+        else                                            priLabel = "Normal";
+
         Add("REAPER Prefs", "Process Priority",
             "Setting REAPER to High or Above Normal process priority ensures Windows "
-            "schedules audio threads first.  Found in: Preferences → General.",
+            "schedules audio threads first.  Found in: Preferences > General > "
+            "\"Priority\" dropdown.  Changes take effect immediately when saved.",
             5.f,
             high ? STATUS_GOOD : STATUS_WARN,
             high ? 5.f : 0.f,
-            high ? "High" : "Normal",
-            high ? "Optimal" : "Set to High in Preferences → General",
+            priLabel,
+            high ? "Optimal" : "Set to High in Preferences > General",
             false, nullptr);
     }
 
     // --- Check 8: Automation override – Bypass All (5 pts) ---
     {
-        int autoMode = GetGlobalAutomationOverride ? GetGlobalAutomationOverride() : -1;
-        bool bypass  = (autoMode == 5);
-        Add("REAPER Prefs", "Automation Override",
-            "Setting automation to 'Bypass All' during a live show prevents any "
-            "automation from fighting your live fader moves.  Click Apply Fix to set "
-            "Bypass All now.",
-            5.f,
-            bypass ? STATUS_GOOD : STATUS_WARN,
-            bypass ? 5.f : 0.f,
-            bypass ? "Bypass All" : (autoMode == -1 ? "Unknown" : "Active"),
-            bypass ? "Good – all automation bypassed" : "Set to Bypass All for live shows",
-            !bypass && SetGlobalAutomationOverride != nullptr,
-            []() { if (SetGlobalAutomationOverride) SetGlobalAutomationOverride(5); });
+        // GetGlobalAutomationOverride: -1=no override, 0=trim/read, 1=read,
+        // 2=touch, 3=write, 4=latch, 5=bypass all
+        // If the function pointer didn't load, report INFO rather than a false alarm.
+        if (!GetGlobalAutomationOverride)
+        {
+            Add("REAPER Prefs", "Automation Override",
+                "Setting automation to 'Bypass All' during a live show prevents any "
+                "automation from fighting your live fader moves.  To set: click the "
+                "Automation button in REAPER's toolbar and select Bypass All.",
+                5.f, STATUS_INFO, 5.f, "N/A (API unavailable)", "Set to Bypass All for live shows",
+                false, nullptr);
+        }
+        else
+        {
+            int autoMode = GetGlobalAutomationOverride();
+            bool bypass  = (autoMode == 5);
+            const char* modeLabel;
+            switch (autoMode)
+            {
+            case -1: modeLabel = "No Override";  break;
+            case  0: modeLabel = "Trim/Read";    break;
+            case  1: modeLabel = "Read";         break;
+            case  2: modeLabel = "Touch";        break;
+            case  3: modeLabel = "Write";        break;
+            case  4: modeLabel = "Latch";        break;
+            case  5: modeLabel = "Bypass All";   break;
+            default:
+            {
+                static char unkBuf[24];
+                snprintf(unkBuf, sizeof(unkBuf), "Unknown (%d)", autoMode);
+                modeLabel = unkBuf;
+                break;
+            }
+            }
+            Add("REAPER Prefs", "Automation Override",
+                "Setting automation to 'Bypass All' during a live show prevents any "
+                "automation from fighting your live fader moves.  'No Override' means "
+                "per-track automation modes are active.  To set: click the Automation "
+                "button in REAPER's toolbar and select Bypass All.",
+                5.f,
+                bypass ? STATUS_GOOD : STATUS_WARN,
+                bypass ? 5.f : 0.f,
+                modeLabel,
+                bypass ? "Good – all automation bypassed" : "Set to Bypass All for live shows",
+                false, nullptr);
+        }
     }
 
     // --- Check 9: Undo levels (4 pts) ---
@@ -458,7 +565,7 @@ static void RunChecks()
         std::string rec;
         if      (levels <= 50)  { status = STATUS_GOOD; pts = 4.f; rec = "Lean undo history"; }
         else if (levels <= 200) { status = STATUS_WARN; pts = 2.f; rec = "Consider reducing to ≤50"; }
-        else                    { status = STATUS_BAD;  pts = 0.f; rec = "Reduce undo levels (Prefs → General)"; }
+        else                    { status = STATUS_BAD;  pts = 0.f; rec = "Reduce undo levels (Prefs > General)"; }
 
         char valStr[32] = {};
         snprintf(valStr, sizeof(valStr), "%d levels", levels);
@@ -484,7 +591,7 @@ static void RunChecks()
         Add("REAPER Prefs", "Multiprocessor Audio",
             "REAPER can spread FX processing across CPU cores.  On multi-core systems "
             "this significantly reduces the chance of dropouts under heavy FX load.  "
-            "Set in: Preferences → Audio → Buffering → Render ahead / CPU threads.",
+            "Set in: Preferences > Audio > Buffering > Render ahead / CPU threads.",
             3.f,
             multi ? STATUS_GOOD : STATUS_WARN,
             multi ? 3.f : 0.f,
@@ -832,20 +939,206 @@ static void RunChecks()
             false, nullptr);
     }
 
+    // --- Check 21: Hypervisor / Hyper-V (5 pts) ---
+    {
+        // CPUID leaf 1, ECX bit 31 is set by any hypervisor (Hyper-V, VMware, VBox).
+        // When Hyper-V is enabled, Windows runs as a "root partition" under the
+        // hypervisor.  Hardware interrupts are virtualized, adding DPC latency spikes
+        // that cause audio dropouts even when no VMs are running.
+        int cpuInfo[4] = {};
+        __cpuid(cpuInfo, 1);
+        bool hvPresent = (cpuInfo[2] & (1 << 31)) != 0;
+
+        // Also check Hyper-V service to distinguish HV from other hypervisors
+        bool hvService = false;
+        {
+            HKEY hk = nullptr;
+            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                "SYSTEM\\CurrentControlSet\\Services\\HvHost",
+                0, KEY_READ, &hk) == ERROR_SUCCESS)
+            { hvService = true; RegCloseKey(hk); }
+        }
+
+        bool bad = hvPresent || hvService;
+        Add("System Health", "Hypervisor / Hyper-V",
+            "When Hyper-V (or any hypervisor) is active, Windows itself runs inside a "
+            "virtual machine.  Hardware interrupt routing is virtualized, which can add "
+            "0.5–10 ms of unexpected DPC latency and is a leading cause of random audio "
+            "dropouts.  To disable: run 'bcdedit /set hypervisorlaunchtype off' as "
+            "Administrator and reboot.  Also check: Windows Features > Hyper-V.",
+            5.f,
+            bad ? STATUS_BAD : STATUS_GOOD,
+            bad ? 0.f : 5.f,
+            bad ? (hvService ? "Hyper-V detected" : "Hypervisor detected") : "Not detected",
+            bad ? "Disable Hyper-V & reboot (bcdedit /set hypervisorlaunchtype off)"
+                : "Good – no hypervisor",
+            false, nullptr);
+    }
+
+    // --- Check 22: Windows Defender real-time protection (3 pts) ---
+    {
+        DWORD disabled = 0;
+        DWORD cbVal    = sizeof(DWORD);
+        HKEY  hKey     = nullptr;
+        bool  readable = false;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection",
+            0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            readable = true;
+            RegQueryValueExA(hKey, "DisableRealtimeMonitoring", nullptr, nullptr,
+                             reinterpret_cast<LPBYTE>(&disabled), &cbVal);
+            RegCloseKey(hKey);
+        }
+        // disabled=0 (or key missing) means RT protection is ON; disabled=1 means OFF
+        bool rtOn = (!disabled);
+        Add("System Health", "Windows Defender Real-Time",
+            "Windows Defender real-time protection scans every file access, including "
+            "audio plugin DLLs and sample libraries.  During a live show this can cause "
+            "sudden CPU spikes.  Add your REAPER install folder, plugin directories, and "
+            "sample library paths to Defender exclusions as a minimum, or consider "
+            "temporarily disabling real-time protection during the show.",
+            3.f,
+            rtOn  ? STATUS_WARN : STATUS_GOOD,
+            rtOn  ? 0.f : 3.f,
+            readable ? (rtOn ? "Active" : "Disabled") : "Unknown (requires admin)",
+            rtOn  ? "Add REAPER/plugin paths to Defender exclusions"
+                  : "Good – real-time scanning off",
+            false, nullptr);
+    }
+
+    // --- Check 23: AC power / not on battery (3 pts) ---
+    {
+        SYSTEM_POWER_STATUS ps = {};
+        GetSystemPowerStatus(&ps);
+        // ACLineStatus: 0=offline(battery), 1=online(AC), 255=unknown
+        // BatteryFlag:  128=no battery present (desktop)
+        bool hasBattery = (ps.BatteryFlag != 128 && ps.BatteryFlag != 255);
+        bool onAC       = (ps.ACLineStatus == 1);
+
+        if (hasBattery)
+        {
+            // Only surface this check on laptops/portables
+            Add("System Health", "AC Power",
+                "Running on battery forces Windows to throttle the CPU and memory bus "
+                "regardless of the power plan setting.  This causes unpredictable DPC "
+                "latency spikes during a live show.  Always use mains power for live "
+                "performance.",
+                3.f,
+                onAC ? STATUS_GOOD : STATUS_BAD,
+                onAC ? 3.f : 0.f,
+                onAC ? "Plugged in (AC)" : "On battery!",
+                onAC ? "Mains power (good)" : "Plug in to mains power before performing",
+                false, nullptr);
+        }
+    }
+
+    // --- Check 24: SysMain (Superfetch) service (2 pts) ---
+    {
+        bool running = false;
+        bool found   = false;
+        SC_HANDLE scm = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (scm)
+        {
+            SC_HANDLE svc = OpenServiceA(scm, "SysMain", SERVICE_QUERY_STATUS);
+            if (svc)
+            {
+                found = true;
+                SERVICE_STATUS ss = {};
+                QueryServiceStatus(svc, &ss);
+                running = (ss.dwCurrentState == SERVICE_RUNNING);
+                CloseServiceHandle(svc);
+            }
+            CloseServiceHandle(scm);
+        }
+
+        if (found)
+        {
+            Add("System Health", "SysMain (Superfetch)",
+                "The SysMain service (formerly Superfetch) pre-loads frequently-used data "
+                "into RAM by running background disk reads.  During a live show these "
+                "background I/O bursts can cause DPC latency spikes.  Disabling SysMain "
+                "(services.msc > SysMain > Disabled) reduces unpredictable disk activity.",
+                2.f,
+                running ? STATUS_WARN : STATUS_GOOD,
+                running ? 0.f : 2.f,
+                running ? "Running" : "Stopped/Disabled",
+                running ? "Consider disabling SysMain for live use"
+                        : "Good – SysMain not running",
+                false, nullptr);
+        }
+    }
+
+    // --- Check 25: Xbox Game Bar / Game DVR (1 pt) ---
+    {
+        DWORD gameDvr = 0;
+        DWORD cbVal   = sizeof(DWORD);
+        HKEY  hKey    = nullptr;
+        bool  readable = false;
+        if (RegOpenKeyExA(HKEY_CURRENT_USER,
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
+            0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            readable = true;
+            RegQueryValueExA(hKey, "AppCaptureEnabled", nullptr, nullptr,
+                             reinterpret_cast<LPBYTE>(&gameDvr), &cbVal);
+            RegCloseKey(hKey);
+        }
+        bool gameBarOn = (gameDvr != 0);
+        if (readable)
+        {
+            Add("System Health", "Xbox Game Bar / DVR",
+                "Xbox Game Bar and Game DVR hook into every application to monitor for "
+                "game activity.  These hooks add a small but measurable overhead to every "
+                "thread switch, and Game DVR actively records application audio.  Disable "
+                "via: Settings > Gaming > Xbox Game Bar > Off.",
+                1.f,
+                gameBarOn ? STATUS_WARN : STATUS_GOOD,
+                gameBarOn ? 0.f : 1.f,
+                gameBarOn ? "Enabled" : "Disabled",
+                gameBarOn ? "Disable in Settings > Gaming > Xbox Game Bar"
+                          : "Good – Game Bar off",
+                false, nullptr);
+        }
+    }
+
     // ===================================================================
     // CATEGORY 4 – Project State  (10 pts)
     // ===================================================================
 
     int numTracks = GetNumTracks ? GetNumTracks() : 0;
 
-    // --- Check 21: Track count (4 pts) ---
+    // Derive track/FX thresholds from hardware specs
+    SYSTEM_INFO si2 = {};
+    GetSystemInfo(&si2);
+    int cpuCores = (int)si2.dwNumberOfProcessors;
+    MEMORYSTATUSEX ms2 = {};
+    ms2.dwLength = sizeof(ms2);
+    GlobalMemoryStatusEx(&ms2);
+    double totalRAM_GB = (double)ms2.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
+    // Track budget: ~8 tracks per core, scaled by RAM (cap at 256)
+    int trackBudget = min(256, max(16, cpuCores * 8));
+    if (totalRAM_GB < 8.0)  trackBudget = (int)(trackBudget * 0.5);
+    else if (totalRAM_GB >= 32.0) trackBudget = (int)(trackBudget * 1.5);
+    // FX budget: ~4 FX per core, scaled by RAM
+    int fxBudget = min(128, max(8, cpuCores * 4));
+    if (totalRAM_GB < 8.0)  fxBudget = (int)(fxBudget * 0.5);
+    else if (totalRAM_GB >= 32.0) fxBudget = (int)(fxBudget * 1.5);
+
+    // --- Check 26: Track count (4 pts) ---
     {
+        int good_thresh = trackBudget / 2;
+        int warn_thresh = trackBudget;
         int status;
         float pts;
         std::string rec;
-        if      (numTracks < 32)  { status = STATUS_GOOD; pts = 4.f; rec = "Manageable track count"; }
-        else if (numTracks < 64)  { status = STATUS_WARN; pts = 2.f; rec = "High track count – review unused tracks"; }
-        else                      { status = STATUS_BAD;  pts = 0.f; rec = "Very high track count – may affect perf"; }
+        char recBuf[128] = {};
+        if (numTracks <= good_thresh)
+        { status = STATUS_GOOD; pts = 4.f; snprintf(recBuf, sizeof(recBuf), "Good for your hardware (≤%d)", good_thresh); rec = recBuf; }
+        else if (numTracks <= warn_thresh)
+        { status = STATUS_WARN; pts = 2.f; snprintf(recBuf, sizeof(recBuf), "Approaching limit for %d cores – freeze unused tracks", cpuCores); rec = recBuf; }
+        else
+        { status = STATUS_BAD;  pts = 0.f; snprintf(recBuf, sizeof(recBuf), "Exceeds recommended limit (%d) for your CPU", warn_thresh); rec = recBuf; }
 
         char valStr[32] = {};
         snprintf(valStr, sizeof(valStr), "%d tracks", numTracks);
@@ -855,7 +1148,7 @@ static void RunChecks()
             4.f, status, pts, valStr, rec, false, nullptr);
     }
 
-    // --- Check 22: Total FX count (3 pts) ---
+    // --- Check 27: Total FX count (3 pts) ---
     {
         int totalFX = 0;
         if (GetNumTracks && TrackFX_GetCount && GetTrack)
@@ -870,9 +1163,15 @@ static void RunChecks()
         int status;
         float pts;
         std::string rec;
-        if      (totalFX <= 20) { status = STATUS_GOOD; pts = 3.f; rec = "Light FX load"; }
-        else if (totalFX <= 50) { status = STATUS_WARN; pts = 1.f; rec = "Review enabled FX"; }
-        else                    { status = STATUS_BAD;  pts = 0.f; rec = "Disable/freeze unused FX"; }
+        char fxRecBuf[128] = {};
+        int fx_good = fxBudget / 2;
+        int fx_warn = fxBudget;
+        if (totalFX <= fx_good)
+        { status = STATUS_GOOD; pts = 3.f; snprintf(fxRecBuf, sizeof(fxRecBuf), "Good for your hardware (≤%d FX)", fx_good); rec = fxRecBuf; }
+        else if (totalFX <= fx_warn)
+        { status = STATUS_WARN; pts = 1.f; snprintf(fxRecBuf, sizeof(fxRecBuf), "Approaching limit for %d cores – disable unused FX", cpuCores); rec = fxRecBuf; }
+        else
+        { status = STATUS_BAD;  pts = 0.f; snprintf(fxRecBuf, sizeof(fxRecBuf), "Exceeds recommended (%d FX) for your CPU", fx_warn); rec = fxRecBuf; }
 
         char valStr[32] = {};
         snprintf(valStr, sizeof(valStr), "%d FX across all tracks", totalFX);
@@ -883,7 +1182,7 @@ static void RunChecks()
             3.f, status, pts, valStr, rec, false, nullptr);
     }
 
-    // --- Check 23: Record-armed tracks (2 pts) ---
+    // --- Check 28: Record-armed tracks (2 pts) ---
     {
         int armedCount = 0;
         if (GetNumTracks && GetTrack && GetSetMediaTrackInfo)
@@ -899,23 +1198,17 @@ static void RunChecks()
             }
         }
 
-        int status;
-        float pts;
-        std::string rec;
-        if      (armedCount == 0) { status = STATUS_GOOD; pts = 2.f; rec = "No armed tracks"; }
-        else if (armedCount <= 2) { status = STATUS_WARN; pts = 1.f; rec = "Few armed tracks – expected for recording"; }
-        else                      { status = STATUS_BAD;  pts = 0.f; rec = "Many armed tracks add record overhead"; }
-
         char valStr[32] = {};
         snprintf(valStr, sizeof(valStr), "%d armed", armedCount);
+        // Armed tracks are expected and necessary for live monitoring – do not penalise
         Add("Project State", "Record-Armed Tracks",
-            "Record-armed tracks keep monitoring active and buffer recording input "
-            "continuously.  Unarm any tracks you are not actively recording to reduce "
-            "system load.",
-            2.f, status, pts, valStr, rec, false, nullptr);
+            "Armed tracks with input monitoring are how REAPER routes live audio through "
+            "FX chains for live sound.  Having many armed tracks is normal and expected "
+            "for live use.  This is informational only.",
+            2.f, STATUS_INFO, 2.f, valStr, "Normal for live use", false, nullptr);
     }
 
-    // --- Check 24: Hardware output sends (1 pt) ---
+    // --- Check 29: Hardware output sends (1 pt) ---
     {
         int hwOutTracks = 0;
         if (GetNumTracks && GetTrack && GetTrackNumSends)
@@ -956,14 +1249,53 @@ static void RunChecks()
 }
 
 // ---------------------------------------------------------------------------
+// SortChecks – sort g_checks according to g_sortCol / g_sortAsc
+// ---------------------------------------------------------------------------
+static void SortChecks()
+{
+    // Build a sorted index rather than sorting g_checks in place, so that
+    // item lParam values still map correctly.  Instead, sort g_checks directly
+    // and rebuild lParam on insert.
+    if (g_sortCol < 0)
+    {
+        // Default: highest weight (priority) first, then status worst-first
+        std::stable_sort(g_checks.begin(), g_checks.end(),
+            [](const LiveOptCheck& a, const LiveOptCheck& b) {
+                if (a.weight != b.weight) return a.weight > b.weight;
+                return a.status > b.status; // BAD(2) > WARN(1) > GOOD(0)
+            });
+        return;
+    }
+    std::stable_sort(g_checks.begin(), g_checks.end(),
+        [](const LiveOptCheck& a, const LiveOptCheck& b) -> bool {
+            int cmp = 0;
+            switch (g_sortCol)
+            {
+            case COL_STATUS:   cmp = a.status   - b.status;   break;
+            case COL_CATEGORY: cmp = strcmp(a.category, b.category); break;
+            case COL_NAME:     cmp = strcmp(a.name,     b.name);     break;
+            case COL_VALUE:    cmp = strcmp(a.value.c_str(),    b.value.c_str());    break;
+            case COL_RECOMMEND:cmp = strcmp(a.recommend.c_str(),b.recommend.c_str()); break;
+            default: break;
+            }
+            return g_sortAsc ? (cmp < 0) : (cmp > 0);
+        });
+}
+
+// ---------------------------------------------------------------------------
 // PopulateList – rebuild the ListView from g_checks
 // ---------------------------------------------------------------------------
 static void PopulateList(HWND hwnd)
 {
     if (!g_hList) return;
 
-    // Remember selected index
+    SortChecks();
+
+    // Remember selected name to restore after repopulate
+    std::string selName;
     int selIdx = ListView_GetNextItem(g_hList, -1, LVNI_SELECTED);
+    if (selIdx >= 0 && selIdx < (int)g_checks.size())
+        selName = g_checks[selIdx].name;
 
     ListView_DeleteAllItems(g_hList);
 
@@ -985,10 +1317,20 @@ static void PopulateList(HWND hwnd)
         ListView_SetItemText(g_hList, i, COL_RECOMMEND,(LPSTR)c.recommend.c_str());
     }
 
-    // Restore selection
-    if (selIdx >= 0 && selIdx < (int)g_checks.size())
-        ListView_SetItemState(g_hList, selIdx, LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
+    // Restore selection by name (row may have moved due to sort)
+    if (!selName.empty())
+    {
+        for (int i = 0; i < (int)g_checks.size(); ++i)
+        {
+            if (selName == g_checks[i].name)
+            {
+                ListView_SetItemState(g_hList, i, LVIS_SELECTED | LVIS_FOCUSED,
+                                     LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(g_hList, i, FALSE);
+                break;
+            }
+        }
+    }
 
     // Update score text
     char scoreText[64] = {};
@@ -1189,6 +1531,22 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
             }
             } // switch dwDrawStage
         }
+        else if (pnm->code == LVN_COLUMNCLICK)
+        {
+            NMLISTVIEW* plv = (NMLISTVIEW*)lParam;
+            int col = plv->iSubItem;
+            if (g_sortCol == col)
+                g_sortAsc = !g_sortAsc;  // toggle direction
+            else
+            {
+                g_sortCol = col;
+                // Status sorts BAD first by default; others ascending
+                g_sortAsc = (col != COL_STATUS);
+            }
+            // Rebuild list with new sort
+            RunChecks();
+            PopulateList(hwnd);
+        }
         else if (pnm->code == LVN_ITEMCHANGED)
         {
             NMLISTVIEW* plv = (NMLISTVIEW*)lParam;
@@ -1201,16 +1559,7 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
                 {
                     SetWindowTextA(hInfo, g_checks[g_selectedCheck].tooltip);
                 }
-                // Update Apply Fix button state
-                HWND hFix = GetDlgItem(hwnd, IDC_LO_APPLY_FIX);
-                if (hFix)
-                {
-                    bool canFix = (g_selectedCheck >= 0 &&
-                                   g_selectedCheck < (int)g_checks.size() &&
-                                   g_checks[g_selectedCheck].canFix &&
-                                   g_checks[g_selectedCheck].fixFunc);
-                    EnableWindow(hFix, canFix ? TRUE : FALSE);
-                }
+
             }
         }
         break;
@@ -1227,27 +1576,6 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
             RunChecks();
             PopulateList(hwnd);
             if (hStatus) SetWindowTextA(hStatus, "Scan complete.");
-        }
-        else if (id == IDC_LO_APPLY_FIX)
-        {
-            if (g_selectedCheck >= 0 && g_selectedCheck < (int)g_checks.size())
-            {
-                LiveOptCheck& c = g_checks[g_selectedCheck];
-                if (c.canFix && c.fixFunc)
-                {
-                    c.fixFunc();
-                    HWND hStatus = GetDlgItem(hwnd, IDC_LO_STATUS);
-                    if (hStatus)
-                    {
-                        char msg[128] = {};
-                        snprintf(msg, sizeof(msg), "Fix applied: %s", c.name);
-                        SetWindowTextA(hStatus, msg);
-                    }
-                    // Re-scan to reflect new state
-                    RunChecks();
-                    PopulateList(hwnd);
-                }
-            }
         }
         break;
     }
@@ -1292,13 +1620,9 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
         if (hRef) SetWindowPos(hRef, nullptr, kBarX, kBtnY,
                                55, kBtnH, SWP_NOZORDER | SWP_NOACTIVATE);
 
-        HWND hFix = GetDlgItem(hwnd, IDC_LO_APPLY_FIX);
-        if (hFix) SetWindowPos(hFix, nullptr, kBarX + 60, kBtnY,
-                               55, kBtnH, SWP_NOZORDER | SWP_NOACTIVATE);
-
         HWND hStat = GetDlgItem(hwnd, IDC_LO_STATUS);
-        if (hStat) SetWindowPos(hStat, nullptr, kBarX + 120, kStatusY,
-                                dlgW - kBarX - 125, 10, SWP_NOZORDER | SWP_NOACTIVATE);
+        if (hStat) SetWindowPos(hStat, nullptr, kBarX + 60, kStatusY,
+                                dlgW - kBarX - 65, 10, SWP_NOZORDER | SWP_NOACTIVATE);
 
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;

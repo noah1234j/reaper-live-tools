@@ -31,6 +31,9 @@ void TransitionWnd_ShowHide();
 // Return 1 if visible, 0 if hidden/not yet created
 int  TransitionWnd_IsVisible();
 
+// Returns 0-based index of the selected snapshot in the list, or -1 if none
+int  TransitionWnd_GetSelectedIndex();
+
 // Refresh the list view (call after snapshot list changes via project load)
 void TransitionWnd_RefreshList();
 

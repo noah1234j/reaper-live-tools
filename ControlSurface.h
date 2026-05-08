@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 // Protocols
 // ---------------------------------------------------------------------------
-enum class CSurfProtocol : int { MCU = 0, HUI = 1 };
+enum class CSurfProtocol : int { MCU = 0, HUI = 1, FP16 = 2 };
 
 // ---------------------------------------------------------------------------
 // Pre-baked surface templates
@@ -37,6 +37,8 @@ struct CSurfSettings
     bool          showNames     = true;
     int           faderMode     = 0;    // 0=Volume, 1=Pan, 2=Sends
     int           bankOffset    = 0;    // initial bank starting track index
+    int           midiInDev2    = -1;   // extender / 2nd port (optional)
+    int           midiOutDev2   = -1;
     bool          sendColors    = false; // send X-Touch scribble strip colors
     bool          followMCP     = false; // use MCP (mixer) track order
 
@@ -85,8 +87,10 @@ private:
     mutable std::string m_descStr;
     mutable std::string m_cfgStr;
 
-    midi_Input*  m_midiIn  = nullptr;
-    midi_Output* m_midiOut = nullptr;
+    midi_Input*  m_midiIn   = nullptr;
+    midi_Output* m_midiOut  = nullptr;
+    midi_Input*  m_midiIn2  = nullptr; // extender / 2nd port
+    midi_Output* m_midiOut2 = nullptr;
 
     int  m_bankOffset = 0;  // first visible track index (1-based REAPER index)
 
@@ -114,6 +118,12 @@ private:
     // VU meter send throttle (only update every ~100ms = every 3 Run() calls)
     int  m_vuThrottle = 0;
 
+    // Arrow key / zoom state (bits 0-3 = cursor dirs held, bit6 = zoom, bit7 = scrub)
+    int   m_arrowStates  = 0;
+    DWORD m_arrowRunTime = 0;   // last time arrow keys were fired in Run()
+    // REW/FFW hold state: -1 = rew held, 0 = none, +1 = fwd held
+    int   m_rewFwdHeld   = 0;
+
     // ---- Private helpers ---------------------------------------------------
     int         GetStripForTrack(MediaTrack* tr) const;
     MediaTrack* GetTrackForStrip(int strip) const;
@@ -131,7 +141,7 @@ private:
     void RefreshAutoLEDs(int mode);
 
     // MCU encode/decode
-    void MCU_ProcessMIDI(const MIDI_event_t* ev);
+    void MCU_ProcessMIDI(const MIDI_event_t* ev, int stripOffset = 0);
     void MCU_SendFader(int strip, double vol);
     void MCU_SendPanEncoder(int strip, double pan);
     void MCU_SendLED(uint8_t note, bool on);
@@ -140,13 +150,21 @@ private:
     void MCU_SendStripColors(const uint8_t* colors8); // X-Touch scribble color SysEx
     void MCU_SendVU(int strip, int level_0_12);
     void MCU_SendReset();
-    void MCU_SetButtonAction(uint8_t note, bool down);
+    void MCU_SetButtonAction(uint8_t note, bool down, int stripOffset = 0);
 
     // HUI encode/decode
-    void HUI_ProcessMIDI(const MIDI_event_t* ev);
+    void HUI_ProcessMIDI(const MIDI_event_t* ev, int stripOffset = 0);
     void HUI_SendFader(int strip, double vol);
     void HUI_SendLED(int zone, int port, bool on);
     void HUI_SendKeepAlive();
+
+    // FP16 native (Studio One) protocol
+    void FP16_ProcessMIDI(const MIDI_event_t* ev);
+    void FP16_SetButtonAction(uint8_t note, bool down);
+    void FP16_SendSelectColor(int strip, bool on, int r, int g, int b);
+    void FP16_SendScribble(int strip, const char* row0, const char* row1);
+    void FP16_SendScribbleMode(int strip, int mode);
+    void FP16_SendVU(int strip, int level_0_127);
 
     // Low-level MIDI send
     void SendMIDI(uint8_t b0, uint8_t b1, uint8_t b2);

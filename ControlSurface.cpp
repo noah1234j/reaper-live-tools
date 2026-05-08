@@ -20,8 +20,8 @@ const CSurfTemplate k_csurfTemplates[] = {
       "Standard Mackie Control Universal - 8 channels" },
     { "MCU + Extender (16ch)",       CSurfProtocol::MCU, 16,
       "MCU main unit + extender - 16 channels total" },
-    { "Presonus FaderPort 16",       CSurfProtocol::MCU, 16,
-      "Hold TRACK while plugging in USB to enable MCU mode" },
+    { "Presonus FaderPort 16 (Native)",  CSurfProtocol::FP16, 16,
+      "FaderPort 16 in native S1 mode (default USB mode)" },
     { "Presonus FaderPort 8",        CSurfProtocol::MCU, 8,
       "Hold TRACK while plugging in USB to enable MCU mode" },
     { "Behringer X-Touch",           CSurfProtocol::MCU, 8,
@@ -76,12 +76,31 @@ static const uint8_t MCU_CMD_LCD       = 0x12;
 static const int HUI_ZONE_TRANSPORT = 0x0E;
 
 // ---------------------------------------------------------------------------
+// FP16 note mapping helpers (Studio One native mode)
+// Channels 9-16 (strips 8-15) use non-contiguous note numbers
+// ---------------------------------------------------------------------------
+static uint8_t FP16_SoloNote(int strip)
+{
+    return (strip < 8) ? (uint8_t)(0x08 + strip) : (uint8_t)(0x50 + strip - 8);
+}
+static uint8_t FP16_MuteNote(int strip)
+{
+    return (strip < 8) ? (uint8_t)(0x10 + strip) : (uint8_t)(0x78 + strip - 8);
+}
+static uint8_t FP16_SelectNote(int strip)
+{
+    if (strip < 8)  return (uint8_t)(0x18 + strip);
+    if (strip == 8) return 0x07;
+    return (uint8_t)(0x21 + strip - 9); // strips 9-15 → notes 0x21-0x27
+}
+
+// ---------------------------------------------------------------------------
 // Settings serialization
 // ---------------------------------------------------------------------------
 std::string CSurfSettings::Serialize() const
 {
     char buf[256];
-    snprintf(buf, sizeof(buf), "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+    snprintf(buf, sizeof(buf), "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
         (int)proto, midiInDev, midiOutDev,
         templateIdx, channelCount,
         followSel ? 1 : 0,
@@ -90,7 +109,8 @@ std::string CSurfSettings::Serialize() const
         faderMode,
         bankOffset,
         sendColors ? 1 : 0,
-        followMCP ? 1 : 0);
+        followMCP ? 1 : 0,
+        midiInDev2, midiOutDev2);
     return buf;
 }
 
@@ -100,9 +120,11 @@ CSurfSettings CSurfSettings::Deserialize(const char* cfg)
     if (!cfg || !*cfg) return s;
     int p = 0, inDev = -1, outDev = -1, tmpl = 0, chCnt = 8;
     int fSel = 1, fVU = 1, fNames = 1, fMode = 0, bOff = 0, sCols = 0, fMCP = 0;
-    int n = sscanf(cfg, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+    int inDev2 = -1, outDev2 = -1;
+    int n = sscanf(cfg, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
         &p, &inDev, &outDev, &tmpl, &chCnt,
-        &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP);
+        &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP,
+        &inDev2, &outDev2);
     if (n >= 1)  s.proto        = (CSurfProtocol)p;
     if (n >= 2)  s.midiInDev    = inDev;
     if (n >= 3)  s.midiOutDev   = outDev;
@@ -115,6 +137,8 @@ CSurfSettings CSurfSettings::Deserialize(const char* cfg)
     if (n >= 10) s.bankOffset   = bOff;
     if (n >= 11) s.sendColors   = (sCols != 0);
     if (n >= 12) s.followMCP    = (fMCP != 0);
+    if (n >= 13) s.midiInDev2   = inDev2;
+    if (n >= 14) s.midiOutDev2  = outDev2;
     return s;
 }
 
@@ -166,6 +190,14 @@ TransCSurf::TransCSurf(const CSurfSettings& s, int* errStats)
             *errStats |= 2;
     }
 
+    if (s.midiInDev2 >= 0)
+    {
+        m_midiIn2 = CreateMIDIInput(s.midiInDev2);
+        if (m_midiIn2) m_midiIn2->start();
+    }
+    if (s.midiOutDev2 >= 0)
+        m_midiOut2 = CreateMIDIOutput(s.midiOutDev2, false, nullptr);
+
     if (m_midiOut)
     {
         if (s.proto == CSurfProtocol::MCU)
@@ -193,6 +225,17 @@ void TransCSurf::CloseNoReset()
         m_midiOut->Destroy();
         m_midiOut = nullptr;
     }
+    if (m_midiIn2)
+    {
+        m_midiIn2->stop();
+        m_midiIn2->Destroy();
+        m_midiIn2 = nullptr;
+    }
+    if (m_midiOut2)
+    {
+        m_midiOut2->Destroy();
+        m_midiOut2 = nullptr;
+    }
 }
 
 void TransCSurf::ApplyNewSettings(const CSurfSettings& s)
@@ -208,6 +251,14 @@ void TransCSurf::ApplyNewSettings(const CSurfSettings& s)
     }
     if (s.midiOutDev >= 0)
         m_midiOut = CreateMIDIOutput(s.midiOutDev, false, nullptr);
+
+    if (s.midiInDev2 >= 0)
+    {
+        m_midiIn2 = CreateMIDIInput(s.midiInDev2);
+        if (m_midiIn2) m_midiIn2->start();
+    }
+    if (s.midiOutDev2 >= 0)
+        m_midiOut2 = CreateMIDIOutput(s.midiOutDev2, false, nullptr);
 
     if (m_midiOut)
     {
@@ -264,7 +315,8 @@ void TransCSurf::Run()
     }
 
     // ---- VU meter updates (every ~100ms = every 3 Run() calls) ------------
-    if (m_midiOut && m_s.showVU && m_s.proto == CSurfProtocol::MCU)
+    if (m_midiOut && m_s.showVU &&
+        (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16))
     {
         if (++m_vuThrottle >= 3)
         {
@@ -273,29 +325,60 @@ void TransCSurf::Run()
             for (int strip = 0; strip < nCh; ++strip)
             {
                 MediaTrack* tr = GetTrackForStrip(strip);
-                if (!tr) { MCU_SendVU(strip, 0); continue; }
-                // REAPER doesn't expose live VU directly through the csurf API;
-                // use Track_GetPeakInfo workaround if available, else send 0.
-                // We send a fixed mid-level as a placeholder for now.
-                MCU_SendVU(strip, 0);
+                if (m_s.proto == CSurfProtocol::FP16)
+                {
+                    if (!tr) { FP16_SendVU(strip, 0); continue; }
+                    FP16_SendVU(strip, 0);
+                }
+                else
+                {
+                    if (!tr) { MCU_SendVU(strip, 0); continue; }
+                    MCU_SendVU(strip, 0);
+                }
             }
         }
     }
 
     // ---- Poll MIDI input ---------------------------------------------------
-    if (!m_midiIn) return;
-
-    m_midiIn->SwapBufs(GetTickCount());
-    MIDI_eventlist* evList = m_midiIn->GetReadBuf();
-    int bpos = 0;
-    MIDI_event_t* ev;
-    while ((ev = evList->EnumItems(&bpos)))
+    auto pollInput = [&](midi_Input* inp, int stripOffset)
     {
-        if (m_s.proto == CSurfProtocol::MCU)
-            MCU_ProcessMIDI(ev);
-        else
-            HUI_ProcessMIDI(ev);
+        if (!inp) return;
+        inp->SwapBufs(GetTickCount());
+        MIDI_eventlist* evList = inp->GetReadBuf();
+        int bpos = 0;
+        MIDI_event_t* ev;
+        while ((ev = evList->EnumItems(&bpos)))
+        {
+            if (m_s.proto == CSurfProtocol::FP16)
+                FP16_ProcessMIDI(ev);        // all 16 ch on one port, no offset
+            else if (m_s.proto == CSurfProtocol::MCU)
+                MCU_ProcessMIDI(ev, stripOffset);
+            else
+                HUI_ProcessMIDI(ev, stripOffset);
+        }
+    };
+    pollInput(m_midiIn,  0);
+    if (m_s.proto != CSurfProtocol::FP16)  // FP16 has all 16 ch on one port
+        pollInput(m_midiIn2, m_s.channelCount);
+
+    // ---- Cursor key hold processing (every 100ms) -------------------------
+    if (m_arrowStates & 0x0F)
+    {
+        DWORD arrowNow = GetTickCount();
+        if (arrowNow - m_arrowRunTime >= 100)
+        {
+            m_arrowRunTime = arrowNow;
+            bool isZoom = !!(m_arrowStates & 64);
+            if ((m_arrowStates & 1) && CSurf_OnArrow) CSurf_OnArrow(0, isZoom);
+            if ((m_arrowStates & 2) && CSurf_OnArrow) CSurf_OnArrow(1, isZoom);
+            if ((m_arrowStates & 4) && CSurf_OnArrow) CSurf_OnArrow(2, isZoom);
+            if ((m_arrowStates & 8) && CSurf_OnArrow) CSurf_OnArrow(3, isZoom);
+        }
     }
+
+    // ---- REW / FFW hold ---------------------------------------------------
+    if (m_rewFwdHeld && CSurf_OnRewFwd)
+        CSurf_OnRewFwd(0, m_rewFwdHeld);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,16 +457,17 @@ void TransCSurf::ScrollToTrack(MediaTrack* tr)
     int total = GetTotalTracks();
     for (int i = 0; i < total; ++i)
     {
-        if (GetTrack(nullptr, i) == tr)
+        MediaTrack* candidate = CSurf_TrackFromID ? CSurf_TrackFromID(i + 1, m_s.followMCP)
+                                                  : GetTrack(nullptr, i);
+        if (candidate == tr)
         {
-            // Center the track in view if possible
-            int newOff = i - (m_s.channelCount / 2);
-            newOff = std::max(0, newOff);
-            int maxOff = std::max(0, total - m_s.channelCount);
-            newOff = std::min(newOff, maxOff);
-            if (newOff != m_bankOffset)
+            // Place the selected track on fader 1 (strip 0) — bank snaps to start at it.
+            // Only scroll if it's not already visible in the current window.
+            bool alreadyVisible = (i >= m_bankOffset && i < m_bankOffset + m_s.channelCount);
+            if (!alreadyVisible)
             {
-                m_bankOffset = newOff;
+                int maxOff = std::max(0, total - m_s.channelCount);
+                m_bankOffset = std::min(i, maxOff);
                 RefreshAll();
             }
             break;
@@ -411,11 +495,14 @@ void TransCSurf::SetSurfaceVolume(MediaTrack* tr, double vol)
     int strip = GetStripForTrack(tr);
     if (strip < 0 || !m_midiOut) return;
 
+    // Don't echo while the user is actively holding the fader
+    if (m_touchState[strip]) return;
+
     // Debounce: skip if user just moved this fader (within 120ms)
     double now = time_precise();
     if (now - m_lastFaderMove[strip] < 0.12) return;
 
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16)
         MCU_SendFader(strip, vol);
     else
         HUI_SendFader(strip, vol);
@@ -427,6 +514,8 @@ void TransCSurf::SetSurfacePan(MediaTrack* tr, double pan)
 {
     int strip = GetStripForTrack(tr);
     if (strip < 0 || !m_midiOut) return;
+    // MCU only: V-Pot ring display via CC 0x30+strip
+    // FP16 native uses different SysEx for encoder ring (not yet implemented)
     if (m_s.proto == CSurfProtocol::MCU)
         MCU_SendPanEncoder(strip, pan);
 }
@@ -437,7 +526,9 @@ void TransCSurf::SetSurfaceMute(MediaTrack* tr, bool mute)
     if (strip < 0 || !m_midiOut) return;
     if (m_lastMute[strip] == mute) return;
     m_lastMute[strip] = mute;
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::FP16)
+        MCU_SendLED(FP16_MuteNote(strip), mute);
+    else if (m_s.proto == CSurfProtocol::MCU)
         MCU_SendLED((uint8_t)(MCU_MUTE_BASE + strip), mute);
     else
         HUI_SendLED(strip, 1, mute); // zone=strip, port=1 (mute)
@@ -449,7 +540,9 @@ void TransCSurf::SetSurfaceSolo(MediaTrack* tr, bool solo)
     if (strip < 0 || !m_midiOut) return;
     if (m_lastSolo[strip] == solo) return;
     m_lastSolo[strip] = solo;
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::FP16)
+        MCU_SendLED(FP16_SoloNote(strip), solo);
+    else if (m_s.proto == CSurfProtocol::MCU)
         MCU_SendLED((uint8_t)(MCU_SOLO_BASE + strip), solo);
     else
         HUI_SendLED(strip, 2, solo); // zone=strip, port=2 (solo)
@@ -461,7 +554,12 @@ void TransCSurf::SetSurfaceRecArm(MediaTrack* tr, bool recarm)
     if (strip < 0 || !m_midiOut) return;
     if (m_lastRecArm[strip] == recarm) return;
     m_lastRecArm[strip] = recarm;
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::FP16)
+    {
+        if (strip < 7)  // note 0x07 conflicts with Select strip 8; strips 7-15 ARM note unknown
+            MCU_SendLED((uint8_t)(0x00 + strip), recarm);
+    }
+    else if (m_s.proto == CSurfProtocol::MCU)
         MCU_SendLED((uint8_t)(MCU_REC_BASE + strip), recarm);
     else
         HUI_SendLED(strip, 0, recarm); // zone=strip, port=0 (rec)
@@ -473,7 +571,21 @@ void TransCSurf::SetSurfaceSelected(MediaTrack* tr, bool selected)
     if (strip < 0 || !m_midiOut) return;
     if (m_lastSelect[strip] == selected) return;
     m_lastSelect[strip] = selected;
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::FP16)
+    {
+        int r = 127, g = 127, b = 127;
+        if (selected && tr)
+        {
+            int col = GetTrackColor ? GetTrackColor(tr) : 0;
+            if (col)
+            {
+                if (ColorFromNative) ColorFromNative(col, &r, &g, &b);
+                else { r = (col >> 16) & 0xFF; g = (col >> 8) & 0xFF; b = col & 0xFF; }
+            }
+        }
+        FP16_SendSelectColor(strip, selected, r, g, b);
+    }
+    else if (m_s.proto == CSurfProtocol::MCU)
         MCU_SendLED((uint8_t)(MCU_SEL_BASE + strip), selected);
     else
         HUI_SendLED(strip, 4, selected); // zone=strip, port=4 (select)
@@ -494,15 +606,21 @@ void TransCSurf::SetRepeatState(bool rep)
     if (!m_midiOut) return;
     if (m_lastRepeat == rep) return;
     m_lastRepeat = rep;
-    if (m_s.proto == CSurfProtocol::MCU)
-        MCU_SendLED(MCU_BTN_LOOP, rep);
+    if (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16)
+        MCU_SendLED(MCU_BTN_LOOP, rep);  // LOOP = 0x56, same in both protocols
 }
 
 void TransCSurf::SetTrackTitle(MediaTrack* tr, const char* title)
 {
     int strip = GetStripForTrack(tr);
     if (strip < 0 || !m_midiOut || !m_s.showNames) return;
-    if (m_s.proto == CSurfProtocol::MCU)
+    if (m_s.proto == CSurfProtocol::FP16)
+    {
+        char bot[8];
+        snprintf(bot, sizeof(bot), "T%-2d", m_bankOffset + strip + 1);
+        FP16_SendScribble(strip, title ? title : "", bot);
+    }
+    else if (m_s.proto == CSurfProtocol::MCU)
     {
         // Get second row: track index label
         char bot[8];
@@ -552,24 +670,36 @@ void TransCSurf::RefreshAll()
 
     int nCh = m_s.channelCount;
 
+    // FP16: initialize scribble display modes before sending strip content
+    if (m_s.proto == CSurfProtocol::FP16)
+    {
+        for (int i = 0; i < nCh; ++i)
+            FP16_SendScribbleMode(i, 2); // mode 2 = standard 2-row display
+    }
+
     for (int strip = 0; strip < nCh; ++strip)
     {
         MediaTrack* tr = GetTrackForStrip(strip);
 
-        // --- Volume ---
+        // --- Volume (pitch bend, same format for MCU and FP16) ---
         double vol = tr ? *(double*)GetSetMediaTrackInfo(tr, "D_VOL", nullptr) : 0.0;
-        if (m_s.proto == CSurfProtocol::MCU) MCU_SendFader(strip, vol);
-        else                                  HUI_SendFader(strip, vol);
+        if (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16)
+            MCU_SendFader(strip, vol);
+        else
+            HUI_SendFader(strip, vol);
         m_lastSentVol[strip] = vol;
 
         // --- Pan ---
         double pan = tr ? *(double*)GetSetMediaTrackInfo(tr, "D_PAN", nullptr) : 0.0;
-        if (m_s.proto == CSurfProtocol::MCU) MCU_SendPanEncoder(strip, pan);
+        if (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16)
+            MCU_SendPanEncoder(strip, pan);
 
         // --- Mute LED ---
         bool mute = tr ? (*(int*)GetSetMediaTrackInfo(tr, "B_MUTE", nullptr) != 0) : false;
         m_lastMute[strip] = mute;
-        if (m_s.proto == CSurfProtocol::MCU)
+        if (m_s.proto == CSurfProtocol::FP16)
+            MCU_SendLED(FP16_MuteNote(strip), mute);
+        else if (m_s.proto == CSurfProtocol::MCU)
             MCU_SendLED((uint8_t)(MCU_MUTE_BASE + strip), mute);
         else
             HUI_SendLED(strip, 1, mute);
@@ -577,7 +707,9 @@ void TransCSurf::RefreshAll()
         // --- Solo LED ---
         bool solo = tr ? (*(int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr) != 0) : false;
         m_lastSolo[strip] = solo;
-        if (m_s.proto == CSurfProtocol::MCU)
+        if (m_s.proto == CSurfProtocol::FP16)
+            MCU_SendLED(FP16_SoloNote(strip), solo);
+        else if (m_s.proto == CSurfProtocol::MCU)
             MCU_SendLED((uint8_t)(MCU_SOLO_BASE + strip), solo);
         else
             HUI_SendLED(strip, 2, solo);
@@ -585,7 +717,13 @@ void TransCSurf::RefreshAll()
         // --- RecArm LED ---
         bool recarm = tr ? (*(int*)GetSetMediaTrackInfo(tr, "I_RECARM", nullptr) != 0) : false;
         m_lastRecArm[strip] = recarm;
-        if (m_s.proto == CSurfProtocol::MCU)
+        if (m_s.proto == CSurfProtocol::FP16)
+        {
+            if (strip < 7)  // note 0x07 conflicts with Select strip 8
+                MCU_SendLED((uint8_t)(0x00 + strip), recarm);
+            // strips 7-15 ARM note unknown in native mode — skip
+        }
+        else if (m_s.proto == CSurfProtocol::MCU)
             MCU_SendLED((uint8_t)(MCU_REC_BASE + strip), recarm);
         else
             HUI_SendLED(strip, 0, recarm);
@@ -593,19 +731,42 @@ void TransCSurf::RefreshAll()
         // --- Select LED ---
         bool sel = tr ? (*(int*)GetSetMediaTrackInfo(tr, "I_SELECTED", nullptr) != 0) : false;
         m_lastSelect[strip] = sel;
-        if (m_s.proto == CSurfProtocol::MCU)
+        if (m_s.proto == CSurfProtocol::FP16)
+        {
+            int r = 127, g = 127, b = 127;
+            if (sel && tr)
+            {
+                int col = GetTrackColor ? GetTrackColor(tr) : 0;
+                if (col)
+                {
+                    if (ColorFromNative) ColorFromNative(col, &r, &g, &b);
+                    else { r = (col >> 16) & 0xFF; g = (col >> 8) & 0xFF; b = col & 0xFF; }
+                }
+            }
+            FP16_SendSelectColor(strip, sel, r, g, b);
+        }
+        else if (m_s.proto == CSurfProtocol::MCU)
             MCU_SendLED((uint8_t)(MCU_SEL_BASE + strip), sel);
         else
             HUI_SendLED(strip, 4, sel);
 
         // --- Track name (scribble) ---
-        if (m_s.showNames && m_s.proto == CSurfProtocol::MCU)
+        if (m_s.showNames && (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16))
         {
             char name[128] = "";
             if (tr) GetTrackName(tr, name, (int)sizeof(name));
-            char bot[8];
-            snprintf(bot, sizeof(bot), "Trk %d", m_bankOffset + strip + 1);
-            MCU_SendScribble(strip, name, bot);
+            if (m_s.proto == CSurfProtocol::FP16)
+            {
+                char bot[8];
+                snprintf(bot, sizeof(bot), "T%-2d", m_bankOffset + strip + 1);
+                FP16_SendScribble(strip, name, bot);
+            }
+            else
+            {
+                char bot[8];
+                snprintf(bot, sizeof(bot), "Trk %d", m_bankOffset + strip + 1);
+                MCU_SendScribble(strip, name, bot);
+            }
         }
     }
 
@@ -648,11 +809,21 @@ void TransCSurf::RefreshAll()
 
     if (m_lastAutoMode >= 0)
         RefreshAutoLEDs(m_lastAutoMode);
+
+    // Assign-section button LEDs (TRACK/SEND/PAN)
+    if (m_s.proto == CSurfProtocol::MCU)
+    {
+        MCU_SendLED(0x28, m_s.faderMode == 0); // TRACK = volume
+        MCU_SendLED(0x29, m_s.faderMode == 2); // SEND
+        MCU_SendLED(0x2A, m_s.faderMode == 1); // PAN
+    }
 }
 
 void TransCSurf::RefreshTransport()
 {
-    if (!m_midiOut || m_s.proto != CSurfProtocol::MCU) return;
+    if (!m_midiOut) return;
+    if (m_s.proto != CSurfProtocol::MCU && m_s.proto != CSurfProtocol::FP16) return;
+    // Transport note numbers are identical for MCU and FP16 native
     MCU_SendLED(MCU_BTN_PLAY,  m_lastPlay && !m_lastPause);
     MCU_SendLED(MCU_BTN_STOP,  !m_lastPlay);
     MCU_SendLED(MCU_BTN_REC,   m_lastRec);
@@ -674,7 +845,7 @@ void TransCSurf::RefreshAutoLEDs(int mode)
 // ---------------------------------------------------------------------------
 // MCU MIDI processing
 // ---------------------------------------------------------------------------
-void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev)
+void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev, int stripOffset)
 {
     if (!ev || ev->size < 1) return;
     uint8_t st = ev->midi_message[0];
@@ -687,12 +858,15 @@ void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev)
     // ---- Fader move (pitch bend per channel) --------------------------------
     if (status == 0xE0)
     {
-        int strip = chan;
-        if (strip >= m_s.channelCount) return;
+        int strip = chan + stripOffset;
+        if (strip < 0 || strip >= 16 || strip >= m_s.channelCount + stripOffset) return;
+        // Only process fader moves while the surface reports it is being touched.
+        // This prevents a spurious PB=0 sent on release from zeroing the track.
+        if (!m_touchState[strip]) return;
         int fader14 = (int)d1 | ((int)d2 << 7);
         double vol = Fader14ToVol(fader14);
         m_lastFaderMove[strip] = time_precise();
-        MediaTrack* tr = GetTrackForStrip(strip);
+        MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
         if (tr)
             GetSetMediaTrackInfo(tr, "D_VOL", &vol);
         return;
@@ -702,17 +876,25 @@ void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev)
     if (status == 0x90)
     {
         bool down = (d2 > 0);
-        MCU_SetButtonAction(d1, down);
+        MCU_SetButtonAction(d1, down, stripOffset);
         return;
     }
 
     // ---- CC (V-Pot encoder rotation) ---------------------------------------
     if (status == 0xB0)
     {
+        // Master jog wheel (CC 0x3C) — scrub or seek based on scrub-mode state
+        if (d1 == 0x3C && CSurf_OnRewFwd)
+        {
+            int delta = (d2 >= 0x41) ? (int)(0x40 - d2) : (int)d2;
+            CSurf_OnRewFwd(!!(m_arrowStates & 128), delta);
+            return;
+        }
+
         if (d1 >= MCU_CC_VPOT_BASE && d1 < MCU_CC_VPOT_BASE + m_s.channelCount)
         {
-            int strip = d1 - MCU_CC_VPOT_BASE;
-            MediaTrack* tr = GetTrackForStrip(strip);
+            int strip = d1 - MCU_CC_VPOT_BASE + stripOffset;
+            MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
             if (!tr) return;
             // Relative encoder: bit 6 set = decrement, bits 0-5 = steps
             bool dec   = (d2 & 0x40) != 0;
@@ -726,30 +908,55 @@ void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev)
     }
 }
 
-void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down)
+void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down, int stripOffset)
 {
-    if (!down) return; // act on press only (except for touch notes)
+    int nCh = std::min(m_s.channelCount, 8); // MCU note groups are always 8-wide per port
 
-    int nCh = m_s.channelCount;
+    // ---- Handlers that fire on BOTH press AND release ----------------------
 
-    // Fader touch (act on both press and release)
+    // Fader touch
     if (note >= MCU_TOUCH_BASE && note < MCU_TOUCH_BASE + nCh)
     {
-        int strip = note - MCU_TOUCH_BASE;
-        // Retrieve actual down/up from velocity in caller, but we only get note here.
-        // The caller already filtered: down=true means press, down=false means release.
-        // We need to re-check the velocity, but we only have 'note' here; callers
-        // should pass velocity. Work around: we use the 'down' argument passed in Run().
-        // Since we only call MCU_SetButtonAction from Run() which passes down=(d2>0):
-        m_touchState[strip] = down;  // down is passed via the outer context
+        int strip = note - MCU_TOUCH_BASE + stripOffset;
+        if (strip >= 0 && strip < 16)
+            m_touchState[strip] = down;
         return;
     }
 
-    // --- Rec arm (strip 0-15) ---
+    // Cursor keys (0x60-0x63) — held state polled in Run()
+    if (note >= 0x60 && note <= 0x63)
+    {
+        int bit = 1 << (note - 0x60);
+        if (down) m_arrowStates |= bit;
+        else      m_arrowStates &= ~bit;
+        return;
+    }
+
+    // REW / FFW — held state polled in Run()
+    if (note == MCU_BTN_REW) { m_rewFwdHeld = down ? -1 : 0; return; }
+    if (note == MCU_BTN_FFW) { m_rewFwdHeld = down ? +1 : 0; return; }
+
+    // ZOOM toggle (lights LED when active)
+    if (note == 0x64)
+    {
+        if (down) { m_arrowStates ^= 64; MCU_SendLED(0x64, !!(m_arrowStates & 64)); }
+        return;
+    }
+
+    // SCRUB toggle (lights LED when active)
+    if (note == 0x65)
+    {
+        if (down) { m_arrowStates ^= 128; MCU_SendLED(0x65, !!(m_arrowStates & 128)); }
+        return;
+    }
+
+    if (!down) return; // remaining actions fire on press only
+
+    // --- Rec arm (strip 0-7 per device) ---
     if (note >= MCU_REC_BASE && note < (uint8_t)(MCU_REC_BASE + nCh))
     {
-        int strip = note - MCU_REC_BASE;
-        MediaTrack* tr = GetTrackForStrip(strip);
+        int strip = note - MCU_REC_BASE + stripOffset;
+        MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
         if (!tr) return;
         int arm = *(int*)GetSetMediaTrackInfo(tr, "I_RECARM", nullptr);
         arm = arm ? 0 : 1;
@@ -757,11 +964,11 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down)
         return;
     }
 
-    // --- Solo (strip 0-15) ---
+    // --- Solo (strip 0-7 per device) ---
     if (note >= MCU_SOLO_BASE && note < (uint8_t)(MCU_SOLO_BASE + nCh))
     {
-        int strip = note - MCU_SOLO_BASE;
-        MediaTrack* tr = GetTrackForStrip(strip);
+        int strip = note - MCU_SOLO_BASE + stripOffset;
+        MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
         if (!tr) return;
         int solo = *(int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
         solo = solo ? 0 : 2; // 0=no solo, 2=solo
@@ -769,11 +976,11 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down)
         return;
     }
 
-    // --- Mute (strip 0-15) ---
+    // --- Mute (strip 0-7 per device) ---
     if (note >= MCU_MUTE_BASE && note < (uint8_t)(MCU_MUTE_BASE + nCh))
     {
-        int strip = note - MCU_MUTE_BASE;
-        MediaTrack* tr = GetTrackForStrip(strip);
+        int strip = note - MCU_MUTE_BASE + stripOffset;
+        MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
         if (!tr) return;
         bool mute = *(bool*)GetSetMediaTrackInfo(tr, "B_MUTE", nullptr);
         mute = !mute;
@@ -781,24 +988,73 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down)
         return;
     }
 
-    // --- Select (strip 0-15) ---
+    // --- Select (strip 0-7 per device) ---
     if (note >= MCU_SEL_BASE && note < (uint8_t)(MCU_SEL_BASE + nCh))
     {
-        int strip = note - MCU_SEL_BASE;
-        MediaTrack* tr = GetTrackForStrip(strip);
+        int strip = note - MCU_SEL_BASE + stripOffset;
+        MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
         if (!tr) return;
         int sel = 1;
         GetSetMediaTrackInfo(tr, "I_SELECTED", &sel);
         return;
     }
 
+    // --- Assign section: TRACK/SEND/PAN/PLUGIN/EQ/INSTRUMENT (0x28-0x2D) ---
+    if (note >= 0x28 && note <= 0x2D)
+    {
+        if      (note == 0x28) m_s.faderMode = 0; // TRACK → volume
+        else if (note == 0x29) m_s.faderMode = 2; // SEND
+        else if (note == 0x2A) m_s.faderMode = 1; // PAN
+        else // 0x2B PLUGIN, 0x2C EQ, 0x2D INSTRUMENT → show FX chain for selected track
+        {
+            if (GetSelectedTrack && TrackFX_Show)
+            {
+                MediaTrack* selTr = GetSelectedTrack(nullptr, 0);
+                if (selTr) TrackFX_Show(selTr, 0, 1);
+            }
+            return;
+        }
+        // Update assign-section button LEDs
+        MCU_SendLED(0x28, m_s.faderMode == 0);
+        MCU_SendLED(0x29, m_s.faderMode == 2);
+        MCU_SendLED(0x2A, m_s.faderMode == 1);
+        RefreshAll();
+        return;
+    }
+
+    // --- Automation mode: READ/WRITE/TRIM/TOUCH/LATCH (0x4A-0x4E) ---
+    if (note >= 0x4A && note <= 0x4E && SetGlobalAutomationOverride)
+    {
+        // MCU note → REAPER global auto mode value: 0=Trim 1=Read 2=Touch 3=Write 4=Latch
+        static const int kAutoModes[] = { 1, 3, 0, 2, 4 }; // 0x4A, 0x4B, 0x4C, 0x4D, 0x4E
+        int mode = kAutoModes[note - 0x4A];
+        SetGlobalAutomationOverride(mode);
+        RefreshAutoLEDs(mode);
+        return;
+    }
+
+    // --- Clear all solos (MCU standard CLEAR SOLO = 0x5A) ---
+    if (note == 0x5A)
+    {
+        int n = GetNumTracks();
+        for (int i = 0; i < n; ++i)
+        {
+            MediaTrack* tr = GetTrack(nullptr, i);
+            if (tr) { int s = 0; GetSetMediaTrackInfo(tr, "I_SOLO", &s); }
+        }
+        RefreshAll();
+        return;
+    }
+
     // --- Transport ---
-    if (note == MCU_BTN_PLAY)  { Main_OnCommand(1007, 0); return; } // Play
-    if (note == MCU_BTN_STOP)  { Main_OnCommand(1016, 0); return; } // Stop
-    if (note == MCU_BTN_REC)   { Main_OnCommand(1013, 0); return; } // Record
-    if (note == MCU_BTN_REW)   { Main_OnCommand(1014, 0); return; } // Rewind
-    if (note == MCU_BTN_FFW)   { Main_OnCommand(1015, 0); return; } // Fast Forward
-    if (note == MCU_BTN_LOOP)  { Main_OnCommand(1068, 0); return; } // Toggle repeat
+    if (note == MCU_BTN_PLAY) { if (CSurf_OnPlay)   CSurf_OnPlay();   return; }
+    if (note == MCU_BTN_STOP) { if (CSurf_OnStop)   CSurf_OnStop();   return; }
+    if (note == MCU_BTN_REC)  { if (CSurf_OnRecord) CSurf_OnRecord(); return; }
+    if (note == MCU_BTN_LOOP) { Main_OnCommand(1068, 0); return; } // Toggle repeat
+
+    // --- Marker / Click ---
+    if (note == 0x54) { Main_OnCommand(40157, 0); return; } // add marker at cursor
+    if (note == 0x59) { Main_OnCommand(40364, 0); return; } // toggle metronome
 
     // --- Banking ---
     if (note == MCU_BTN_BANK_L) { BankLeft();    return; }
@@ -812,22 +1068,21 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down)
 // ---------------------------------------------------------------------------
 void TransCSurf::SendMIDI(uint8_t b0, uint8_t b1, uint8_t b2)
 {
-    if (m_midiOut)
-        m_midiOut->Send(b0, b1, b2, -1);
+    if (m_midiOut)  m_midiOut->Send(b0, b1, b2, -1);
+    if (m_midiOut2 && m_s.proto != CSurfProtocol::FP16) m_midiOut2->Send(b0, b1, b2, -1);
 }
 
 void TransCSurf::SendSysEx(const uint8_t* data, int len)
 {
-    if (!m_midiOut || len <= 0) return;
-    // MIDI_event_t has a fixed 4-byte midi_message[] but size indicates the real length.
-    // Allocate a variable-length event on the stack.
+    if ((!m_midiOut && !m_midiOut2) || len <= 0) return;
     int allocSize = (int)sizeof(MIDI_event_t) - 4 + len;
     void* buf = _alloca((size_t)allocSize);
     MIDI_event_t* ev = (MIDI_event_t*)buf;
     ev->frame_offset = -1;
     ev->size = len;
     memcpy(ev->midi_message, data, (size_t)len);
-    m_midiOut->SendMsg(ev, -1);
+    if (m_midiOut)  m_midiOut->SendMsg(ev, -1);
+    if (m_midiOut2 && m_s.proto != CSurfProtocol::FP16) m_midiOut2->SendMsg(ev, -1);
 }
 
 void TransCSurf::MCU_SendFader(int strip, double vol)
@@ -917,9 +1172,280 @@ void TransCSurf::MCU_SendReset()
 }
 
 // ---------------------------------------------------------------------------
+// FP16 native (Studio One) protocol – MIDI processing
+// ---------------------------------------------------------------------------
+void TransCSurf::FP16_ProcessMIDI(const MIDI_event_t* ev)
+{
+    if (!ev || ev->size < 1) return;
+    uint8_t st = ev->midi_message[0];
+    uint8_t d1 = ev->size > 1 ? ev->midi_message[1] : 0;
+    uint8_t d2 = ev->size > 2 ? ev->midi_message[2] : 0;
+    uint8_t status = st & 0xF0;
+    uint8_t chan   = st & 0x0F;
+
+    // Fader move: pitch bend channels 0-15 = strips 0-15
+    if (status == 0xE0)
+    {
+        int strip = (int)chan;
+        if (strip >= m_s.channelCount) return;
+        if (!m_touchState[strip]) return; // ignore spurious PB=0 on release
+        int fader14 = (int)d1 | ((int)d2 << 7);
+        double vol = Fader14ToVol(fader14);
+        m_lastFaderMove[strip] = time_precise();
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (tr) GetSetMediaTrackInfo(tr, "D_VOL", &vol);
+        return;
+    }
+
+    // Note On / Note Off — handle both (some FP16 firmware sends 0x80 for release)
+    if ((st & 0xF0) == 0x90 || (st & 0xF0) == 0x80)
+    {
+        bool down = ((st & 0xF0) == 0x90 && d2 > 0);
+        FP16_SetButtonAction(d1, down);
+        return;
+    }
+
+    // CC: V-Pots (0x10-0x1F) and jog wheel (0x3C)
+    if (status == 0xB0)
+    {
+        if (d1 == 0x3C && CSurf_OnRewFwd)
+        {
+            int delta = (d2 >= 0x41) ? (int)(0x40 - d2) : (int)d2;
+            CSurf_OnRewFwd(!!(m_arrowStates & 128), delta);
+            return;
+        }
+        if (d1 >= MCU_CC_VPOT_BASE && d1 < (uint8_t)(MCU_CC_VPOT_BASE + m_s.channelCount))
+        {
+            int strip = d1 - MCU_CC_VPOT_BASE;
+            MediaTrack* tr = GetTrackForStrip(strip);
+            if (!tr) return;
+            bool dec   = (d2 & 0x40) != 0;
+            int  steps = (d2 & 0x3F);
+            double pan = *(double*)GetSetMediaTrackInfo(tr, "D_PAN", nullptr);
+            pan += (dec ? -1.0 : 1.0) * (double)steps * 0.015;
+            pan = std::max(-1.0, std::min(1.0, pan));
+            GetSetMediaTrackInfo(tr, "D_PAN", &pan);
+        }
+        return;
+    }
+}
+
+void TransCSurf::FP16_SetButtonAction(uint8_t note, bool down)
+{
+    // Fader touch (contiguous for all 16 strips: 0x68-0x77)
+    if (note >= 0x68 && note <= 0x77)
+    {
+        int strip = note - 0x68;
+        if (strip < 16) m_touchState[strip] = down;
+        return;
+    }
+
+    // Cursor keys (0x60-0x63) — held state polled in Run()
+    if (note >= 0x60 && note <= 0x63)
+    {
+        int bit = 1 << (note - 0x60);
+        if (down) m_arrowStates |= bit;
+        else      m_arrowStates &= ~bit;
+        return;
+    }
+
+    // REW / FFW hold
+    if (note == MCU_BTN_REW) { m_rewFwdHeld = down ? -1 : 0; return; }
+    if (note == MCU_BTN_FFW) { m_rewFwdHeld = down ? +1 : 0; return; }
+
+    // ZOOM toggle (FP16 native note = 0x37)
+    if (note == 0x37)
+    {
+        if (down) { m_arrowStates ^= 64; MCU_SendLED(0x37, !!(m_arrowStates & 64)); }
+        return;
+    }
+
+    // SCRUB toggle (FP16 native note = 0x3A – MASTER button)
+    if (note == 0x3A)
+    {
+        if (down) { m_arrowStates ^= 128; MCU_SendLED(0x3A, !!(m_arrowStates & 128)); }
+        return;
+    }
+
+    if (!down) return; // remaining actions fire on press only
+
+    // RecArm strips 0-6 (notes 0x00-0x06)
+    if (note <= 0x06)
+    {
+        int strip = note;
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (!tr) return;
+        int arm = *(int*)GetSetMediaTrackInfo(tr, "I_RECARM", nullptr);
+        arm = arm ? 0 : 1;
+        GetSetMediaTrackInfo(tr, "I_RECARM", &arm);
+        return;
+    }
+
+    // Solo strips 0-7 (0x08-0x0F)
+    if (note >= 0x08 && note <= 0x0F)
+    {
+        int strip = note - 0x08;
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (!tr) return;
+        int solo = *(int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
+        solo = solo ? 0 : 2;
+        GetSetMediaTrackInfo(tr, "I_SOLO", &solo);
+        return;
+    }
+
+    // Mute strips 0-7 (0x10-0x17)
+    if (note >= 0x10 && note <= 0x17)
+    {
+        int strip = note - 0x10;
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (!tr) return;
+        bool mute = *(bool*)GetSetMediaTrackInfo(tr, "B_MUTE", nullptr);
+        mute = !mute;
+        GetSetMediaTrackInfo(tr, "B_MUTE", &mute);
+        return;
+    }
+
+    // SELECT buttons: deselect all first so automation only writes to the new track
+    auto selectOnly = [&](MediaTrack* tr) {
+        if (!tr) return;
+        Main_OnCommand(40297, 0); // Track: Unselect all tracks
+        int s = 1; GetSetMediaTrackInfo(tr, "I_SELECTED", &s);
+    };
+
+    // Select strips 0-7 (0x18-0x1F)
+    if (note >= 0x18 && note <= 0x1F)
+    {
+        selectOnly(GetTrackForStrip(note - 0x18));
+        return;
+    }
+
+    // Select strip 8 (note 0x07 – same byte as RecArm strip 7 in MCU, handled separately here)
+    if (note == 0x07)
+    {
+        selectOnly(GetTrackForStrip(8));
+        return;
+    }
+
+    // Select strips 9-15 (0x21-0x27)
+    if (note >= 0x21 && note <= 0x27)
+    {
+        selectOnly(GetTrackForStrip(note - 0x21 + 9));
+        return;
+    }
+
+    // Solo strips 8-15 (0x50-0x57)
+    if (note >= 0x50 && note <= 0x57)
+    {
+        int strip = note - 0x50 + 8;
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (!tr) return;
+        int solo = *(int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
+        solo = solo ? 0 : 2;
+        GetSetMediaTrackInfo(tr, "I_SOLO", &solo);
+        return;
+    }
+
+    // Mute strips 8-15 (0x78-0x7F)
+    if (note >= 0x78 && note <= 0x7F)
+    {
+        int strip = note - 0x78 + 8;
+        MediaTrack* tr = GetTrackForStrip(strip);
+        if (!tr) return;
+        bool mute = *(bool*)GetSetMediaTrackInfo(tr, "B_MUTE", nullptr);
+        mute = !mute;
+        GetSetMediaTrackInfo(tr, "B_MUTE", &mute);
+        return;
+    }
+
+    // Transport (same note numbers as MCU)
+    if (note == MCU_BTN_PLAY) { if (CSurf_OnPlay)   CSurf_OnPlay();   return; }
+    if (note == MCU_BTN_STOP) { if (CSurf_OnStop)   CSurf_OnStop();   return; }
+    if (note == MCU_BTN_REC)  { if (CSurf_OnRecord) CSurf_OnRecord(); return; }
+    if (note == MCU_BTN_LOOP) { Main_OnCommand(1068, 0); return; } // Toggle repeat
+
+    // CLICK / metronome (FP16 native = 0x3B)
+    if (note == 0x3B) { Main_OnCommand(40364, 0); return; }
+
+    // MARKER (FP16 native = 0x3D)
+    if (note == 0x3D) { Main_OnCommand(40157, 0); return; }
+
+    // Banking (FP16 uses same notes as MCU)
+    if (note == MCU_BTN_BANK_L) { BankLeft();    return; }
+    if (note == MCU_BTN_BANK_R) { BankRight();   return; }
+    if (note == MCU_BTN_CH_L)   { ChannelLeft(); return; }
+    if (note == MCU_BTN_CH_R)   { ChannelRight();return; }
+}
+
+// ---------------------------------------------------------------------------
+// FP16 MIDI output helpers
+// ---------------------------------------------------------------------------
+
+// SELECT button RGB: 4-message protocol on MIDI channels 0-3
+void TransCSurf::FP16_SendSelectColor(int strip, bool on, int r, int g, int b)
+{
+    if (strip < 0 || strip >= 16) return;
+    uint8_t note = FP16_SelectNote(strip);
+    if (!on)
+    {
+        SendMIDI(0x90, note, 0x00);
+        return;
+    }
+    SendMIDI(0x90, note, 0x7F);             // activate LED
+    SendMIDI(0x91, note, (uint8_t)(r / 2)); // red   (8-bit → 7-bit)
+    SendMIDI(0x92, note, (uint8_t)(g / 2)); // green
+    SendMIDI(0x93, note, (uint8_t)(b / 2)); // blue
+}
+
+// Scribble strip text line
+// SysEx: F0 00 01 06 16 12 <ch> <row> <align> <ASCII...> F7
+void TransCSurf::FP16_SendScribble(int strip, const char* row0, const char* row1)
+{
+    if (!m_midiOut || strip < 0 || strip >= 16) return;
+    auto sendRow = [&](int row, const char* text)
+    {
+        uint8_t buf[64];
+        int i = 0;
+        buf[i++] = 0xF0; buf[i++] = 0x00; buf[i++] = 0x01; buf[i++] = 0x06;
+        buf[i++] = 0x16; // FaderPort16 device
+        buf[i++] = 0x12; // text command
+        buf[i++] = (uint8_t)strip;
+        buf[i++] = (uint8_t)row;
+        buf[i++] = 0x01; // left-align
+        int len = text ? (int)strlen(text) : 0;
+        len = std::min(len, 30);
+        for (int j = 0; j < len; ++j)
+            buf[i++] = (uint8_t)(text[j] & 0x7F);
+        buf[i++] = 0xF7;
+        SendSysEx(buf, i);  // FP16 guard in SendSysEx skips midiOut2 automatically
+    };
+    sendRow(0, row0 ? row0 : "");
+    sendRow(1, row1 ? row1 : "");
+}
+
+// Scribble strip display mode
+// SysEx: F0 00 01 06 16 13 <ch> <mode> F7
+void TransCSurf::FP16_SendScribbleMode(int strip, int mode)
+{
+    if (strip < 0 || strip >= 16) return;
+    uint8_t buf[] = { 0xF0, 0x00, 0x01, 0x06, 0x16, 0x13,
+                      (uint8_t)strip, (uint8_t)mode, 0xF7 };
+    SendSysEx(buf, (int)sizeof(buf));
+}
+
+// VU meter: channel pressure for strips 0-7, program change for strips 8-15
+void TransCSurf::FP16_SendVU(int strip, int level_0_127)
+{
+    uint8_t val = (uint8_t)std::max(0, std::min(127, level_0_127));
+    if (strip < 8)
+        SendMIDI((uint8_t)(0xD0 | strip), val, 0);
+    else
+        SendMIDI((uint8_t)(0xC0 | (strip - 8)), val, 0);
+}
+
+// ---------------------------------------------------------------------------
 // HUI MIDI processing
 // ---------------------------------------------------------------------------
-void TransCSurf::HUI_ProcessMIDI(const MIDI_event_t* ev)
+void TransCSurf::HUI_ProcessMIDI(const MIDI_event_t* ev, int stripOffset)
 {
     if (!ev || ev->size < 2) return;
     uint8_t st = ev->midi_message[0];

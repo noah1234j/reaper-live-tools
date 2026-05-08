@@ -72,6 +72,7 @@
 #define REAPERAPI_WANT_GetOutputChannelName
 #define REAPERAPI_WANT_GetExtState
 #define REAPERAPI_WANT_SetExtState
+#define REAPERAPI_WANT_CSurf_SetSurfaceSolo   // push solo LED state to all surfaces without changing I_SOLO
 
 // MIDI I/O (for control surface)
 #define REAPERAPI_WANT_CreateMIDIInput
@@ -83,20 +84,27 @@
 
 // Transport / selection helpers (for control surface)
 #define REAPERAPI_WANT_Main_OnCommand
+#define REAPERAPI_WANT_GetSelectedTrack
+#define REAPERAPI_WANT_TrackFX_Show
 #define REAPERAPI_WANT_CSurf_NumTracks
 #define REAPERAPI_WANT_CSurf_TrackFromID
 #define REAPERAPI_WANT_CSurf_TrackToID
 #define REAPERAPI_WANT_GetTrackColor
 #define REAPERAPI_WANT_ColorFromNative
 
-// Live Monitor – latency / PDC queries
+// Live Monitor – latency / PDC queries + RT CPU audio hook
 #define REAPERAPI_WANT_GetInputOutputLatency
 #define REAPERAPI_WANT_GetAudioDeviceInfo
 #define REAPERAPI_WANT_TrackFX_GetNamedConfigParm
+#define REAPERAPI_WANT_Audio_RegHardwareHook
+
+// Meter Bridge – live peak metering
+#define REAPERAPI_WANT_Track_GetPeakInfo
 
 // Live Optimizer – system/REAPER checks
 #define REAPERAPI_WANT_Audio_IsRunning
 #define REAPERAPI_WANT_Audio_Init
+#define REAPERAPI_WANT_get_config_var          // raw in-memory pointer (int/string vars)
 #define REAPERAPI_WANT_get_config_var_string
 #define REAPERAPI_WANT_get_ini_file
 #define REAPERAPI_WANT_GetGlobalAutomationOverride
@@ -110,5 +118,12 @@
 #define REAPERAPI_WANT_DockWindowRemove
 #define REAPERAPI_WANT_DockWindowActivate
 #define REAPERAPI_WANT_DockIsChildOfDock
+
+// Transport / navigation (control surface)
+#define REAPERAPI_WANT_CSurf_OnPlay
+#define REAPERAPI_WANT_CSurf_OnStop
+#define REAPERAPI_WANT_CSurf_OnRecord
+#define REAPERAPI_WANT_CSurf_OnRewFwd
+#define REAPERAPI_WANT_CSurf_OnArrow
 
 #include "reaper_plugin_functions.h"

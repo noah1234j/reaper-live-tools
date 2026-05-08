@@ -75,9 +75,12 @@ add_library(reaper_transitions SHARED
   LayoutsWnd.cpp
   PaflWnd.cpp
   MonitorWnd.cpp
+  MeterBridgeWnd.cpp
   ControlSurface.cpp
   CSurfConfigDlg.cpp
   LiveOptimizeWnd.cpp
+  LiveLockEngine.cpp
+  LiveLockWnd.cpp
   reaper_transitions.rc
 )
 

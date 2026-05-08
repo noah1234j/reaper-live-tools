@@ -19,61 +19,64 @@
 //   Right (x 158-255) : editor + transition controls  (~97 DU wide)
 // ---------------------------------------------------------------------------
 
-IDD_TSNAPS DIALOGEX 0, 0, 258, 300
+IDD_TSNAPS DIALOGEX 0, 0, 258, 315
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Scenes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-    LTEXT           "", IDC_LIST, 5, 3, 148, 292
+    LTEXT           "", IDC_LIST, 5, 3, 148, 307
 
-    // ---- Top action buttons (2 rows × 2) ----------------------------------
-    PUSHBUTTON      "&New",   IDC_SAVE,       158,  3, 46, 13
-    PUSHBUTTON      "Recall", IDC_RECALL,     207,  3, 48, 13
+    // ---- Top action buttons (3 rows × 2) ----------------------------------
+    PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
+    PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
 
-    PUSHBUTTON      "Copy",   IDC_COPY_SNAP,  158, 18, 46, 13
-    PUSHBUTTON      "Paste",  IDC_PASTE_SNAP, 207, 18, 48, 13
+    PUSHBUTTON      "Copy",       IDC_COPY_SNAP,    158, 18, 46, 13
+    PUSHBUTTON      "Paste",      IDC_PASTE_SNAP,   207, 18, 48, 13
+
+    PUSHBUTTON      "Overwrite",  IDC_OVERWRITE_BTN, 158, 33, 46, 13
+    PUSHBUTTON      "Delete",     IDC_DELETE_BTN,   207, 33, 48, 13
 
     // ---- Snapshot editor --------------------------------------------------
-    LTEXT           "Name:",  IDC_STATIC,     158, 35, 22,  8
-    EDITTEXT        IDC_SNAPNAME,             182, 33, 73, 12, ES_AUTOHSCROLL
+    LTEXT           "Name:",  IDC_STATIC,     158, 50, 22,  8
+    EDITTEXT        IDC_SNAPNAME,             182, 48, 73, 12, ES_AUTOHSCROLL
 
-    LTEXT           "Notes:", IDC_STATIC,     158, 49, 24,  8
-    EDITTEXT        IDC_SNAPNOTES,            158, 59, 97, 36,
+    LTEXT           "Notes:", IDC_STATIC,     158, 64, 24,  8
+    EDITTEXT        IDC_SNAPNOTES,            158, 74, 97, 36,
                     ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER
 
     // ---- Transition group -------------------------------------------------
-    GROUPBOX        "Transition", IDC_TRANSITION_GROUP, 156, 99, 99, 108
+    GROUPBOX        "Transition", IDC_TRANSITION_GROUP, 156, 114, 99, 108
 
-    CONTROL         "Instant", IDC_INSTANT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 161, 112, 88, 10
+    CONTROL         "Instant", IDC_INSTANT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 161, 127, 88, 10
 
-    LTEXT           "Dur:",   IDC_STATIC,  161, 126, 16,  8
-    EDITTEXT        IDC_DURATION,          179, 124, 30, 12, ES_AUTOHSCROLL
-    LTEXT           "sec",    IDC_STATIC,  211, 126, 14,  8
+    LTEXT           "Dur:",   IDC_STATIC,  161, 141, 16,  8
+    EDITTEXT        IDC_DURATION,          179, 139, 30, 12, ES_AUTOHSCROLL
+    LTEXT           "sec",    IDC_STATIC,  211, 141, 14,  8
 
-    LTEXT           "Taper:", IDC_STATIC,  161, 139, 25,  8
-    COMBOBOX        IDC_TAPER,             188, 137,  65, 70,
+    LTEXT           "Taper:", IDC_STATIC,  161, 154, 25,  8
+    COMBOBOX        IDC_TAPER,             188, 152,  65, 70,
                     CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    LTEXT           "Exp:",   IDC_STATIC,  161, 154, 18,  8
-    EDITTEXT        IDC_TAPER_CUSTOM,      181, 152, 30, 12, ES_AUTOHSCROLL
+    LTEXT           "Exp:",   IDC_STATIC,  161, 169, 18,  8
+    EDITTEXT        IDC_TAPER_CUSTOM,      181, 167, 30, 12, ES_AUTOHSCROLL
 
     // Progress bar placeholder – replaced dynamically
-    LTEXT           "", IDC_PROGRESS,      161, 168, 90,  8
+    LTEXT           "", IDC_PROGRESS,      161, 183, 90,  8
 
-    LTEXT           "Idle",   IDC_STATUS,  161, 179, 90, 10
+    LTEXT           "Idle",   IDC_STATUS,  161, 194, 90, 10
 
     // ---- Navigation buttons -----------------------------------------------
-    PUSHBUTTON      "Prev",  IDC_PREVIOUS,  158, 211, 22, 13
-    PUSHBUTTON      "Next",  IDC_NEXT,      182, 211, 22, 13
-    PUSHBUTTON      "Up",    IDC_SWAP_UP,   206, 211, 22, 13
-    PUSHBUTTON      "Down",  IDC_SWAP_DOWN, 230, 211, 25, 13
+    PUSHBUTTON      "Prev",  IDC_PREVIOUS,  158, 226, 22, 13
+    PUSHBUTTON      "Next",  IDC_NEXT,      182, 226, 22, 13
+    PUSHBUTTON      "Up",    IDC_SWAP_UP,   206, 226, 22, 13
+    PUSHBUTTON      "Down",  IDC_SWAP_DOWN, 230, 226, 25, 13
 
     // ---- Safes button + Marker on recall ----------------------------------
-    PUSHBUTTON      "Safes...", IDC_SAFES_BTN, 158, 226, 97, 13
+    PUSHBUTTON      "Safes...", IDC_SAFES_BTN, 158, 241, 97, 13
 
     // ---- Marker on recall -------------------------------------------------
-    CONTROL         "Place marker on recall", IDC_MARKER_BTN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 158, 243, 97, 10
+    CONTROL         "Place marker on recall", IDC_MARKER_BTN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 158, 258, 97, 10
 END
 
 // ---------------------------------------------------------------------------
@@ -192,9 +195,70 @@ END
 // Entirely custom-painted in WM_PAINT; no child controls needed here.
 // ---------------------------------------------------------------------------
 
-IDD_MONITOR DIALOGEX 0, 0, 200, 115
+IDD_MONITOR DIALOGEX 0, 0, 148, 90
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Live Monitor"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+END
+// ---------------------------------------------------------------------------
+// IDD_MONITOR_SETTINGS  -  Threshold settings dialog
+// ---------------------------------------------------------------------------
+
+IDD_MONITOR_SETTINGS DIALOGEX 0, 0, 200, 114
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Live Monitor - Thresholds"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    // Column headers
+    LTEXT           "",          IDC_STATIC,           5,  5, 72,  8
+    LTEXT           "Yellow >",  IDC_STATIC,          80,  5, 30,  8, SS_CENTER
+    LTEXT           "Orange >",  IDC_STATIC,         113,  5, 30,  8, SS_CENTER
+    LTEXT           "Red >",     IDC_STATIC,         146,  5, 30,  8, SS_CENTER
+
+    // CPU (values 0-100, interpreted as %)
+    LTEXT           "CPU (%)",   IDC_STATIC,           5, 20, 72,  8, SS_CENTERIMAGE
+    EDITTEXT        IDC_MON_CPU_YEL,  80, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_CPU_ORA, 113, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_CPU_RED, 146, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+    // RT CPU (values 0-100, interpreted as %)
+    LTEXT           "RT CPU (%)", IDC_STATIC,          5, 34, 72,  8, SS_CENTERIMAGE
+    EDITTEXT        IDC_MON_RC_YEL,   80, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_RC_ORA,  113, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_RC_RED,  146, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+    // I/O Latency
+    LTEXT           "I/O (ms)",  IDC_STATIC,           5, 48, 72,  8, SS_CENTERIMAGE
+    EDITTEXT        IDC_MON_IO_YEL,   80, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_IO_ORA,  113, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_IO_RED,  146, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+    // Max PDC
+    LTEXT           "PDC (ms)",  IDC_STATIC,           5, 62, 72,  8, SS_CENTERIMAGE
+    EDITTEXT        IDC_MON_PDC_YEL,  80, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_PDC_ORA, 113, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_PDC_RED, 146, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+    // Round-Trip
+    LTEXT           "Round-Trip (ms)", IDC_STATIC,    5, 76, 72,  8, SS_CENTERIMAGE
+    EDITTEXT        IDC_MON_RT_YEL,   80, 74, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_RT_ORA,  113, 74, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+    EDITTEXT        IDC_MON_RT_RED,  146, 74, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+    // Buttons
+    DEFPUSHBUTTON   "OK",        IDOK,          30, 96, 38, 14
+    PUSHBUTTON      "Cancel",    IDCANCEL,      75, 96, 38, 14
+    PUSHBUTTON      "Defaults",  IDC_MON_RESET,120, 96, 46, 14
+END
+// ---------------------------------------------------------------------------
+// IDD_METERBRIDGE  –  Meter Bridge window
+// Entirely custom-painted; scrollbar and all UI created dynamically.
+// ---------------------------------------------------------------------------
+
+IDD_METERBRIDGE DIALOGEX 0, 0, 600, 120
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
+CAPTION "Meter Bridge"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
 END
@@ -205,7 +269,7 @@ END
 //  Top  (y 3..22)  : score bar (owner-draw) + score text label
 //  Mid  (y 25..280): SysListView32 placeholder (replaced dynamically)
 //  Lower(y 283..315): info / tooltip multi-line text
-//  Bottom (y 320..337): Refresh + Apply Fix buttons + status text
+//  Bottom (y 320..337): Refresh button + status text
 // ---------------------------------------------------------------------------
 
 IDD_LIVE_OPTIMIZE DIALOGEX 0, 0, 560, 380
@@ -227,12 +291,11 @@ BEGIN
 
     // ---- Bottom action row ---------------------------------------------
     PUSHBUTTON      "Refresh",   IDC_LO_REFRESH,   5,   337, 55, 14
-    PUSHBUTTON      "Apply Fix", IDC_LO_APPLY_FIX, 64,  337, 55, 14
-    LTEXT           "",          IDC_LO_STATUS,    124, 340, 430, 10
+    LTEXT           "",          IDC_LO_STATUS,    65,  340, 490, 10
 END
 
 // ---- Control Surface config dialog ----------------------------------------
-IDD_CSURF_CONFIG DIALOGEX 0, 0, 310, 186
+IDD_CSURF_CONFIG DIALOGEX 0, 0, 310, 214
 STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
@@ -250,21 +313,27 @@ BEGIN
     LTEXT           "MIDI Output:",     IDC_STATIC,          5, 70, 48, 8
     COMBOBOX        IDC_CSURF_MIDI_OUT, 54, 68, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    CONTROL         "Fader follows track selection",  IDC_CSURF_FOLLOW_SEL, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 86, 160, 10
-    CONTROL         "Show VU meters",                 IDC_CSURF_SHOW_VU,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 100, 130, 10
-    CONTROL         "Show track names on LCD",        IDC_CSURF_SHOW_NAMES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 114, 150, 10
+    LTEXT           "Ext. Input:",      IDC_STATIC,          5, 84, 48, 8
+    COMBOBOX        IDC_CSURF_MIDI_IN2, 54, 82, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    GROUPBOX        "Fader assigns",    IDC_STATIC,          5, 128, 180, 24
-    CONTROL         "Volume",           IDC_CSURF_FADER_VOL, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,  12, 138, 46, 10
-    CONTROL         "Pan",              IDC_CSURF_FADER_PAN, "Button", BS_AUTORADIOBUTTON,                           62, 138, 36, 10
-    CONTROL         "Sends",            IDC_CSURF_FADER_SEND,"Button", BS_AUTORADIOBUTTON,                          102, 138, 46, 10
+    LTEXT           "Ext. Output:",     IDC_STATIC,          5, 98, 48, 8
+    COMBOBOX        IDC_CSURF_MIDI_OUT2,54, 96, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    CONTROL         "Send track colors to scribble strips", IDC_CSURF_SEND_COLORS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 158, 200, 10
-    CONTROL         "Follow MCP (mixer) track order",       IDC_CSURF_FOLLOW_MCP,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 172, 200, 10
+    CONTROL         "Fader follows track selection",  IDC_CSURF_FOLLOW_SEL, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 114, 160, 10
+    CONTROL         "Show VU meters",                 IDC_CSURF_SHOW_VU,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 128, 130, 10
+    CONTROL         "Show track names on LCD",        IDC_CSURF_SHOW_NAMES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 142, 150, 10
+
+    GROUPBOX        "Fader assigns",    IDC_STATIC,          5, 156, 180, 24
+    CONTROL         "Volume",           IDC_CSURF_FADER_VOL, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,  12, 166, 46, 10
+    CONTROL         "Pan",              IDC_CSURF_FADER_PAN, "Button", BS_AUTORADIOBUTTON,                           62, 166, 36, 10
+    CONTROL         "Sends",            IDC_CSURF_FADER_SEND,"Button", BS_AUTORADIOBUTTON,                          102, 166, 46, 10
+
+    CONTROL         "Send track colors to scribble strips", IDC_CSURF_SEND_COLORS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 186, 200, 10
+    CONTROL         "Follow MCP (mixer) track order",       IDC_CSURF_FOLLOW_MCP,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 200, 200, 10
 END
 
 // Standalone version (same controls + OK/Cancel, opened from Extensions menu)
-IDD_CSURF_STANDALONE DIALOGEX 0, 0, 310, 206
+IDD_CSURF_STANDALONE DIALOGEX 0, 0, 310, 234
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Control Surface Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -283,18 +352,75 @@ BEGIN
     LTEXT           "MIDI Output:",     IDC_STATIC,          5, 70, 48, 8
     COMBOBOX        IDC_CSURF_MIDI_OUT, 54, 68, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    CONTROL         "Fader follows track selection",  IDC_CSURF_FOLLOW_SEL, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 86, 160, 10
-    CONTROL         "Show VU meters",                 IDC_CSURF_SHOW_VU,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 100, 130, 10
-    CONTROL         "Show track names on LCD",        IDC_CSURF_SHOW_NAMES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 114, 150, 10
+    LTEXT           "Ext. Input:",      IDC_STATIC,          5, 84, 48, 8
+    COMBOBOX        IDC_CSURF_MIDI_IN2, 54, 82, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    GROUPBOX        "Fader assigns",    IDC_STATIC,          5, 128, 180, 24
-    CONTROL         "Volume",           IDC_CSURF_FADER_VOL, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,  12, 138, 46, 10
-    CONTROL         "Pan",              IDC_CSURF_FADER_PAN, "Button", BS_AUTORADIOBUTTON,                           62, 138, 36, 10
-    CONTROL         "Sends",            IDC_CSURF_FADER_SEND,"Button", BS_AUTORADIOBUTTON,                          102, 138, 46, 10
+    LTEXT           "Ext. Output:",     IDC_STATIC,          5, 98, 48, 8
+    COMBOBOX        IDC_CSURF_MIDI_OUT2,54, 96, 250, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    CONTROL         "Send track colors to scribble strips", IDC_CSURF_SEND_COLORS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 158, 200, 10
-    CONTROL         "Follow MCP (mixer) track order",       IDC_CSURF_FOLLOW_MCP,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 172, 200, 10
+    CONTROL         "Fader follows track selection",  IDC_CSURF_FOLLOW_SEL, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 114, 160, 10
+    CONTROL         "Show VU meters",                 IDC_CSURF_SHOW_VU,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 128, 130, 10
+    CONTROL         "Show track names on LCD",        IDC_CSURF_SHOW_NAMES, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 142, 150, 10
 
-    DEFPUSHBUTTON   "OK",               IDOK,                200, 188, 50, 14
-    PUSHBUTTON      "Cancel",           IDCANCEL,            256, 188, 50, 14
+    GROUPBOX        "Fader assigns",    IDC_STATIC,          5, 156, 180, 24
+    CONTROL         "Volume",           IDC_CSURF_FADER_VOL, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,  12, 166, 46, 10
+    CONTROL         "Pan",              IDC_CSURF_FADER_PAN, "Button", BS_AUTORADIOBUTTON,                           62, 166, 36, 10
+    CONTROL         "Sends",            IDC_CSURF_FADER_SEND,"Button", BS_AUTORADIOBUTTON,                          102, 166, 46, 10
+
+    CONTROL         "Send track colors to scribble strips", IDC_CSURF_SEND_COLORS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 186, 200, 10
+    CONTROL         "Follow MCP (mixer) track order",       IDC_CSURF_FOLLOW_MCP,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  5, 200, 200, 10
+
+    DEFPUSHBUTTON   "OK",               IDOK,                200, 216, 50, 14
+    PUSHBUTTON      "Cancel",           IDCANCEL,            256, 216, 50, 14
+END
+
+// ---------------------------------------------------------------------------
+// Up-down (spin) control styles – not defined in winres.h
+// ---------------------------------------------------------------------------
+#ifndef UDS_SETBUDDYINT
+#define UDS_SETBUDDYINT  0x0002
+#define UDS_ALIGNRIGHT   0x0008
+#define UDS_ARROWKEYS    0x0020
+#endif
+
+// ---------------------------------------------------------------------------
+// IDD_LIVELOCK  -  Live Safe Locking bar  (300 x 22 DU)
+// Entirely custom-painted; no child controls needed here.
+// ---------------------------------------------------------------------------
+IDD_LIVELOCK DIALOGEX 0, 0, 300, 22
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Live Lock"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+END
+
+// ---------------------------------------------------------------------------
+// IDD_LIVELOCK_SETTINGS  -  Live Lock settings  (250 x 215 DU)
+// ---------------------------------------------------------------------------
+IDD_LIVELOCK_SETTINGS DIALOGEX 0, 0, 250, 215
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Live Lock Settings"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX "Protect", IDC_STATIC, 5, 4, 240, 98
+    CONTROL "All routing (track sends)",            IDC_LL_CHK_ROUTING,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 17, 200, 10
+    CONTROL "Selected tracks only (at lock time)",  IDC_LL_CHK_SELONLY,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  22, 29, 210, 10
+    CONTROL "Hardware outputs",                     IDC_LL_CHK_HWOUT,      "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 41, 200, 10
+    CONTROL "Master send enable/disable",           IDC_LL_CHK_MASTERSEND, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 53, 200, 10
+    CONTROL "FX bypass states",                     IDC_LL_CHK_FXBYPASS,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 65, 200, 10
+    CONTROL "Record arm / input monitoring",        IDC_LL_CHK_RECARM,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 77, 200, 10
+
+    GROUPBOX "On violation", IDC_STATIC, 5, 106, 240, 24
+    CONTROL "Require confirmation before reverting", IDC_LL_CHK_CONFIRM, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 118, 225, 10
+
+    LTEXT    "Check interval:", IDC_STATIC, 5, 136, 64, 10, SS_CENTERIMAGE
+    EDITTEXT IDC_LL_INTERVAL_EDIT, 72, 134, 38, 14, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL  "", IDC_LL_INTERVAL_SPIN, "msctls_updown32",
+             UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
+             110, 134, 12, 14
+    LTEXT    "ms  (50 - 2000)", IDC_STATIC, 124, 136, 80, 10, SS_CENTERIMAGE
+    LTEXT    "Lower values revert faster, higher CPU usage.", IDC_STATIC, 5, 152, 240, 10
+
+    DEFPUSHBUTTON "OK",     IDOK,     140, 195, 50, 14
+    PUSHBUTTON    "Cancel", IDCANCEL, 196, 195, 50, 14
 END

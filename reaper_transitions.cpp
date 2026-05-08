@@ -14,7 +14,10 @@
 #include "LayoutsWnd.h"
 #include "PaflWnd.h"
 #include "MonitorWnd.h"
+#include "MeterBridgeWnd.h"
 #include "LiveOptimizeWnd.h"
+#include "LiveLockEngine.h"
+#include "LiveLockWnd.h"
 #include "ControlSurface.h"
 
 // reaper_plugin.h is included transitively via api.h → reaper_plugin_functions.h
@@ -47,6 +50,9 @@ static int       g_cmdShowPafl    = 0;
 static int       g_cmdShowMonitor = 0;
 static int       g_cmdLiveOpt     = 0;
 static int       g_cmdShowCSurf   = 0;
+static int       g_cmdShowMeterBridge = 0;
+static int       g_cmdShowLiveLock    = 0;
+static gaccel_register_t g_liveLockAccel;
 
 // Per-scene recall/save actions (1-based slots 1-30, stored 0-based)
 static const int kSceneActionCount = 30;
@@ -143,7 +149,9 @@ static bool RunCommand(int cmd, int /*flag*/)
     if (cmd == g_cmdShowLayouts) { LayoutsWnd_ShowHide();    return true; }
     if (cmd == g_cmdShowPafl)    { PaflWnd_ShowHide();       return true; }
     if (cmd == g_cmdShowMonitor) { MonitorWnd_ShowHide();    return true; }
+    if (cmd == g_cmdShowMeterBridge) { MeterBridgeWnd_ShowHide();  return true; }
     if (cmd == g_cmdLiveOpt)     { LiveOptimizeWnd_ShowHide(); return true; }
+    if (cmd == g_cmdShowLiveLock) { LiveLockWnd_ShowHide();    return true; }
     if (cmd == g_cmdShowCSurf)   {
         HWND parent = GetMainHwnd ? GetMainHwnd() : nullptr;
         CSurf_ShowStandaloneConfig(parent);
@@ -164,7 +172,9 @@ static int ToggleAction(int cmd)
     if (cmd == g_cmdShowLayouts) return LayoutsWnd_IsVisible()     ? 1 : 0;
     if (cmd == g_cmdShowPafl)    return PaflWnd_IsVisible()         ? 1 : 0;
     if (cmd == g_cmdShowMonitor) return MonitorWnd_IsVisible()      ? 1 : 0;
-    if (cmd == g_cmdLiveOpt)     return LiveOptimizeWnd_IsVisible() ? 1 : 0;
+    if (cmd == g_cmdShowMeterBridge) return MeterBridgeWnd_IsVisible()  ? 1 : 0;
+    if (cmd == g_cmdLiveOpt)     return LiveOptimizeWnd_IsVisible()  ? 1 : 0;
+    if (cmd == g_cmdShowLiveLock) return LiveLockWnd_IsVisible()     ? 1 : 0;
     return -1;
 }
 
@@ -182,7 +192,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         LayoutsWnd_Cleanup();
         PaflWnd_Cleanup();
         MonitorWnd_Cleanup();
+        MeterBridgeWnd_Cleanup();
         LiveOptimizeWnd_Cleanup();
+        LiveLockWnd_Cleanup();
+        LiveLockEngine_Cleanup();
+        plugin_register("-timer",          (void*)LiveLockEngine::TimerCallback);
         CSurf_Unregister(nullptr); // uses plugin_register directly
         plugin_register("-timer",          (void*)&TransitionEngine::TimerCallback);
         plugin_register("-projectconfig",  &g_projectconfig);
@@ -273,6 +287,28 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     g_liveOptAccel.accel.cmd = (WORD)g_cmdLiveOpt;
     plugin_register("gaccel", &g_liveOptAccel);
 
+    // ---- Register Meter Bridge command ------------------------------------
+    g_cmdShowMeterBridge = plugin_register("command_id", (void*)"LT_METERBRIDGE");
+    if (!g_cmdShowMeterBridge) return 0;
+
+    static gaccel_register_t g_meterBridgeAccel;
+    memset(&g_meterBridgeAccel, 0, sizeof(g_meterBridgeAccel));
+    g_meterBridgeAccel.desc      = "Live Tools: Meter Bridge - Show/Hide";
+    g_meterBridgeAccel.accel.cmd = (WORD)g_cmdShowMeterBridge;
+    plugin_register("gaccel", &g_meterBridgeAccel);
+
+    // ---- Register Live Lock command ---------------------------------------
+    g_cmdShowLiveLock = plugin_register("command_id", (void*)"LT_LIVELOCK");
+    if (!g_cmdShowLiveLock) return 0;
+
+    memset(&g_liveLockAccel, 0, sizeof(g_liveLockAccel));
+    g_liveLockAccel.desc      = "Live Tools: Live Lock - Show/Hide";
+    g_liveLockAccel.accel.cmd = (WORD)g_cmdShowLiveLock;
+    plugin_register("gaccel", &g_liveLockAccel);
+
+    // Register the live lock enforcement timer
+    plugin_register("timer", (void*)LiveLockEngine::TimerCallback);
+
     // ---- Register per-scene recall / save actions (slots 1-30) -----------
     for (int i = 0; i < kSceneActionCount; i++)
     {
@@ -301,7 +337,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     LayoutsWnd_Init(hInstance);
     PaflWnd_Init(hInstance);
     MonitorWnd_Init(hInstance);
+    MeterBridgeWnd_Init(hInstance);
     LiveOptimizeWnd_Init(hInstance);
+    LiveLockWnd_Init(hInstance);
+    LiveLockEngine_Init();
     CSurfConfigDlg_SetInstance(hInstance);
     CSurf_Register(rec);
 
@@ -331,6 +370,8 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowPafl,    "PAFL Monitor...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMonitor, "Live Monitor...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdLiveOpt,     "Live Optimizer...");
+        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMeterBridge, "Meter Bridge...");
+        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLiveLock,    "Live Lock...");
         AppendMenuA(hSub,  MF_SEPARATOR, 0, nullptr);
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowCSurf,   "Control Surface Settings...");
         AppendMenuA(hMenu, MF_POPUP,  (UINT_PTR)hSub,             "Live Tools");
@@ -349,5 +390,9 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
             (MonitorWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu, 4, MF_BYPOSITION |
             (LiveOptimizeWnd_IsVisible()  ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu, 5, MF_BYPOSITION |
+            (MeterBridgeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu, 6, MF_BYPOSITION |
+            (LiveLockWnd_IsVisible()      ? MF_CHECKED : MF_UNCHECKED));
     }
 }

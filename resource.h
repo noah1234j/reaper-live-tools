@@ -56,6 +56,8 @@
 #define IDC_SNAPNOTES            2135   // snapshot notes multiline edit
 #define IDC_COPY_SNAP            2136   // copy snapshot button
 #define IDC_PASTE_SNAP           2137   // paste snapshot button
+#define IDC_OVERWRITE_BTN        2138   // overwrite selected scene button
+#define IDC_DELETE_BTN           2139   // delete selected scene button
 
 // ---- Safes dialog ----------------------------------------------------------
 #define IDD_SAFES                202
@@ -84,6 +86,25 @@
 
 // ---- Live Monitor window --------------------------------------------------
 #define IDD_MONITOR              207
+#define IDD_MONITOR_SETTINGS     212
+
+// Live Monitor threshold-settings controls
+#define IDC_MON_CPU_YEL          2500
+#define IDC_MON_CPU_ORA          2501
+#define IDC_MON_CPU_RED          2502
+#define IDC_MON_IO_YEL           2503
+#define IDC_MON_IO_ORA           2504
+#define IDC_MON_IO_RED           2505
+#define IDC_MON_PDC_YEL          2506
+#define IDC_MON_PDC_ORA          2507
+#define IDC_MON_PDC_RED          2508
+#define IDC_MON_RT_YEL           2509
+#define IDC_MON_RT_ORA           2510
+#define IDC_MON_RT_RED           2511
+#define IDC_MON_RESET            2512
+#define IDC_MON_RC_YEL           2513
+#define IDC_MON_RC_ORA           2514
+#define IDC_MON_RC_RED           2515
 #define IDC_PAFL_SRCTRACK        2400
 #define IDC_PAFL_HWOUT           2401
 #define IDC_PAFL_SENDTYPE        2402
@@ -125,7 +146,6 @@
 #define IDC_LO_LIST              2502   // SysListView32 placeholder
 #define IDC_LO_INFO              2503   // multi-line info / tooltip text
 #define IDC_LO_REFRESH           2504   // "Refresh" button
-#define IDC_LO_APPLY_FIX         2505   // "Apply Fix" button
 #define IDC_LO_STATUS            2506   // status label at bottom
 
 // ---- Control Surface config dialog ----------------------------------------
@@ -144,8 +164,36 @@
 #define IDC_CSURF_BANK_OFFSET    2511
 #define IDC_CSURF_CHAN_COUNT     2512
 #define IDC_CSURF_DESC           2513
-#define IDC_CSURF_SEND_COLORS   2514
-#define IDC_CSURF_FOLLOW_MCP    2515
+#define IDC_CSURF_MIDI_IN2      2514
+#define IDC_CSURF_MIDI_OUT2     2515
+#define IDC_CSURF_SEND_COLORS   2516
+#define IDC_CSURF_FOLLOW_MCP    2517
 
 // ---- Control Surface standalone settings dialog ---------------------------
 #define IDD_CSURF_STANDALONE     206
+
+// ---- Meter Bridge window --------------------------------------------------
+#define IDD_METERBRIDGE          209
+#define IDC_MB_SCROLL            2600
+
+// ---- Live Lock window -----------------------------------------------------
+#define IDD_LIVELOCK             214
+#define IDD_LIVELOCK_SETTINGS    215
+
+// Main panel controls
+#define IDC_LL_LOCK              2700   // owner-drawn toggle button (green/red)
+#define IDC_LL_STATUS            2701   // status label (active categories)
+#define IDC_LL_SETTINGS          2702   // "Settings..." button
+#define IDC_LL_REVERTS           2703   // revert counter label
+#define IDC_LL_WARN              2704   // CPU warning note
+
+// Settings dialog controls
+#define IDC_LL_CHK_ROUTING       2710   // protect track sends
+#define IDC_LL_CHK_SELONLY       2711   // selected tracks only
+#define IDC_LL_CHK_HWOUT         2712   // hardware outputs
+#define IDC_LL_CHK_MASTERSEND    2713   // master send toggle
+#define IDC_LL_CHK_FXBYPASS      2714   // FX bypass states
+#define IDC_LL_CHK_RECARM        2715   // record arm / input monitoring
+#define IDC_LL_CHK_CONFIRM       2716   // require confirmation on violation
+#define IDC_LL_INTERVAL_EDIT     2717   // check interval edit box
+#define IDC_LL_INTERVAL_SPIN     2718   // check interval spin control

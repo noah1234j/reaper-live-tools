@@ -443,6 +443,10 @@ static void DoClearAll()
         if (!tr || tr == busTr || tr == srcTr) return;
         int idx = FindSendToTrack(tr, busTr);
         if (idx < 0) return;
+        // If send was unmuted (PAFL active), turn off the surface LED
+        bool* pm = (bool*)GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", nullptr);
+        if (pm && !*pm)
+            CSurf_SetSurfaceSolo(tr, false, nullptr);
         bool yes = true;
         GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &yes);
     };
@@ -537,24 +541,54 @@ void PaflWnd_TimerTick()
     MediaTrack* busTr = GetBusTrack();
     if (!busTr) return;
 
-    MediaTrack* master = GetMasterTrack(nullptr);
     const int n = GetNumTracks();
 
-    // Since we always clear I_SOLO immediately when intercepting,
-    // any non-zero I_SOLO value is always a fresh button press.
-    auto checkAndIntercept = [&](MediaTrack* tr) {
+    // For each track:
+    //  - If solo button was just pressed (I_SOLO != 0): toggle PAFL, clear I_SOLO
+    //    to prevent REAPER's solo engine from affecting the main mix.
+    //  - If PAFL is active (send unmuted): re-assert surface LED every tick so it
+    //    stays lit even after a REAPER surface refresh (TrackList_UpdateAllExternalSurfaces).
+    //    The MCU surface is event-driven, so our CSurf_SetSurfaceSolo(tr, true) call
+    //    keeps the LED lit while I_SOLO remains 0.
+    auto processTrack = [&](MediaTrack* tr) {
         if (!tr || tr == busTr) return;
+
         int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
-        if (!ps || *ps == 0) return;
-        // Clear solo first to prevent feedback loops
-        int zero = 0;
-        GetSetMediaTrackInfo(tr, "I_SOLO", &zero);
-        // Toggle this track's PAFL send
-        PaflToggleTrack(tr);
+        if (!ps) return;
+        const int soloVal = *ps;
+
+        // Determine current PAFL state (send unmuted = active)
+        const int sendIdx = FindSendToTrack(tr, busTr);
+        bool paflActive = false;
+        if (sendIdx >= 0)
+        {
+            bool* pm = (bool*)GetSetTrackSendInfo(tr, 0, sendIdx, "B_MUTE", nullptr);
+            paflActive = (pm && !*pm);
+        }
+
+        if (soloVal != 0)
+        {
+            // Solo button was pressed: clear I_SOLO so REAPER's solo engine
+            // doesn't affect the main mix, then toggle PAFL routing.
+            int zero = 0;
+            GetSetMediaTrackInfo(tr, "I_SOLO", &zero);
+            PaflToggleTrack(tr);
+
+            // Send surface LED feedback:
+            //   paflActive was state BEFORE toggle, so !paflActive is state AFTER.
+            //   Turn LED on if now active, off if now inactive.
+            CSurf_SetSurfaceSolo(tr, !paflActive, nullptr);
+        }
+        else if (paflActive)
+        {
+            // PAFL is active but I_SOLO is 0 (we cleared it above to avoid mix side
+            // effects). Re-assert the surface LED on every tick so it survives any
+            // REAPER surface refresh that re-reads I_SOLO.
+            CSurf_SetSurfaceSolo(tr, true, nullptr);
+        }
     };
 
-    checkAndIntercept(master);
-    for (int i = 0; i < n; i++) checkAndIntercept(GetTrack(nullptr, i));
+    for (int i = 0; i < n; i++) processTrack(GetTrack(nullptr, i));
 }
 
 // ---------------------------------------------------------------------------

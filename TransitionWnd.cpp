@@ -39,6 +39,14 @@ enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE };
 enum { CTX_DOCK = 200, CTX_CLOSE };
 
 // ---------------------------------------------------------------------------
+// Layout / resize state
+// ---------------------------------------------------------------------------
+struct SidebarCtrl { HWND hwnd; int origLeft; int origTop; int w; int h; };
+static std::vector<SidebarCtrl> g_sidebarCtrls;
+static int  g_initCx = 0, g_initCy = 0;
+static RECT g_listInitRect = {};
+
+// ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -95,11 +103,15 @@ void TransitionWnd_ShowHide()
         // allowShow=false → registered as dockable but stays as a regular float window
         const char* dockPref = GetExtState("reaper_transitions", "scenes_docked");
         bool wantDocked = (dockPref && atoi(dockPref) != 0);
-        DockWindowAddEx(g_wnd, "Scenes", "reaper_trans_scenes", wantDocked);
-        if (!wantDocked)
-            ShowWindow(g_wnd, SW_SHOW);
-        else
+        if (wantDocked)
+        {
+            DockWindowAddEx(g_wnd, "Scenes", "reaper_trans_scenes", true);
             DockWindowActivate(g_wnd);
+        }
+        else
+        {
+            ShowWindow(g_wnd, SW_SHOW);
+        }
         return;
     }
 
@@ -140,6 +152,12 @@ int TransitionWnd_IsVisible()
     return IsWindowVisible(g_wnd) ? 1 : 0;
 }
 
+int TransitionWnd_GetSelectedIndex()
+{
+    if (!g_wnd || !IsWindow(g_wnd)) return -1;
+    return GetSelectedListIndex(g_wnd);
+}
+
 void TransitionWnd_RefreshList()
 {
     if (g_wnd && IsWindow(g_wnd))
@@ -150,12 +168,10 @@ void TransitionWnd_RecallScene(int index)
 {
     if (index < 0 || index >= (int)g_snapshots.size()) return;
     const TransitionSnapshot* snap = g_snapshots[index].get();
-    // Respect instant-mode checkbox if window is open
     bool instant = false;
     if (g_wnd && IsWindow(g_wnd))
         instant = (IsDlgButtonChecked(g_wnd, IDC_INSTANT) == BST_CHECKED);
     double duration = instant ? 0.0 : snap->m_duration;
-    // Place marker if the window's marker checkbox is on
     if (g_wnd && IsWindow(g_wnd) && IsDlgButtonChecked(g_wnd, IDC_MARKER_BTN) == BST_CHECKED)
     {
         double pos = GetPlayPosition();
@@ -485,7 +501,107 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         };
 
         SetTimer(hwnd, UI_TIMER_ID, 100, nullptr);
+
+        // ---- Record initial layout for WM_SIZE --------------------------
+        {
+            RECT cr;
+            GetClientRect(hwnd, &cr);
+            g_initCx = cr.right;
+            g_initCy = cr.bottom;
+
+            HWND hListSz = GetDlgItem(hwnd, IDC_LIST);
+            if (hListSz)
+            {
+                GetWindowRect(hListSz, &g_listInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_listInitRect, 2);
+            }
+
+            int threshold = g_listInitRect.right - 5;
+            g_sidebarCtrls.clear();
+            HWND hChild = GetWindow(hwnd, GW_CHILD);
+            while (hChild)
+            {
+                RECT r;
+                GetWindowRect(hChild, &r);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&r, 2);
+                if (r.left > threshold)
+                {
+                    SidebarCtrl sc;
+                    sc.hwnd     = hChild;
+                    sc.origLeft = r.left;
+                    sc.origTop  = r.top;
+                    sc.w        = r.right  - r.left;
+                    sc.h        = r.bottom - r.top;
+                    g_sidebarCtrls.push_back(sc);
+                }
+                hChild = GetWindow(hChild, GW_HWNDNEXT);
+            }
+        }
         return TRUE;
+    }
+
+    case WM_GETMINMAXINFO:
+    {
+        if (g_initCx > 0)
+        {
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            RECT r = { 0, 0, g_initCx, g_initCy };
+            AdjustWindowRectEx(&r,
+                (DWORD)GetWindowLong(hwnd, GWL_STYLE),
+                FALSE,
+                (DWORD)GetWindowLong(hwnd, GWL_EXSTYLE));
+            mmi->ptMinTrackSize.x = r.right  - r.left;
+            mmi->ptMinTrackSize.y = r.bottom - r.top;
+        }
+        return 0;
+    }
+
+    case WM_SIZE:
+    {
+        int newCx = (int)(short)LOWORD(lParam);
+        int newCy = (int)(short)HIWORD(lParam);
+        if (g_initCx <= 0 || newCx <= 0 || newCy <= 0) break;
+
+        int dx = newCx - g_initCx;
+        int dy = newCy - g_initCy;
+
+        // Resize the ListView to fill extra width and height
+        HWND hListSz = GetDlgItem(hwnd, IDC_LIST);
+        if (hListSz && g_listInitRect.right > g_listInitRect.left)
+        {
+            int newW = (g_listInitRect.right  - g_listInitRect.left) + dx;
+            int newH = (g_listInitRect.bottom - g_listInitRect.top)  + dy;
+            if (newW > 10 && newH > 10)
+            {
+                SetWindowPos(hListSz, nullptr,
+                    g_listInitRect.left, g_listInitRect.top, newW, newH,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+
+                // Stretch "Name" column to fill available list width
+                int col0W = ListView_GetColumnWidth(hListSz, 0);
+                int col2W = ListView_GetColumnWidth(hListSz, 2);
+                int col1W = newW - col0W - col2W
+                            - GetSystemMetrics(SM_CXVSCROLL) - 4;
+                if (col1W > 20)
+                    ListView_SetColumnWidth(hListSz, 1, col1W);
+            }
+        }
+
+        // Shift right-sidebar controls by dx (keep same y, w, h)
+        if (!g_sidebarCtrls.empty())
+        {
+            HDWP hdwp = BeginDeferWindowPos((int)g_sidebarCtrls.size());
+            for (const auto& sc : g_sidebarCtrls)
+            {
+                hdwp = DeferWindowPos(hdwp, sc.hwnd, nullptr,
+                    sc.origLeft + dx, sc.origTop, sc.w, sc.h,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            EndDeferWindowPos(hdwp);
+        }
+
+        InvalidateRect(hwnd, nullptr, TRUE);
+        break;
     }
 
     case WM_TIMER:
@@ -615,6 +731,30 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             ListView_EnsureVisible(hList, newSlot, FALSE);
             LoadEditorFromSnapshot(hwnd, g_snapshots[newSlot].get());
             Undo_OnStateChangeEx("Paste Scene", -1, -1);
+            break;
+        }
+
+        case IDC_OVERWRITE_BTN:
+        {
+            int sel = GetSelectedListIndex(hwnd);
+            if (sel < 0 || sel >= (int)g_snapshots.size()) break;
+            g_snapshots[sel]->Capture(TS_CAPTURE_ALL);
+            g_snapshots[sel]->m_time = (int)std::time(nullptr);
+            RefreshListView(hwnd);
+            Undo_OnStateChangeEx("Overwrite Scene", -1, -1);
+            break;
+        }
+
+        case IDC_DELETE_BTN:
+        {
+            int sel = GetSelectedListIndex(hwnd);
+            if (sel < 0 || sel >= (int)g_snapshots.size()) break;
+            g_snapshots.erase(g_snapshots.begin() + sel);
+            for (int i = 0; i < (int)g_snapshots.size(); i++)
+                g_snapshots[i]->m_slot = i;
+            RefreshListView(hwnd);
+            LoadEditorFromSnapshot(hwnd, nullptr);
+            Undo_OnStateChangeEx("Delete Scene", -1, -1);
             break;
         }
 
