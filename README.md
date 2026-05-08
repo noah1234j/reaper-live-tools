@@ -1,3 +1,5 @@
+This project is a work in progress it is not ready for use.
+
 # Live Tools — Transition Snapshots for REAPER
 
 A native REAPER extension plugin (`reaper_transitions.dll`) built for live sound engineers who need fast, reliable scene recall — without modal dialogs, project saves, or pauses in audio.
