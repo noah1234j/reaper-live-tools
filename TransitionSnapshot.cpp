@@ -1,4 +1,5 @@
 #include "TransitionSnapshot.h"
+#include "LayersEngine.h"
 #include "api.h"
 
 #include <cstdio>
@@ -180,6 +181,30 @@ void TransitionSnapshot::Capture(int mask)
 
         m_tracks.push_back(std::move(ts));
     }
+
+    // --- Full layer state ---------------------------------------------------
+    // Always capture all layers regardless of recall preference.
+    // The recall path decides whether to apply them.
+    {
+        LayersEngine& le = LayersEngine::Get();
+        m_layerIdx = le.GetActiveLayer();
+        m_layers.clear();
+        for (int li = 0; li < le.GetLayerCount(); li++)
+        {
+            const LayerDef& ld = le.GetLayer(li);
+            CapturedLayer cl;
+            cl.name        = ld.name;
+            cl.maxChannels = ld.maxChannels;
+            for (const LayerTrack& lt : ld.tracks)
+            {
+                CapturedLayerTrack clt;
+                clt.guid     = lt.guid;
+                clt.isSpacer = lt.isSpacer;
+                cl.tracks.push_back(clt);
+            }
+            m_layers.push_back(cl);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +242,14 @@ void TransitionSnapshot::WriteParamLine(ProjectStateContext* ctx,
 void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
 {
     // Escape double-quotes in the name by replacing them with single-quotes
+    // Spacer rows are serialized as a minimal two-line block
+    if (m_isSpacer)
+    {
+        ctx->AddLine("<TSSPACER %d", m_slot);
+        ctx->AddLine(">");
+        return;
+    }
+
     std::string safeName = m_name;
     for (char& c : safeName)
         if (c == '"') c = '\'';
@@ -226,6 +259,36 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
 
     // Per-snapshot transition settings
     ctx->AddLine("DURATION %.4f %d %.4f", m_duration, (int)m_taper, m_taperExp);
+
+    // Active layer index (old-format compat; always written)
+    if (m_layerIdx >= 0)
+        ctx->AddLine("LAYER %d", m_layerIdx);
+
+    // Full layer state (new format – supersedes bare LAYER on recall)
+    if (!m_layers.empty())
+    {
+        ctx->AddLine("LAYERCOUNT %d", (int)m_layers.size());
+        for (const auto& cl : m_layers)
+        {
+            std::string safeName = cl.name;
+            for (char& c : safeName) if (c == '"') c = '\'';
+            ctx->AddLine("LAYERDEF \"%s\" %d", safeName.c_str(), cl.maxChannels);
+            for (const auto& clt : cl.tracks)
+            {
+                if (clt.isSpacer)
+                {
+                    ctx->AddLine("LAYERSPACER");
+                }
+                else
+                {
+                    char guidStr[40];
+                    LayersEngine::GuidToStr(clt.guid, guidStr);
+                    ctx->AddLine("LAYERTRACK %s", guidStr);
+                }
+            }
+            ctx->AddLine("LAYERDEFEND");
+        }
+    }
 
     // Optional notes (newlines collapsed to spaces for single-line storage)
     if (!m_notes.empty()) {
@@ -368,7 +431,59 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         if (strcmp(trimmed, ">") == 0)
             break; // end of TSSNAPSHOT block
 
-        if (strncmp(trimmed, "DURATION ", 9) == 0)
+        else if (strncmp(trimmed, "LAYER ", 6) == 0)
+        {
+            int li = -1;
+            sscanf(trimmed + 6, "%d", &li);
+            ss->m_layerIdx = li;
+        }
+        else if (strncmp(trimmed, "LAYERCOUNT ", 11) == 0)
+        {
+            // Just a count marker; actual data follows as LAYERDEF blocks.
+            ss->m_layers.clear();
+        }
+        else if (strncmp(trimmed, "LAYERDEF ", 9) == 0)
+        {
+            CapturedLayer cl;
+            const char* nq = strchr(trimmed + 9, '"');
+            if (nq)
+            {
+                nq++;
+                char nbuf[64] = {};
+                int ni = 0;
+                while (*nq && *nq != '"' && ni < 63) nbuf[ni++] = *nq++;
+                nbuf[ni] = '\0';
+                cl.name = nbuf;
+                // maxChannels is after the closing quote
+                const char* afterQ = (*nq == '"') ? nq + 1 : nq;
+                int mc = 0;
+                sscanf(afterQ, " %d", &mc);
+                cl.maxChannels = mc;
+            }
+            // Read sub-lines until LAYERDEFEND
+            char subLine[4096];
+            while (ctx->GetLine(subLine, sizeof(subLine)) == 0)
+            {
+                char* st = subLine;
+                while (*st == ' ' || *st == '\t') st++;
+                if (strcmp(st, "LAYERDEFEND") == 0) break;
+                if (strcmp(st, "LAYERSPACER") == 0)
+                {
+                    CapturedLayerTrack clt;
+                    clt.isSpacer = true;
+                    cl.tracks.push_back(clt);
+                }
+                else if (strncmp(st, "LAYERTRACK ", 11) == 0)
+                {
+                    CapturedLayerTrack clt;
+                    clt.isSpacer = false;
+                    LayersEngine::StrToGuid(st + 11, clt.guid);
+                    cl.tracks.push_back(clt);
+                }
+            }
+            ss->m_layers.push_back(cl);
+        }
+        else if (strncmp(trimmed, "DURATION ", 9) == 0)
         {
             // Per-snapshot transition settings (top-level line, before any TRACK)
             double dur = 2.0;  int tap = TAPER_SCURVE;  double ex = 2.0;

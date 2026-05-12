@@ -49,6 +49,9 @@ static HWND      s_hwnd    = nullptr;
 // Countdown ticks until deferred auto-setup runs (0 = inactive)
 static int s_pendingAutoSetupTicks = 0;
 
+// Guard: prevents re-entry when we write I_SOLO inside SetSurfaceSolo callbacks
+static bool s_inCallback = false;
+
 // ---------------------------------------------------------------------------
 // GUID helpers (Windows-only, same pattern as TransitionSnapshot.cpp)
 // ---------------------------------------------------------------------------
@@ -187,7 +190,7 @@ static void UpdateStatus()
     MediaTrack* busTr = GetBusTrack();
     if (!busTr)
     {
-        SetDlgItemTextA(s_hwnd, IDC_PAFL_STATUS, "No PAFL bus – click 'Initialize PAFL bus'.");
+        SetDlgItemTextA(s_hwnd, IDC_PAFL_STATUS, "No PAFL bus – select a track or click New.");
         return;
     }
 
@@ -234,6 +237,8 @@ static void UpdateStatus()
     char status[256] = {};
     if (!active.empty())
         snprintf(status, sizeof(status), "PAFL: %s", active.c_str());
+    else if (!s_intercept)
+        lstrcpynA(status, "PAFL inactive", sizeof(status));
     else
         lstrcpynA(status, "Program", sizeof(status));
 
@@ -247,7 +252,7 @@ static void LoadSettings()
 {
     const char* v;
     v = GetExtState(k_appSection, "intercept");
-    s_intercept = (v && atoi(v) != 0);
+    s_intercept = (!v || !v[0]) ? true : (atoi(v) != 0); // default: active
     v = GetExtState(k_appSection, "sendtype");
     s_sendType  = (v && v[0]) ? atoi(v) : 3;
     v = GetExtState(k_appSection, "hwout");
@@ -365,6 +370,48 @@ static MediaTrack* GetSrcTrackFromCombo(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// Bus track combo: lists all regular tracks so the user can pick an existing
+// track as the PAFL bus (or use the "New" button to create a fresh one).
+// ---------------------------------------------------------------------------
+static void FillBusTrackCombo(HWND hwnd)
+{
+    HWND hCombo = GetDlgItem(hwnd, IDC_PAFL_BUSTRACK);
+    SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+
+    int ni = (int)SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)"<none>");
+    SendMessageA(hCombo, CB_SETITEMDATA, ni, (LPARAM)-1);
+
+    MediaTrack* busTr = GetBusTrack();
+    int selIdx = 0;
+
+    const int n = GetNumTracks();
+    for (int i = 0; i < n; i++)
+    {
+        MediaTrack* tr = GetTrack(nullptr, i);
+        if (!tr) continue;
+        char name[128] = {};
+        GetSetMediaTrackInfo_String(tr, "P_NAME", name, false);
+        char label[160] = {};
+        if (name[0])
+            snprintf(label, sizeof(label), "%d: %s", i + 1, name);
+        else
+            snprintf(label, sizeof(label), "Track %d", i + 1);
+        int cbIdx = (int)SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)label);
+        SendMessageA(hCombo, CB_SETITEMDATA, cbIdx, (LPARAM)i);
+        if (busTr == tr) selIdx = cbIdx;
+    }
+    SendMessageA(hCombo, CB_SETCURSEL, selIdx, 0);
+}
+
+static MediaTrack* GetBusTrackFromCombo(HWND hwnd)
+{
+    int sel   = (int)SendDlgItemMessageA(hwnd, IDC_PAFL_BUSTRACK, CB_GETCURSEL, 0, 0);
+    INT_PTR d = (INT_PTR)SendDlgItemMessageA(hwnd, IDC_PAFL_BUSTRACK, CB_GETITEMDATA, sel, 0);
+    if (d == -1) return nullptr;
+    return GetTrack(nullptr, (int)d);
+}
+
+// ---------------------------------------------------------------------------
 // Core PAFL logic
 // ---------------------------------------------------------------------------
 void PaflToggleTrack(MediaTrack* tr)
@@ -373,27 +420,30 @@ void PaflToggleTrack(MediaTrack* tr)
     MediaTrack* busTr = GetBusTrack();
     if (!busTr) return;
 
-    // Ensure send exists; create muted if absent
-    int idx = FindSendToTrack(tr, busTr);
-    if (idx < 0)
-    {
-        idx = CreateTrackSend(tr, busTr);
-        if (idx < 0) return;
-        GetSetTrackSendInfo(tr, 0, idx, "I_SENDMODE", &s_sendType);
-        bool yes = true;
-        GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &yes);
-    }
-
-    bool* pCur = (bool*)GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", nullptr);
-    bool curMuted = pCur ? *pCur : true;
-    bool newMuted = !curMuted;
-    GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &newMuted);
-
     MediaTrack* srcTr = GetSrcTrack();
 
-    if (!newMuted)
+    // Determine current state: active = send exists AND is unmuted
+    int idx = FindSendToTrack(tr, busTr);
+    bool paflActive = false;
+    if (idx >= 0)
     {
-        // Just soloed: mute the program source send
+        bool* pm = (bool*)GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", nullptr);
+        paflActive = (pm && !*pm);
+    }
+
+    if (!paflActive)
+    {
+        // Activate: create send (or unmute an existing muted one from old state)
+        if (idx < 0)
+        {
+            idx = CreateTrackSend(tr, busTr);
+            if (idx < 0) return;
+            GetSetTrackSendInfo(tr, 0, idx, "I_SENDMODE", &s_sendType);
+        }
+        bool no = false;
+        GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &no);
+
+        // Mute the program source feed
         if (srcTr)
         {
             int si = FindSendToTrack(srcTr, busTr);
@@ -402,22 +452,21 @@ void PaflToggleTrack(MediaTrack* tr)
     }
     else
     {
-        // Just un-soloed: restore program feed if nothing else is active
-        bool anyActive = false;
-        MediaTrack* master = GetMasterTrack(nullptr);
-        const int n = GetNumTracks();
+        // Deactivate: remove the send entirely
+        RemoveTrackSend(tr, 0, idx);
 
-        auto checkActive = [&](MediaTrack* t) {
-            if (!t || t == busTr || t == srcTr) return;
+        // Restore program feed if no other tracks are still active
+        bool anyActive = false;
+        const int n = GetNumTracks();
+        for (int i = 0; i < n && !anyActive; i++)
+        {
+            MediaTrack* t = GetTrack(nullptr, i);
+            if (!t || t == busTr || t == srcTr || t == tr) continue;
             int si = FindSendToTrack(t, busTr);
-            if (si < 0) return;
+            if (si < 0) continue;
             bool* pm = (bool*)GetSetTrackSendInfo(t, 0, si, "B_MUTE", nullptr);
             if (pm && !*pm) anyActive = true;
-        };
-
-        checkActive(master);
-        for (int i = 0; i < n && !anyActive; i++)
-            checkActive(GetTrack(nullptr, i));
+        }
 
         if (!anyActive && srcTr)
         {
@@ -439,20 +488,29 @@ static void DoClearAll()
     MediaTrack* master = GetMasterTrack(nullptr);
     const int n = GetNumTracks();
 
-    auto muteTrackSend = [&](MediaTrack* tr) {
+    // Guard prevents our csurf SetSurfaceSolo handler from acting on the
+    // I_SOLO clears we're about to make.
+    s_inCallback = true;
+
+    auto clearTrack = [&](MediaTrack* tr) {
         if (!tr || tr == busTr || tr == srcTr) return;
         int idx = FindSendToTrack(tr, busTr);
         if (idx < 0) return;
-        // If send was unmuted (PAFL active), turn off the surface LED
-        bool* pm = (bool*)GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", nullptr);
-        if (pm && !*pm)
-            CSurf_SetSurfaceSolo(tr, false, nullptr);
-        bool yes = true;
-        GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &yes);
+        // Remove the PAFL send
+        RemoveTrackSend(tr, 0, idx);
+        // Clear I_SOLO so the surface LED goes off (REAPER notifies surfaces)
+        int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
+        if (ps && *ps != 0)
+        {
+            int zero = 0;
+            GetSetMediaTrackInfo(tr, "I_SOLO", &zero);
+        }
     };
 
-    muteTrackSend(master);
-    for (int i = 0; i < n; i++) muteTrackSend(GetTrack(nullptr, i));
+    clearTrack(master);
+    for (int i = 0; i < n; i++) clearTrack(GetTrack(nullptr, i));
+
+    s_inCallback = false;
 
     // Restore program feed
     if (srcTr)
@@ -464,6 +522,42 @@ static void DoClearAll()
     UpdateStatus();
     UpdateTimeline();
     Undo_OnStateChangeEx("PAFL: Clear all solos", UNDO_STATE_ALL, -1);
+}
+
+// ---------------------------------------------------------------------------
+// Create a brand-new PAFL bus track (always adds a fresh track).
+// ---------------------------------------------------------------------------
+static void DoCreateNewBus(HWND hwnd)
+{
+    InsertTrackAtIndex(GetNumTracks(), false);
+    TrackList_AdjustWindows(false);
+    MediaTrack* busTr = GetTrack(nullptr, GetNumTracks() - 1);
+    if (!busTr) return;
+
+    GetSetMediaTrackInfo_String(busTr, "P_NAME", (char*)"PAFL", true);
+    int vis = s_hideFader ? 0 : 1;
+    int one = 1, zero = 0;
+    GetSetMediaTrackInfo(busTr, "B_SHOWINTCP",   &vis);
+    GetSetMediaTrackInfo(busTr, "B_SHOWINMIXER", &vis);
+    GetSetMediaTrackInfo(busTr, "B_SOLO_DEFEAT", &one);
+    GetSetMediaTrackInfo(busTr, "B_MAINSEND",    &zero);
+    StoreTrackByKey(k_busKey, busTr);
+
+    MediaTrack* srcTr = hwnd ? GetSrcTrackFromCombo(hwnd) : GetSrcTrack();
+    if (srcTr && srcTr != busTr)
+    {
+        EnsureSend(srcTr, busTr, 0, false);
+        StoreTrackByKey(k_srcKey, srcTr);
+    }
+
+    if (hwnd)
+    {
+        FillBusTrackCombo(hwnd);
+        FillSrcTrackCombo(hwnd);
+    }
+    UpdateStatus();
+    UpdateTimeline();
+    Undo_OnStateChangeEx("PAFL: Create new bus", UNDO_STATE_ALL, -1);
 }
 
 static void DoInitBus(HWND hwnd)
@@ -498,97 +592,39 @@ static void DoInitBus(HWND hwnd)
         StoreTrackByKey(k_srcKey, srcTr);
     }
 
-    // Muted sends from every other track (including master)
-    PreventUIRefresh(1);
+    // Sends from regular tracks are created on-demand when the user solos them.
+    // DoInitBus only establishes the bus and program source – nothing else.
 
-    MediaTrack* master = GetMasterTrack(nullptr);
-    if (master && master != busTr && master != srcTr)
-        EnsureSend(master, busTr, s_sendType, true);
-
-    const int n = GetNumTracks();
-    for (int i = 0; i < n; i++)
+    if (hwnd)
     {
-        MediaTrack* tr = GetTrack(nullptr, i);
-        if (!tr || tr == busTr || tr == srcTr) continue;
-        EnsureSend(tr, busTr, s_sendType, true);
+        FillBusTrackCombo(hwnd);
+        FillSrcTrackCombo(hwnd);
     }
-    PreventUIRefresh(-1);
-
-    if (hwnd) FillSrcTrackCombo(hwnd);
     UpdateStatus();
     UpdateTimeline();
     Undo_OnStateChangeEx("PAFL: Initialize bus", UNDO_STATE_ALL, -1);
 }
 
 // ---------------------------------------------------------------------------
-// Solo intercept (called from plugin timer ~30ms)
+// Timer tick (called ~30fps from REAPER main thread)
+// Solo intercept is now handled by PaflMonitor (csurf_inst) which receives
+// REAPER's SetSurfaceSolo events directly – I_SOLO is left intact so surface
+// LEDs stay lit naturally.  The timer only drives deferred auto-setup.
 // ---------------------------------------------------------------------------
 void PaflWnd_TimerTick()
 {
-    // Handle pending auto-setup from project load
     if (s_pendingAutoSetupTicks > 0)
     {
         if (--s_pendingAutoSetupTicks == 0)
         {
+            s_intercept = true;
             DoInitBus(nullptr);
+            // Reflect active state in the button if the window is open
+            if (s_hwnd && IsWindow(s_hwnd))
+                CheckDlgButton(s_hwnd, IDC_PAFL_ACTIVE, BST_CHECKED);
             UpdateStatus();
         }
-        return;
     }
-
-    if (!s_intercept) return;
-
-    MediaTrack* busTr = GetBusTrack();
-    if (!busTr) return;
-
-    const int n = GetNumTracks();
-
-    // For each track:
-    //  - If solo button was just pressed (I_SOLO != 0): toggle PAFL, clear I_SOLO
-    //    to prevent REAPER's solo engine from affecting the main mix.
-    //  - If PAFL is active (send unmuted): re-assert surface LED every tick so it
-    //    stays lit even after a REAPER surface refresh (TrackList_UpdateAllExternalSurfaces).
-    //    The MCU surface is event-driven, so our CSurf_SetSurfaceSolo(tr, true) call
-    //    keeps the LED lit while I_SOLO remains 0.
-    auto processTrack = [&](MediaTrack* tr) {
-        if (!tr || tr == busTr) return;
-
-        int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
-        if (!ps) return;
-        const int soloVal = *ps;
-
-        // Determine current PAFL state (send unmuted = active)
-        const int sendIdx = FindSendToTrack(tr, busTr);
-        bool paflActive = false;
-        if (sendIdx >= 0)
-        {
-            bool* pm = (bool*)GetSetTrackSendInfo(tr, 0, sendIdx, "B_MUTE", nullptr);
-            paflActive = (pm && !*pm);
-        }
-
-        if (soloVal != 0)
-        {
-            // Solo button was pressed: clear I_SOLO so REAPER's solo engine
-            // doesn't affect the main mix, then toggle PAFL routing.
-            int zero = 0;
-            GetSetMediaTrackInfo(tr, "I_SOLO", &zero);
-            PaflToggleTrack(tr);
-
-            // Send surface LED feedback:
-            //   paflActive was state BEFORE toggle, so !paflActive is state AFTER.
-            //   Turn LED on if now active, off if now inactive.
-            CSurf_SetSurfaceSolo(tr, !paflActive, nullptr);
-        }
-        else if (paflActive)
-        {
-            // PAFL is active but I_SOLO is 0 (we cleared it above to avoid mix side
-            // effects). Re-assert the surface LED on every tick so it survives any
-            // REAPER surface refresh that re-reads I_SOLO.
-            CSurf_SetSurfaceSolo(tr, true, nullptr);
-        }
-    };
-
-    for (int i = 0; i < n; i++) processTrack(GetTrack(nullptr, i));
 }
 
 // ---------------------------------------------------------------------------
@@ -599,10 +635,11 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
     switch (msg)
     {
     case WM_INITDIALOG:
+        FillBusTrackCombo(hwnd);
         FillSrcTrackCombo(hwnd);
         FillHwOutCombo(hwnd);
         FillSendTypeCombo(hwnd);
-        CheckDlgButton(hwnd, IDC_PAFL_INTERCEPT,
+        CheckDlgButton(hwnd, IDC_PAFL_ACTIVE,
                        s_intercept ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_PAFL_AUTOSETUP,
                        s_autoSetup ? BST_CHECKED : BST_UNCHECKED);
@@ -614,11 +651,38 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
+        case IDC_PAFL_BUSTRACK:
+            if (HIWORD(wParam) == CBN_SELCHANGE)
+            {
+                // Switching the bus: clear any active solos first, then point
+                // at the new bus and reconnect the program source send.
+                DoClearAll();
+                MediaTrack* newBus = GetBusTrackFromCombo(hwnd);
+                StoreTrackByKey(k_busKey, newBus);
+                if (newBus)
+                {
+                    MediaTrack* srcTr = GetSrcTrackFromCombo(hwnd);
+                    if (srcTr && srcTr != newBus)
+                        EnsureSend(srcTr, newBus, 0, false);
+                }
+                UpdateStatus();
+                UpdateTimeline();
+            }
+            break;
+
+        case IDC_PAFL_NEWBUS:
+            DoCreateNewBus(hwnd);
+            break;
+
         case IDC_PAFL_SRCTRACK:
             if (HIWORD(wParam) == CBN_SELCHANGE)
             {
                 MediaTrack* tr = GetSrcTrackFromCombo(hwnd);
                 StoreTrackByKey(k_srcKey, tr);
+                // Ensure program source send if bus is already configured
+                MediaTrack* busTr = GetBusTrack();
+                if (tr && busTr && tr != busTr)
+                    EnsureSend(tr, busTr, 0, false);
             }
             break;
 
@@ -640,10 +704,33 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
             }
             break;
 
-        case IDC_PAFL_INTERCEPT:
-            s_intercept = (IsDlgButtonChecked(hwnd, IDC_PAFL_INTERCEPT) == BST_CHECKED);
+        case IDC_PAFL_ACTIVE:
+        {
+            bool nowActive = (IsDlgButtonChecked(hwnd, IDC_PAFL_ACTIVE) == BST_CHECKED);
+            s_intercept = nowActive;
             SaveSettings();
-            break;
+            if (nowActive)
+            {
+                // Activate: ensure the bus exists, then set up program source
+                if (!GetBusTrack())
+                {
+                    DoCreateNewBus(hwnd);
+                }
+                else
+                {
+                    MediaTrack* busTr = GetBusTrack();
+                    MediaTrack* srcTr = GetSrcTrackFromCombo(hwnd);
+                    if (srcTr && busTr && srcTr != busTr)
+                        EnsureSend(srcTr, busTr, 0, false);
+                    UpdateStatus();
+                }
+            }
+            else
+            {
+                DoClearAll();
+            }
+        }
+        break;
 
         case IDC_PAFL_AUTOSETUP:
             s_autoSetup = (IsDlgButtonChecked(hwnd, IDC_PAFL_AUTOSETUP) == BST_CHECKED);
@@ -654,7 +741,6 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
             s_hideFader = (IsDlgButtonChecked(hwnd, IDC_PAFL_HIDEFADER) == BST_CHECKED);
             SaveSettings();
             {
-                // Apply immediately to existing bus track
                 MediaTrack* busTr = GetBusTrack();
                 if (busTr)
                 {
@@ -664,14 +750,6 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
                     TrackList_AdjustWindows(false);
                 }
             }
-            break;
-
-        case IDC_PAFL_INIT:
-            DoInitBus(hwnd);
-            break;
-
-        case IDC_PAFL_CLEAR:
-            DoClearAll();
             break;
 
         case IDCANCEL:
@@ -692,18 +770,119 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
 }
 
 // ---------------------------------------------------------------------------
+// Control surface instance – receives REAPER's solo events natively.
+//
+// Strategy:
+//   • Leave I_SOLO intact → surface LEDs stay lit without any heartbeat.
+//   • Force I_SOLO=2 (solo-in-place) on activation so REAPER's solo engine
+//     doesn't mute other tracks in the main mix.  Changing 1→2 keeps the
+//     LED on because the value stays nonzero.
+//   • s_inCallback guards against re-entry when we write I_SOLO inside the
+//     callback (REAPER notifies surfaces synchronously from within the write).
+// ---------------------------------------------------------------------------
+class PaflMonitor : public IReaperControlSurface
+{
+public:
+    const char* GetTypeString() override { return "PAFLTRANSITIONS"; }
+    const char* GetDescString() override { return "Transition Snapshots PAFL"; }
+    const char* GetConfigString() override { return ""; }
+
+    void SetSurfaceSolo(MediaTrack* tr, bool solo) override
+    {
+        if (s_inCallback || !s_intercept) return;
+
+        MediaTrack* busTr = GetBusTrack();
+        if (!busTr || !tr || tr == busTr) return;
+
+        // Don't intercept the program source track itself
+        MediaTrack* srcTr = GetSrcTrack();
+        if (tr == srcTr) return;
+
+        s_inCallback = true;
+
+        if (solo)
+        {
+            // Track was soloed: add a PAFL send if not already present.
+            // If an old muted send exists (from a previous architecture), unmute it.
+            int idx = FindSendToTrack(tr, busTr);
+            if (idx < 0)
+            {
+                idx = CreateTrackSend(tr, busTr);
+                if (idx >= 0)
+                    GetSetTrackSendInfo(tr, 0, idx, "I_SENDMODE", &s_sendType);
+            }
+            if (idx >= 0)
+            {
+                bool no = false;
+                GetSetTrackSendInfo(tr, 0, idx, "B_MUTE", &no);
+            }
+
+            // Mute the program source so only the soloed channel feeds the bus
+            if (srcTr)
+            {
+                int si = FindSendToTrack(srcTr, busTr);
+                if (si >= 0) { bool yes = true; GetSetTrackSendInfo(srcTr, 0, si, "B_MUTE", &yes); }
+            }
+
+            // Force solo-in-place (I_SOLO=2) so REAPER doesn't mute the main mix.
+            // This call triggers another SetSurfaceSolo(tr, true) which hits the guard.
+            int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
+            if (ps && *ps != 2)
+            {
+                int sip = 2;
+                GetSetMediaTrackInfo(tr, "I_SOLO", &sip);
+            }
+        }
+        else
+        {
+            // Track was unsoloed: remove the PAFL send
+            int idx = FindSendToTrack(tr, busTr);
+            if (idx >= 0)
+                RemoveTrackSend(tr, 0, idx);
+
+            // Restore program feed if no other tracks are still PAFL-active
+            bool anyActive = false;
+            const int n = GetNumTracks();
+            for (int i = 0; i < n && !anyActive; i++)
+            {
+                MediaTrack* t = GetTrack(nullptr, i);
+                if (!t || t == busTr || t == srcTr) continue;
+                int si = FindSendToTrack(t, busTr);
+                if (si < 0) continue;
+                bool* pm = (bool*)GetSetTrackSendInfo(t, 0, si, "B_MUTE", nullptr);
+                if (pm && !*pm) anyActive = true;
+            }
+
+            if (!anyActive && srcTr)
+            {
+                int si = FindSendToTrack(srcTr, busTr);
+                if (si >= 0) { bool no = false; GetSetTrackSendInfo(srcTr, 0, si, "B_MUTE", &no); }
+            }
+        }
+
+        UpdateStatus();
+        UpdateTimeline();
+        s_inCallback = false;
+    }
+};
+
+static PaflMonitor s_paflMonitor;
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 void PaflWnd_Init(HINSTANCE hInstance)
 {
     s_hInst = hInstance;
     LoadSettings();
-    plugin_register("timer", (void*)PaflWnd_TimerTick);
+    plugin_register("timer",      (void*)PaflWnd_TimerTick);
+    plugin_register("csurf_inst", &s_paflMonitor);
 }
 
 void PaflWnd_Cleanup()
 {
-    plugin_register("-timer", (void*)PaflWnd_TimerTick);
+    plugin_register("-csurf_inst", &s_paflMonitor);
+    plugin_register("-timer",      (void*)PaflWnd_TimerTick);
     if (s_hwnd && IsWindow(s_hwnd))
     {
         DestroyWindow(s_hwnd);

@@ -5,6 +5,7 @@
 // REAPER > Preferences > Control Surfaces > Add...
 // ---------------------------------------------------------------------------
 #include "ControlSurface.h"
+#include "LayersEngine.h"
 #include "resource.h"
 
 #include <cstring>
@@ -100,45 +101,130 @@ static uint8_t FP16_SelectNote(int strip)
 std::string CSurfSettings::Serialize() const
 {
     char buf[256];
-    snprintf(buf, sizeof(buf), "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+    // 12 base fields (proto..followMCP); followLayers and extenders stored as tags
+    snprintf(buf, sizeof(buf), "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
         (int)proto, midiInDev, midiOutDev,
         templateIdx, channelCount,
-        followSel ? 1 : 0,
-        showVU ? 1 : 0,
-        showNames ? 1 : 0,
+        followSel    ? 1 : 0,
+        1,            // showVU: always on
+        1,            // showNames: always on
         faderMode,
         bankOffset,
-        sendColors ? 1 : 0,
-        followMCP ? 1 : 0,
-        midiInDev2, midiOutDev2);
-    return buf;
+        sendColors   ? 1 : 0,
+        followMCP    ? 1 : 0);
+
+    std::string result = buf;
+    result += followLayers ? "|fl:1" : "|fl:0";
+    result += "|exts:";
+    for (int i = 0; i < (int)extenders.size(); ++i)
+    {
+        if (i > 0) result += ';';
+        char tmp[32];
+        snprintf(tmp, sizeof(tmp), "%d,%d", extenders[i].midiInDev, extenders[i].midiOutDev);
+        result += tmp;
+    }
+    if (!btnMap.empty())
+    {
+        result += "|btnmap:";
+        char tmp[32];
+        bool first = true;
+        for (const auto& kv : btnMap)
+        {
+            if (!first) result += ',';
+            snprintf(tmp, sizeof(tmp), "%02X:%d:%d",
+                (unsigned)kv.first, (int)kv.second.type, kv.second.cmdId);
+            result += tmp;
+            first = false;
+        }
+    }
+    return result;
 }
 
 CSurfSettings CSurfSettings::Deserialize(const char* cfg)
 {
     CSurfSettings s;
     if (!cfg || !*cfg) return s;
+
     int p = 0, inDev = -1, outDev = -1, tmpl = 0, chCnt = 8;
     int fSel = 1, fVU = 1, fNames = 1, fMode = 0, bOff = 0, sCols = 0, fMCP = 0;
-    int inDev2 = -1, outDev2 = -1;
-    int n = sscanf(cfg, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
-        &p, &inDev, &outDev, &tmpl, &chCnt,
-        &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP,
-        &inDev2, &outDev2);
-    if (n >= 1)  s.proto        = (CSurfProtocol)p;
-    if (n >= 2)  s.midiInDev    = inDev;
-    if (n >= 3)  s.midiOutDev   = outDev;
-    if (n >= 4)  s.templateIdx  = tmpl;
-    if (n >= 5)  s.channelCount = (chCnt == 16) ? 16 : 8;
-    if (n >= 6)  s.followSel    = (fSel != 0);
-    if (n >= 7)  s.showVU       = (fVU != 0);
-    if (n >= 8)  s.showNames    = (fNames != 0);
-    if (n >= 9)  s.faderMode    = fMode;
-    if (n >= 10) s.bankOffset   = bOff;
-    if (n >= 11) s.sendColors   = (sCols != 0);
-    if (n >= 12) s.followMCP    = (fMCP != 0);
-    if (n >= 13) s.midiInDev2   = inDev2;
-    if (n >= 14) s.midiOutDev2  = outDev2;
+
+    // New format uses |fl: / |exts: tags; old format has 14 positional fields
+    const bool isNewFormat = (strstr(cfg, "|fl:") || strstr(cfg, "|exts:"));
+    if (isNewFormat)
+    {
+        sscanf(cfg, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+            &p, &inDev, &outDev, &tmpl, &chCnt,
+            &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP);
+        const char* fl = strstr(cfg, "|fl:");
+        if (fl) s.followLayers = (fl[4] != '0');
+        const char* exts = strstr(cfg, "|exts:");
+        if (exts)
+        {
+            exts += 6;
+            const char* cur = exts;
+            while (*cur && *cur != '|')
+            {
+                int in2 = -1, out2 = -1;
+                sscanf(cur, "%d,%d", &in2, &out2);
+                if (in2 >= 0 || out2 >= 0)
+                {
+                    ExtenderPort ep; ep.midiInDev = in2; ep.midiOutDev = out2;
+                    s.extenders.push_back(ep);
+                }
+                const char* semi = strchr(cur, ';');
+                const char* pipe = strchr(cur, '|');
+                if (!semi && !pipe) break;
+                if (!semi)        cur = pipe;
+                else if (!pipe)   cur = semi + 1;
+                else              cur = (semi < pipe) ? semi + 1 : pipe;
+            }
+        }
+    }
+    else
+    {
+        // Old 14-field format – promote fields 13/14 to first extender entry
+        int inDev2 = -1, outDev2 = -1;
+        int n = sscanf(cfg, "%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+            &p, &inDev, &outDev, &tmpl, &chCnt,
+            &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP,
+            &inDev2, &outDev2);
+        if (n >= 13 && (inDev2 >= 0 || outDev2 >= 0))
+        {
+            ExtenderPort ep;
+            ep.midiInDev  = (n >= 13) ? inDev2  : -1;
+            ep.midiOutDev = (n >= 14) ? outDev2 : -1;
+            s.extenders.push_back(ep);
+        }
+    }
+    s.proto        = (CSurfProtocol)p;
+    s.midiInDev    = inDev;
+    s.midiOutDev   = outDev;
+    s.templateIdx  = tmpl;
+    s.channelCount = (chCnt == 16) ? 16 : 8;
+    s.followSel    = (fSel   != 0);
+    // showVU / showNames are always true — no longer user settings
+    s.faderMode    = fMode;
+    s.bankOffset   = bOff;
+    s.sendColors   = (sCols  != 0);
+    s.followMCP    = (fMCP   != 0);
+
+    const char* bm = strstr(cfg, "|btnmap:");
+    if (bm)
+    {
+        bm += 8;
+        while (*bm)
+        {
+            unsigned note = 0; int type = 0, cmd = 0;
+            if (sscanf(bm, "%02X:%d:%d", &note, &type, &cmd) == 3)
+            {
+                BtnAction a; a.type = (BtnActionType)type; a.cmdId = cmd;
+                s.btnMap[(uint8_t)note] = a;
+            }
+            const char* next = strchr(bm, ',');
+            if (!next) break;
+            bm = next + 1;
+        }
+    }
     return s;
 }
 
@@ -190,13 +276,17 @@ TransCSurf::TransCSurf(const CSurfSettings& s, int* errStats)
             *errStats |= 2;
     }
 
-    if (s.midiInDev2 >= 0)
+    for (const auto& ext : s.extenders)
     {
-        m_midiIn2 = CreateMIDIInput(s.midiInDev2);
-        if (m_midiIn2) m_midiIn2->start();
+        midi_Input*  ei = nullptr;
+        midi_Output* eo = nullptr;
+        if (ext.midiInDev >= 0)  { ei = CreateMIDIInput(ext.midiInDev); if (ei) ei->start(); }
+        if (ext.midiOutDev >= 0)   eo = CreateMIDIOutput(ext.midiOutDev, false, nullptr);
+        m_extIn.push_back(ei);
+        m_extOut.push_back(eo);
     }
-    if (s.midiOutDev2 >= 0)
-        m_midiOut2 = CreateMIDIOutput(s.midiOutDev2, false, nullptr);
+    if (m_s.proto == CSurfProtocol::MCU)
+        m_s.channelCount = 8 + 8 * (int)m_extIn.size();
 
     if (m_midiOut)
     {
@@ -225,17 +315,10 @@ void TransCSurf::CloseNoReset()
         m_midiOut->Destroy();
         m_midiOut = nullptr;
     }
-    if (m_midiIn2)
-    {
-        m_midiIn2->stop();
-        m_midiIn2->Destroy();
-        m_midiIn2 = nullptr;
-    }
-    if (m_midiOut2)
-    {
-        m_midiOut2->Destroy();
-        m_midiOut2 = nullptr;
-    }
+    for (auto* ei : m_extIn)  { if (ei) { ei->stop(); ei->Destroy(); } }
+    for (auto* eo : m_extOut) { if (eo)   eo->Destroy(); }
+    m_extIn.clear();
+    m_extOut.clear();
 }
 
 void TransCSurf::ApplyNewSettings(const CSurfSettings& s)
@@ -252,13 +335,17 @@ void TransCSurf::ApplyNewSettings(const CSurfSettings& s)
     if (s.midiOutDev >= 0)
         m_midiOut = CreateMIDIOutput(s.midiOutDev, false, nullptr);
 
-    if (s.midiInDev2 >= 0)
+    for (const auto& ext : s.extenders)
     {
-        m_midiIn2 = CreateMIDIInput(s.midiInDev2);
-        if (m_midiIn2) m_midiIn2->start();
+        midi_Input*  ei = nullptr;
+        midi_Output* eo = nullptr;
+        if (ext.midiInDev >= 0)  { ei = CreateMIDIInput(ext.midiInDev); if (ei) ei->start(); }
+        if (ext.midiOutDev >= 0)   eo = CreateMIDIOutput(ext.midiOutDev, false, nullptr);
+        m_extIn.push_back(ei);
+        m_extOut.push_back(eo);
     }
-    if (s.midiOutDev2 >= 0)
-        m_midiOut2 = CreateMIDIOutput(s.midiOutDev2, false, nullptr);
+    if (m_s.proto == CSurfProtocol::MCU)
+        m_s.channelCount = 8 + 8 * (int)m_extIn.size();
 
     if (m_midiOut)
     {
@@ -276,6 +363,22 @@ std::string CSurf_GetCurrentConfig()
 {
     if (s_currentInstance) return s_currentInstance->GetConfigString();
     return {};
+}
+
+BtnMap CSurf_GetBtnMap()
+{
+    if (s_currentInstance) return s_currentInstance->GetBtnMap();
+    return {};
+}
+
+void CSurf_SetBtnMap(const BtnMap& map)
+{
+    if (s_currentInstance)
+    {
+        s_currentInstance->SetBtnMap(map);
+        // Persist immediately via GetConfigString (REAPER will call GetConfigString
+        // at next save; we just update the in-memory struct here)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +418,7 @@ void TransCSurf::Run()
     }
 
     // ---- VU meter updates (every ~100ms = every 3 Run() calls) ------------
-    if (m_midiOut && m_s.showVU &&
+    if (m_midiOut &&
         (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16))
     {
         if (++m_vuThrottle >= 3)
@@ -357,9 +460,12 @@ void TransCSurf::Run()
                 HUI_ProcessMIDI(ev, stripOffset);
         }
     };
-    pollInput(m_midiIn,  0);
-    if (m_s.proto != CSurfProtocol::FP16)  // FP16 has all 16 ch on one port
-        pollInput(m_midiIn2, m_s.channelCount);
+    pollInput(m_midiIn, 0);
+    if (m_s.proto != CSurfProtocol::FP16)
+    {
+        for (int e = 0; e < (int)m_extIn.size(); ++e)
+            pollInput(m_extIn[e], 8 + e * 8);
+    }
 
     // ---- Cursor key hold processing (every 100ms) -------------------------
     if (m_arrowStates & 0x0F)
@@ -386,15 +492,39 @@ void TransCSurf::Run()
 // ---------------------------------------------------------------------------
 int TransCSurf::GetTotalTracks() const
 {
+    if (m_s.followLayers)
+    {
+        int active = LayersEngine::Get().GetActiveLayer();
+        if (active >= 0)
+            return (int)LayersEngine::Get().GetLayer(active).tracks.size();
+    }
     return CSurf_NumTracks ? CSurf_NumTracks(m_s.followMCP) : GetNumTracks();
 }
 
 MediaTrack* TransCSurf::GetTrackForStrip(int strip) const
 {
-    int idx = m_bankOffset + strip; // 0-based track index
+    int idx = m_bankOffset + strip;
+    if (m_s.followLayers)
+    {
+        int active = LayersEngine::Get().GetActiveLayer();
+        if (active >= 0)
+        {
+            const LayerDef& layer = LayersEngine::Get().GetLayer(active);
+            if (idx < 0 || idx >= (int)layer.tracks.size()) return nullptr;
+            const GUID& g = layer.tracks[idx].guid;
+            int total = GetNumTracks ? GetNumTracks() : 0;
+            for (int i = 0; i < total; ++i)
+            {
+                MediaTrack* tr = GetTrack(nullptr, i);
+                if (!tr) continue;
+                GUID* tg = GetTrackGUID ? GetTrackGUID(tr) : nullptr;
+                if (tg && memcmp(tg, &g, sizeof(GUID)) == 0) return tr;
+            }
+            return nullptr;
+        }
+    }
     int total = GetTotalTracks();
     if (idx < 0 || idx >= total) return nullptr;
-    // CSurf_TrackFromID uses 1-based index (0 = master), so add 1
     if (CSurf_TrackFromID) return CSurf_TrackFromID(idx + 1, m_s.followMCP);
     return GetTrack(nullptr, idx);
 }
@@ -402,6 +532,27 @@ MediaTrack* TransCSurf::GetTrackForStrip(int strip) const
 int TransCSurf::GetStripForTrack(MediaTrack* tr) const
 {
     if (!tr) return -1;
+    if (m_s.followLayers)
+    {
+        int active = LayersEngine::Get().GetActiveLayer();
+        if (active >= 0)
+        {
+            const LayerDef& layer = LayersEngine::Get().GetLayer(active);
+            GUID* tg = GetTrackGUID ? GetTrackGUID(tr) : nullptr;
+            if (tg)
+            {
+                for (int i = 0; i < (int)layer.tracks.size(); ++i)
+                {
+                    if (memcmp(&layer.tracks[i].guid, tg, sizeof(GUID)) == 0)
+                    {
+                        int s = i - m_bankOffset;
+                        return (s >= 0 && s < m_s.channelCount) ? s : -1;
+                    }
+                }
+            }
+            return -1;
+        }
+    }
     // CSurf_TrackToID returns 1-based index (0 = master/-1 = not found)
     int trackIdx = CSurf_TrackToID ? (CSurf_TrackToID(tr, m_s.followMCP) - 1) : -1;
     if (trackIdx < 0)
@@ -454,6 +605,35 @@ void TransCSurf::ChannelRight()
 void TransCSurf::ScrollToTrack(MediaTrack* tr)
 {
     if (!tr) return;
+
+    if (m_s.followLayers)
+    {
+        int active = LayersEngine::Get().GetActiveLayer();
+        if (active >= 0)
+        {
+            const LayerDef& layer = LayersEngine::Get().GetLayer(active);
+            GUID* tg = GetTrackGUID ? GetTrackGUID(tr) : nullptr;
+            if (tg)
+            {
+                for (int i = 0; i < (int)layer.tracks.size(); ++i)
+                {
+                    if (memcmp(&layer.tracks[i].guid, tg, sizeof(GUID)) == 0)
+                    {
+                        bool vis = (i >= m_bankOffset && i < m_bankOffset + m_s.channelCount);
+                        if (!vis)
+                        {
+                            int maxOff = std::max(0, (int)layer.tracks.size() - m_s.channelCount);
+                            m_bankOffset = std::min(i, maxOff);
+                            RefreshAll();
+                        }
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+    }
+
     int total = GetTotalTracks();
     for (int i = 0; i < total; ++i)
     {
@@ -613,7 +793,7 @@ void TransCSurf::SetRepeatState(bool rep)
 void TransCSurf::SetTrackTitle(MediaTrack* tr, const char* title)
 {
     int strip = GetStripForTrack(tr);
-    if (strip < 0 || !m_midiOut || !m_s.showNames) return;
+    if (strip < 0 || !m_midiOut) return;
     if (m_s.proto == CSurfProtocol::FP16)
     {
         char bot[8];
@@ -751,7 +931,7 @@ void TransCSurf::RefreshAll()
             HUI_SendLED(strip, 4, sel);
 
         // --- Track name (scribble) ---
-        if (m_s.showNames && (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16))
+        if (m_s.proto == CSurfProtocol::MCU || m_s.proto == CSurfProtocol::FP16)
         {
             char name[128] = "";
             if (tr) GetTrackName(tr, name, (int)sizeof(name));
@@ -1068,21 +1248,23 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down, int stripOffset)
 // ---------------------------------------------------------------------------
 void TransCSurf::SendMIDI(uint8_t b0, uint8_t b1, uint8_t b2)
 {
-    if (m_midiOut)  m_midiOut->Send(b0, b1, b2, -1);
-    if (m_midiOut2 && m_s.proto != CSurfProtocol::FP16) m_midiOut2->Send(b0, b1, b2, -1);
+    if (m_midiOut) m_midiOut->Send(b0, b1, b2, -1);
+    if (m_s.proto != CSurfProtocol::FP16)
+        for (auto* eo : m_extOut) if (eo) eo->Send(b0, b1, b2, -1);
 }
 
 void TransCSurf::SendSysEx(const uint8_t* data, int len)
 {
-    if ((!m_midiOut && !m_midiOut2) || len <= 0) return;
+    if ((!m_midiOut && m_extOut.empty()) || len <= 0) return;
     int allocSize = (int)sizeof(MIDI_event_t) - 4 + len;
     void* buf = _alloca((size_t)allocSize);
     MIDI_event_t* ev = (MIDI_event_t*)buf;
     ev->frame_offset = -1;
     ev->size = len;
     memcpy(ev->midi_message, data, (size_t)len);
-    if (m_midiOut)  m_midiOut->SendMsg(ev, -1);
-    if (m_midiOut2 && m_s.proto != CSurfProtocol::FP16) m_midiOut2->SendMsg(ev, -1);
+    if (m_midiOut) m_midiOut->SendMsg(ev, -1);
+    if (m_s.proto != CSurfProtocol::FP16)
+        for (auto* eo : m_extOut) if (eo) eo->SendMsg(ev, -1);
 }
 
 void TransCSurf::MCU_SendFader(int strip, double vol)
@@ -1232,6 +1414,23 @@ void TransCSurf::FP16_ProcessMIDI(const MIDI_event_t* ev)
 
 void TransCSurf::FP16_SetButtonAction(uint8_t note, bool down)
 {
+    // Check custom button map overrides first
+    {
+        auto it = m_s.btnMap.find(note);
+        if (it != m_s.btnMap.end())
+        {
+            const BtnAction& a = it->second;
+            if (a.type == BtnActionType::None)
+                return;  // disabled
+            if (a.type == BtnActionType::Command)
+            {
+                if (down) Main_OnCommand(a.cmdId, 0);
+                return;
+            }
+            // BtnActionType::Default → fall through to built-in behaviour
+        }
+    }
+
     // Fader touch (contiguous for all 16 strips: 0x68-0x77)
     if (note >= 0x68 && note <= 0x77)
     {

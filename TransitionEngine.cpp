@@ -132,12 +132,17 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
     if (!timed)
     {
         // ---- Instant path: remove extras, add missing, set params ---------
+        // Remove in reverse order so indices remain valid; set offline first
+        // to avoid a chain-reconstruction click on each delete.
         for (int i = TrackFX_GetCount(tr) - 1; i >= 0; --i)
         {
             char name[256] = {};
             TrackFX_GetFXName(tr, i, name, sizeof(name));
             if (!inSnapshot(name, TrackFX_GetNumParams(tr, i)))
+            {
+                TrackFX_SetOffline(tr, i, true);
                 TrackFX_Delete(tr, i);
+            }
         }
         for (const auto& fxs : ts.fx)
         {
@@ -146,6 +151,13 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             {
                 slot = TrackFX_AddByName(tr, fxs.name, false, -1000);
                 if (slot < 0) continue;
+                // Offline sandwich: prevent processing with uninitialised state
+                TrackFX_SetOffline(tr, slot, true);
+                TrackFX_SetEnabled(tr, slot, fxs.enabled);
+                for (int p = 0; p < (int)fxs.normVals.size(); ++p)
+                    TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                TrackFX_SetOffline(tr, slot, false);
+                continue; // params already set above
             }
             TrackFX_SetEnabled(tr, slot, fxs.enabled);
             for (int p = 0; p < (int)fxs.normVals.size(); ++p)
@@ -207,19 +219,28 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         slot = TrackFX_AddByName(tr, fxs.name, false, -1000);
         if (slot < 0) continue; // plugin not installed
 
-        // Set all params to target immediately (BuildLerpLists skips these
-        // because start==end; they sound correct right away)
+        // ---- Offline sandwich ----
+        // Take the plugin offline immediately so the audio thread never sees
+        // it processing audio with uninitialised DSP state (closes the race
+        // window between AddByName and the wet=0 write below).
+        TrackFX_SetOffline(tr, slot, true);
+
+        // Set all params to target while offline
         TrackFX_SetEnabled(tr, slot, fxs.enabled);
         for (int p = 0; p < (int)fxs.normVals.size(); ++p)
             TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
 
-        // Start at wet=0 and fade in so the plugin enters gracefully
+        // Set wet=0 before bringing online so the fade-in starts clean
         int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
-        if (wetIdx >= 0 && fxs.enabled)
-        {
+        if (wetIdx >= 0)
             TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+
+        // Bring online — plugin starts processing at correct params with wet=0
+        TrackFX_SetOffline(tr, slot, false);
+
+        // Fade wet in if enabled
+        if (fxs.enabled && wetIdx >= 0)
             wetLerps.push_back({ tr, slot, wetIdx, 0.0, 1.0, false, false });
-        }
     }
 }
 
@@ -454,13 +475,18 @@ void TransitionEngine::SnapToEnd()
         }
     }
 
-    // Delete in descending slot order (so earlier indices aren't invalidated)
+    // Delete in descending slot order (so earlier indices aren't invalidated).
+    // Set offline first so REAPER removes each plugin from the signal path
+    // cleanly before destroying it — avoids the chain-reconstruction click.
     std::sort(toDelete.begin(), toDelete.end(),
               [](const DelEntry& a, const DelEntry& b) {
                   return a.tr == b.tr ? a.slot > b.slot : a.tr > b.tr;
               });
     for (const auto& de : toDelete)
+    {
+        TrackFX_SetOffline(de.tr, de.slot, true);
         TrackFX_Delete(de.tr, de.slot);
+    }
 
     m_volPanLerps.clear();
     m_paramLerps.clear();

@@ -2,11 +2,40 @@
 #include "api.h"
 #include <string>
 #include <cstdint>
+#include <unordered_map>
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // Protocols
 // ---------------------------------------------------------------------------
 enum class CSurfProtocol : int { MCU = 0, HUI = 1, FP16 = 2 };
+
+// ---------------------------------------------------------------------------
+// Button action override (used by BtnMap)
+// ---------------------------------------------------------------------------
+enum class BtnActionType : uint8_t {
+    Default = 0,  // use the protocol's built-in default
+    None    = 1,  // disabled / no-op
+    Command = 2,  // call Main_OnCommand(cmdId, 0) on button-press
+};
+
+struct BtnAction {
+    BtnActionType type  = BtnActionType::Default;
+    int           cmdId = 0;  // used when type == Command
+};
+
+// Map from MIDI note byte → custom action.  Only entries that differ from
+// Default are stored; absent notes fall through to built-in behaviour.
+using BtnMap = std::unordered_map<uint8_t, BtnAction>;
+
+// ---------------------------------------------------------------------------
+// Extender MIDI port descriptor
+// ---------------------------------------------------------------------------
+struct ExtenderPort
+{
+    int midiInDev  = -1;
+    int midiOutDev = -1;
+};
 
 // ---------------------------------------------------------------------------
 // Pre-baked surface templates
@@ -33,14 +62,15 @@ struct CSurfSettings
     int           templateIdx   = 0;
     int           channelCount  = 8;    // 8 or 16
     bool          followSel     = true; // bank scrolls to selected track
-    bool          showVU        = true;
-    bool          showNames     = true;
     int           faderMode     = 0;    // 0=Volume, 1=Pan, 2=Sends
     int           bankOffset    = 0;    // initial bank starting track index
-    int           midiInDev2    = -1;   // extender / 2nd port (optional)
-    int           midiOutDev2   = -1;
     bool          sendColors    = false; // send X-Touch scribble strip colors
     bool          followMCP     = false; // use MCP (mixer) track order
+    bool          followLayers  = false; // bank follows active Layer track list
+
+    std::vector<ExtenderPort> extenders; // additional MCU extender ports
+
+    BtnMap        btnMap;               // per-button action overrides (FP16)
 
     std::string Serialize()   const;
     static CSurfSettings Deserialize(const char* cfg);
@@ -82,6 +112,10 @@ public:
     // Apply new settings at runtime (called from standalone config dialog)
     void ApplyNewSettings(const CSurfSettings& s);
 
+    // Button map accessors
+    BtnMap GetBtnMap() const { return m_s.btnMap; }
+    void   SetBtnMap(const BtnMap& map) { m_s.btnMap = map; }
+
 private:
     CSurfSettings m_s;
     mutable std::string m_descStr;
@@ -89,8 +123,8 @@ private:
 
     midi_Input*  m_midiIn   = nullptr;
     midi_Output* m_midiOut  = nullptr;
-    midi_Input*  m_midiIn2  = nullptr; // extender / 2nd port
-    midi_Output* m_midiOut2 = nullptr;
+    std::vector<midi_Input*>  m_extIn;  // extender MIDI inputs  (parallel arrays)
+    std::vector<midi_Output*> m_extOut; // extender MIDI outputs
 
     int  m_bankOffset = 0;  // first visible track index (1-based REAPER index)
 
@@ -192,3 +226,7 @@ std::string CSurf_GetCurrentConfig();
 
 // Open a standalone (modal) settings dialog from the Extensions menu
 void CSurf_ShowStandaloneConfig(HWND parent);
+
+// Button map access (live instance)
+BtnMap      CSurf_GetBtnMap();
+void        CSurf_SetBtnMap(const BtnMap& map);

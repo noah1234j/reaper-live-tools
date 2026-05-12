@@ -119,11 +119,45 @@
 #define REAPERAPI_WANT_DockWindowActivate
 #define REAPERAPI_WANT_DockIsChildOfDock
 
-// Transport / navigation (control surface)
+// Control surface transport / navigation helpers
 #define REAPERAPI_WANT_CSurf_OnPlay
 #define REAPERAPI_WANT_CSurf_OnStop
 #define REAPERAPI_WANT_CSurf_OnRecord
-#define REAPERAPI_WANT_CSurf_OnRewFwd
 #define REAPERAPI_WANT_CSurf_OnArrow
+#define REAPERAPI_WANT_CSurf_OnRewFwd
+#define REAPERAPI_WANT_TrackFX_Show
+#define REAPERAPI_WANT_GetTrackGUID
+#define REAPERAPI_WANT_GetSelectedTrack
+
+// FX offline (TransitionEngine – FX chain offline swap)
+#define REAPERAPI_WANT_TrackFX_SetOffline
+
+// Track sends removal (PAFL / Talkback)
+#define REAPERAPI_WANT_RemoveTrackSend
+// Hardware input enumeration (Talkback)
+#define REAPERAPI_WANT_GetInputChannelName
+
+// Audio hardware hook (Live Monitor)
+#define REAPERAPI_WANT_Audio_RegHardwareHook
+
+// Config variable read (Live Optimizer)
+#define REAPERAPI_WANT_get_config_var
+
+// Track grouping (DCA engine)
+#define REAPERAPI_WANT_GetSetTrackGroupMembershipEx
+#define REAPERAPI_WANT_DeleteTrack
+#define REAPERAPI_WANT_SetMediaTrackInfo_Value   // numeric setter convenience
+
+// Track selection / counting (Layers, MuteGroups)
+#define REAPERAPI_WANT_CountTracks
+#define REAPERAPI_WANT_CountSelectedTracks
+#define REAPERAPI_WANT_SetOnlyTrackSelected
+#define REAPERAPI_WANT_UpdateArrange
+
+// User input dialog (MuteGroups)
+#define REAPERAPI_WANT_GetUserInputs
+
+// GUID ↔ string (MuteGroups)
+#define REAPERAPI_WANT_GuidToStr
 
 #include "reaper_plugin_functions.h"

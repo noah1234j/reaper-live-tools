@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <windowsx.h>
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -19,6 +20,18 @@ static HINSTANCE g_lhInstance = nullptr;
 // Context-menu item IDs
 enum { LCTX_RENAME = 200, LCTX_OVERWRITE, LCTX_DELETE };
 
+// Drag-drop reorder state (layouts list)
+static int        g_layDragSrc     = -1;
+static int        g_layDragTarget  = -1;
+static HIMAGELIST g_layHDragImages = nullptr;
+
+// List subclass state (layouts list)
+static WNDPROC s_layOrigListProc = nullptr;
+static bool    s_layLbTracking   = false;
+static POINT   s_layLbDownPt     = {};
+static int     s_layLbDownItem   = -1;
+static DWORD   s_layLbDownTime   = 0;
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
@@ -29,6 +42,8 @@ static void DoRecall(HWND hwnd, int index);
 static void ShowLayoutContextMenu(HWND hwnd, int item, POINT pt);
 static int  GetSelectedLayoutIndex(HWND hwnd);
 static int  ComputeLayoutMask(HWND hwnd);
+static void DoEndDragLayout(HWND hwnd);
+static LRESULT CALLBACK LayoutListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -235,6 +250,154 @@ static void ShowLayoutContextMenu(HWND hwnd, int item, POINT pt)
 }
 
 // ---------------------------------------------------------------------------
+// DoEndDragLayout – commit drag-to-reorder on the layouts list
+// ---------------------------------------------------------------------------
+static void DoEndDragLayout(HWND hwnd)
+{
+    HWND hList = GetDlgItem(hwnd, IDC_LAY_LIST);
+
+    if (g_layHDragImages)
+    {
+        ImageList_DragLeave(hwnd);
+        ImageList_EndDrag();
+        ImageList_Destroy(g_layHDragImages);
+        g_layHDragImages = nullptr;
+    }
+    ListView_SetItemState(hList, -1, 0, LVIS_DROPHILITED);
+
+    int src = g_layDragSrc;
+    int tgt = g_layDragTarget;
+    g_layDragSrc    = -1;
+    g_layDragTarget = -1;
+
+    if (src < 0 || tgt < 0 || src == tgt) return;
+    if (src >= (int)g_layouts.size() || tgt >= (int)g_layouts.size()) return;
+
+    auto moved = std::move(g_layouts[src]);
+    g_layouts.erase(g_layouts.begin() + src);
+    int insertAt = (src < tgt) ? tgt - 1 : tgt;
+    if (insertAt >= (int)g_layouts.size())
+        g_layouts.push_back(std::move(moved));
+    else
+        g_layouts.insert(g_layouts.begin() + insertAt, std::move(moved));
+
+    for (int i = 0; i < (int)g_layouts.size(); i++)
+        g_layouts[i]->m_slot = i;
+
+    RefreshLayoutList(hwnd);
+    ListView_SetItemState(hList, insertAt,
+        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(hList, insertAt, FALSE);
+    Undo_OnStateChangeEx("Reorder Layout", -1, -1);
+}
+
+// ---------------------------------------------------------------------------
+// LayoutListSubclassProc – intercept mouse on the layouts list for drag-drop
+// ---------------------------------------------------------------------------
+static LRESULT CALLBACK LayoutListSubclassProc(HWND hList, UINT msg,
+                                                WPARAM wParam, LPARAM lParam)
+{
+    HWND dlg = GetParent(hList);
+
+    switch (msg)
+    {
+    case WM_LBUTTONDOWN:
+    {
+        LRESULT r = CallWindowProc(s_layOrigListProc, hList, msg, wParam, lParam);
+        LVHITTESTINFO hti = {};
+        hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        int item = ListView_HitTest(hList, &hti);
+        if (item >= 0)
+        {
+            s_layLbTracking = true;
+            s_layLbDownPt   = hti.pt;
+            s_layLbDownItem = item;
+            s_layLbDownTime = GetTickCount();
+        }
+        return r;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        if (s_layLbTracking && !(wParam & MK_LBUTTON))
+            s_layLbTracking = false;
+
+        if (s_layLbTracking && g_layDragSrc < 0)
+        {
+            bool movedEnough = (abs(pt.x - s_layLbDownPt.x) > GetSystemMetrics(SM_CXDRAG) ||
+                                abs(pt.y - s_layLbDownPt.y) > GetSystemMetrics(SM_CYDRAG));
+            bool heldLongEnough = (GetTickCount() - s_layLbDownTime >= 200);
+            if (movedEnough && heldLongEnough)
+            {
+                g_layDragSrc    = s_layLbDownItem;
+                g_layDragTarget = -1;
+                s_layLbTracking = false;
+                SetCapture(hList);
+
+                POINT ptOffset = { 8, 8 };
+                g_layHDragImages = ListView_CreateDragImage(hList, g_layDragSrc, &ptOffset);
+                if (g_layHDragImages)
+                {
+                    POINT dlgPt = pt;
+                    ClientToScreen(hList, &dlgPt);
+                    ScreenToClient(dlg, &dlgPt);
+                    ImageList_BeginDrag(g_layHDragImages, 0, 8, 8);
+                    ImageList_DragEnter(dlg, dlgPt.x, dlgPt.y);
+                }
+            }
+        }
+
+        if (g_layDragSrc >= 0)
+        {
+            POINT dlgPt = pt;
+            ClientToScreen(hList, &dlgPt);
+            ScreenToClient(dlg, &dlgPt);
+            if (g_layHDragImages)
+            {
+                ImageList_DragMove(dlgPt.x, dlgPt.y);
+                ImageList_DragShowNolock(FALSE);
+            }
+            LVHITTESTINFO hti = {};
+            hti.pt = pt;
+            int newTgt = ListView_HitTest(hList, &hti);
+            if (newTgt != g_layDragTarget)
+            {
+                g_layDragTarget = newTgt;
+                ListView_SetItemState(hList, -1, 0, LVIS_DROPHILITED);
+                if (g_layDragTarget >= 0)
+                    ListView_SetItemState(hList, g_layDragTarget,
+                                         LVIS_DROPHILITED, LVIS_DROPHILITED);
+            }
+            if (g_layHDragImages)
+                ImageList_DragShowNolock(TRUE);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_LBUTTONUP:
+        s_layLbTracking = false;
+        if (g_layDragSrc >= 0)
+        {
+            ReleaseCapture();
+            DoEndDragLayout(dlg);
+            return 0;
+        }
+        break;
+
+    case WM_CAPTURECHANGED:
+        s_layLbTracking = false;
+        if (g_layDragSrc >= 0)
+            DoEndDragLayout(dlg);
+        break;
+    }
+
+    return CallWindowProc(s_layOrigListProc, hList, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
 // DialogProc
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK LayoutsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -273,6 +436,10 @@ static INT_PTR CALLBACK LayoutsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             ListView_InsertColumn(hList, 1, &col);
             col.cx      = 110; col.pszText = const_cast<char*>("Date");
             ListView_InsertColumn(hList, 2, &col);
+
+            // Subclass the list for drag-drop reordering
+            s_layOrigListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
+                hList, GWLP_WNDPROC, (LONG_PTR)LayoutListSubclassProc);
         }
 
         // Default: all settings checked
@@ -330,38 +497,6 @@ static INT_PTR CALLBACK LayoutsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             break;
         }
 
-        case IDC_LAY_UP:
-        {
-            int sel = GetSelectedLayoutIndex(hwnd);
-            if (sel > 0)
-            {
-                std::swap(g_layouts[sel], g_layouts[sel - 1]);
-                g_layouts[sel - 1]->m_slot = sel - 1;
-                g_layouts[sel    ]->m_slot = sel;
-                RefreshLayoutList(hwnd);
-                HWND hList = GetDlgItem(hwnd, IDC_LAY_LIST);
-                ListView_SetItemState(hList, sel - 1,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            }
-            break;
-        }
-
-        case IDC_LAY_DOWN:
-        {
-            int sel = GetSelectedLayoutIndex(hwnd);
-            if (sel >= 0 && sel + 1 < (int)g_layouts.size())
-            {
-                std::swap(g_layouts[sel], g_layouts[sel + 1]);
-                g_layouts[sel    ]->m_slot = sel;
-                g_layouts[sel + 1]->m_slot = sel + 1;
-                RefreshLayoutList(hwnd);
-                HWND hList = GetDlgItem(hwnd, IDC_LAY_LIST);
-                ListView_SetItemState(hList, sel + 1,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            }
-            break;
-        }
-
         default:
             break;
         }
@@ -407,6 +542,12 @@ static INT_PTR CALLBACK LayoutsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         return TRUE;
 
     case WM_DESTROY:
+        if (s_layOrigListProc)
+        {
+            HWND hListD = GetDlgItem(hwnd, IDC_LAY_LIST);
+            if (hListD) SetWindowLongPtr(hListD, GWLP_WNDPROC, (LONG_PTR)s_layOrigListProc);
+            s_layOrigListProc = nullptr;
+        }
         g_lwnd = nullptr;
         return TRUE;
 

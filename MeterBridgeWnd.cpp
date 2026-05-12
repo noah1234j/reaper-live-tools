@@ -25,14 +25,51 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-static const int  k_StripW      = 14;       // strip width in pixels
-static const UINT k_TimerID     = 44;       // WM_TIMER id
-static const UINT k_TimerMs     = 60;       // ~16 fps
-static const int  k_PeakHoldTicks = 33;     // ~2 s at 60 ms/tick
-static const double k_MeterMin  = -60.0;    // dBFS floor
-static const double k_MeterMax  =  +6.0;    // dBFS ceiling
-static const char* k_ExtSection = "reaper_transitions";
-static const char* k_DockKey    = "meterbridge_docked";
+static const UINT k_TimerID        = 44;       // WM_TIMER id
+static const double k_MeterMin     = -60.0;    // dBFS floor
+static const double k_MeterMax     =  +6.0;    // dBFS ceiling
+static const char* k_ExtSection    = "reaper_transitions";
+static const char* k_DockKey       = "meterbridge_docked";
+
+// ---------------------------------------------------------------------------
+// User-configurable settings (persisted via GetExtState / SetExtState)
+// ---------------------------------------------------------------------------
+static int g_mb_StripW        = 14;   // strip width in pixels
+static int g_mb_FontSize      =  8;   // positive px; used as -g_mb_FontSize in LOGFONT
+static int g_mb_NameH         = 56;   // name zone height in pixels
+static int g_mb_PeakHoldTicks = 33;   // ~2 s at 60 ms/tick
+static int g_mb_Fps           = 16;   // repaint/poll rate (16 ≈ 60 ms)
+
+static void MB_LoadSettings()
+{
+    auto readInt = [](const char* key, int def, int lo, int hi) -> int {
+        const char* v = GetExtState(k_ExtSection, key);
+        if (!v || !*v) return def;
+        int val = atoi(v);
+        if (val < lo) val = lo;
+        if (val > hi) val = hi;
+        return val;
+    };
+    g_mb_StripW        = readInt("mb_strip_w",         14,  6, 80);
+    g_mb_FontSize      = readInt("mb_font_size",         8,  4, 32);
+    g_mb_NameH         = readInt("mb_name_h",           56, 10,200);
+    g_mb_PeakHoldTicks = readInt("mb_peak_hold_ticks",  33,  0,300);
+    g_mb_Fps           = readInt("mb_fps",              16,  1, 60);
+}
+
+static void MB_SaveSettings()
+{
+    char buf[32];
+    auto saveInt = [&](const char* key, int val) {
+        _itoa_s(val, buf, 10);
+        SetExtState(k_ExtSection, key, buf, true);
+    };
+    saveInt("mb_strip_w",         g_mb_StripW);
+    saveInt("mb_font_size",       g_mb_FontSize);
+    saveInt("mb_name_h",          g_mb_NameH);
+    saveInt("mb_peak_hold_ticks", g_mb_PeakHoldTicks);
+    saveInt("mb_fps",             g_mb_Fps);
+}
 
 // ---------------------------------------------------------------------------
 // Per-strip state (one entry per visible track)
@@ -136,7 +173,7 @@ static void PollStrips()
         if (db >= s.peakHoldDb || s.peakHoldTick <= 0)
         {
             s.peakHoldDb   = db;
-            s.peakHoldTick = k_PeakHoldTicks;
+            s.peakHoldTick = g_mb_PeakHoldTicks;
         }
         else
         {
@@ -218,18 +255,32 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     if (stripIdx < 0 || stripIdx >= (int)s_strips.size()) return;
     const StripState& s = s_strips[(size_t)stripIdx];
 
-    const int W = k_StripW;
+    const int W = g_mb_StripW;
     int y = 0;
 
     // Row heights
-    const int kColorBandH = 3;
-    const int kNameH      = 56;   // rotated name zone
+    const int kColorBandH = 2;
+    const int kNameH      = g_mb_NameH;
     const int kStatusH    = 24;   // M/S/R: 3 × 8 px
     const int kSafeH      = 8;
     const int _mh         = clientH - kColorBandH - kNameH - kStatusH - kSafeH;
     const int kMeterH     = _mh > 4 ? _mh : 4;
 
-    // ── 1. Track color band ──────────────────────────────────────────────────
+    // ── REAPER Default 7.0 palette (values decoded from .ReaperTheme file) ──
+    // col_mixerbg=RGB(51,51,51)  col_tr1_bg=RGB(66,66,66)  col_tr2_bg=RGB(69,69,69)
+    // col_vuintcol=RGB(32,32,32) col_vutop=RGB(0,254,149)   col_vubot=RGB(0,191,191)
+    // col_vuclip=RGB(187,37,0)
+    const COLORREF kStripBg = (stripIdx & 1) ? RGB(66, 66, 66) : RGB(60, 60, 60);
+
+    // ── 0. Full strip background ─────────────────────────────────────────────
+    {
+        RECT rc = { x, 0, x + W, clientH };
+        HBRUSH hbr = CreateSolidBrush(kStripBg);
+        FillRect(hdc, &rc, hbr);
+        DeleteObject(hbr);
+    }
+
+    // ── 1. Track color band (2 px) ───────────────────────────────────────────
     {
         RECT rc = { x, y, x + W - 1, y + kColorBandH };
         HBRUSH hbr = CreateSolidBrush(s.trackColor);
@@ -238,38 +289,43 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     }
     y += kColorBandH;
 
-    // ── 2. Rotated track name (90°, reads bottom→top) ────────────────────────
+    // ── 2. Rotated track name (Tahoma -8, 90° CCW) ───────────────────────────
     {
+        // Name bg: 20% track color blended into strip bg — subtle tinting
+        const int rs = (int)GetRValue(kStripBg), gs = (int)GetGValue(kStripBg), bs2 = (int)GetBValue(kStripBg);
+        const int rt = (int)GetRValue(s.trackColor), gt = (int)GetGValue(s.trackColor), bt = (int)GetBValue(s.trackColor);
+        COLORREF nameBg = RGB(rs * 80 / 100 + rt * 20 / 100,
+                              gs * 80 / 100 + gt * 20 / 100,
+                              bs2 * 80 / 100 + bt * 20 / 100);
         RECT rcBg = { x, y, x + W - 1, y + kNameH };
-        HBRUSH hbg = CreateSolidBrush(RGB(20, 20, 20));
+        HBRUSH hbg = CreateSolidBrush(nameBg);
         FillRect(hdc, &rcBg, hbg);
         DeleteObject(hbg);
 
-        // Clip text to this zone
+        // Clip to name zone
         HRGN hOldClip = CreateRectRgn(0, 0, 1, 1);
         int  hadClip  = GetClipRgn(hdc, hOldClip);
         HRGN hClip    = CreateRectRgn(x, y, x + W - 1, y + kNameH);
         SelectClipRgn(hdc, hClip);
         DeleteObject(hClip);
 
-        // 90° CCW rotated font (lfEscapement in tenths of degree, 900 = 90°)
-        LOGFONTA lf        = {};
-        lf.lfHeight        = -11;
-        lf.lfEscapement    = 900;
-        lf.lfOrientation   = 900;
-        lf.lfWeight        = FW_NORMAL;
-        lf.lfCharSet       = DEFAULT_CHARSET;
-        lf.lfQuality       = CLEARTYPE_QUALITY;
+        // Tahoma is REAPER's compact UI font; configurable px at lfEscapement=900
+        LOGFONTA lf         = {};
+        lf.lfHeight         = -g_mb_FontSize;
+        lf.lfEscapement     = 900;
+        lf.lfOrientation    = 900;
+        lf.lfWeight         = FW_NORMAL;
+        lf.lfCharSet        = DEFAULT_CHARSET;
+        lf.lfQuality        = CLEARTYPE_QUALITY;
         lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
-        lstrcpyA(lf.lfFaceName, "Segoe UI");
+        lstrcpyA(lf.lfFaceName, "Tahoma");
         HFONT hRot    = CreateFontIndirectA(&lf);
         HFONT hOldFnt = (HFONT)SelectObject(hdc, hRot);
 
-        // With lfEscapement=900 the baseline runs upward; character height (~8px)
-        // is now the horizontal extent. Centre in strip: x + W/2 - ascent/2.
-        SetTextColor(hdc, s.mute ? RGB(75, 75, 75) : RGB(185, 185, 185));
+        // col_tcp_text ≈ RGB(185,185,185) for mixer context; dim when muted
+        SetTextColor(hdc, s.mute ? RGB(80, 80, 80) : RGB(185, 185, 185));
         SetBkMode(hdc, TRANSPARENT);
-        TextOutA(hdc, x + W / 2 - 5, y + kNameH - 3,
+        TextOutA(hdc, x + W / 2 - 4, y + kNameH - 3,
                  s.name, (int)strlen(s.name));
 
         SelectObject(hdc, hOldFnt);
@@ -280,22 +336,25 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     }
     y += kNameH;
 
-    // ── 3. Segmented VU meter ────────────────────────────────────────────────
+    // ── 3. VU Meter (REAPER Default 7.0 teal-green palette) ─────────────────
+    // REAPER's authentic VU colors are NOT green-yellow-red.
+    // The meter uses a teal (col_vubot=RGB(0,191,191)) → mint-green
+    // (col_vutop=RGB(0,254,149)) gradient, with orange-red ONLY at clip
+    // (col_vuclip=RGB(187,37,0)).  Unlit area: col_vuintcol=RGB(32,32,32).
     {
-        RECT rcBg = { x + 2, y, x + W - 2, y + kMeterH };
-        HBRUSH hbg = CreateSolidBrush(RGB(12, 12, 12));
+        RECT rcBg = { x + 1, y, x + W - 1, y + kMeterH };
+        HBRUSH hbg = CreateSolidBrush(RGB(32, 32, 32));   // col_vuintcol
         FillRect(hdc, &rcBg, hbg);
         DeleteObject(hbg);
 
-        const int barW    = W - 4;
+        const int barW    = W - 2;
         const int totalPx = kMeterH - 2;
-        // 3 px lit block + 1 px gap = 4 px per segment
-        const int kSeg = 3, kStep = 4;
+        // 2 px lit + 1 px gap (tight, REAPER-style)
+        const int kSeg = 2, kStep = 3;
         const int nSegs = (totalPx >= kStep * 2) ? totalPx / kStep : 0;
 
         for (int si = 0; si < nSegs; ++si)
         {
-            // si=0 = top (k_MeterMax), si=nSegs-1 = bottom (k_MeterMin)
             const double segDb = k_MeterMax
                 - (double)si / (double)(nSegs - 1) * (k_MeterMax - k_MeterMin);
             const bool lit = !s.mute && (s.peakDb >= segDb);
@@ -303,34 +362,44 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             COLORREF col;
             if (lit)
             {
-                if      (segDb >= -6.0)  col = RGB(220,  40,  40);
-                else if (segDb >= -18.0) col = RGB(210, 170,   0);
-                else                     col = RGB(  0, 180,   0);
+                if (segDb >= 0.0)
+                {
+                    col = RGB(187, 37, 0);   // col_vuclip — exact REAPER value
+                }
+                else
+                {
+                    // Linear gradient: vubot RGB(0,191,191) at bottom → vutop RGB(0,254,149) at top
+                    // frac=0 at k_MeterMin (-60), frac=1 at 0 dBFS
+                    const double frac = (segDb - k_MeterMin) / (0.0 - k_MeterMin);
+                    const int gv = (int)(191.0 + 63.0 * frac + 0.5);   // 191→254
+                    const int bv = (int)(191.0 - 42.0 * frac + 0.5);   // 191→149
+                    col = RGB(0, gv, bv);
+                }
             }
             else
             {
-                if      (segDb >= -6.0)  col = RGB( 42,  14,  14);
-                else if (segDb >= -18.0) col = RGB( 36,  33,   8);
-                else                     col = RGB(  7,  30,   7);
+                // Unlit: very dark tint matching the lit zone color family
+                col = (segDb >= 0.0) ? RGB(24, 5, 0)    // dark orange-red
+                                     : RGB(0, 25, 20);   // dark teal
             }
 
             const int sy = y + 1 + si * kStep;
-            RECT sr = { x + 2, sy, x + 2 + barW, sy + kSeg };
+            RECT sr = { x + 1, sy, x + 1 + barW, sy + kSeg };
             HBRUSH hbr = CreateSolidBrush(col);
             FillRect(hdc, &sr, hbr);
             DeleteObject(hbr);
         }
 
-        // Peak hold line (white normally, red when ≥ 0 dBFS)
+        // Peak hold: light gray normally; col_vuclip orange-red at clip
         if (!s.mute && s.peakHoldDb > k_MeterMin && nSegs > 1)
         {
             const double hf = DbToFrac(s.peakHoldDb);
             const int    hy = y + 1 + (int)((1.0 - hf) * (totalPx - 1) + 0.5);
             if (hy >= y + 1 && hy < y + totalPx)
             {
-                COLORREF hcol = (s.peakHoldDb >= 0.0) ? RGB(255, 80, 80)
-                                                       : RGB(255, 255, 255);
-                RECT hl = { x + 2, hy, x + 2 + barW, hy + 2 };
+                COLORREF hcol = (s.peakHoldDb >= 0.0) ? RGB(187, 37, 0)
+                                                       : RGB(210, 210, 210);
+                RECT hl = { x + 1, hy, x + 1 + barW, hy + 1 };
                 HBRUSH hbr = CreateSolidBrush(hcol);
                 FillRect(hdc, &hl, hbr);
                 DeleteObject(hbr);
@@ -339,33 +408,61 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     }
     y += kMeterH;
 
-    // ── 4. M / S / R rows ────────────────────────────────────────────────────
+    // ── 4. M / S / R buttons (REAPER characteristic colors) ─────────────────
     {
-        struct Led { const char* lbl; bool on; COLORREF col; };
+        // REAPER orange mute / amber-yellow solo / red rec-arm
+        struct Led { const char* lbl; bool on; COLORREF onCol; };
         const Led leds[3] = {
-            { "M", s.mute,      RGB(200,  35,  35) },
-            { "S", s.solo != 0, RGB(210, 165,   0) },
-            { "R", s.recArm,    RGB(200,  35,  35) },
+            { "M", s.mute,       RGB(200,  80,  20) },
+            { "S", s.solo != 0,  RGB(190, 155,  15) },
+            { "R", s.recArm,     RGB(185,  35,  30) },
         };
+
+        // Explicit small normal font — undo the rotated font from the name zone
+        LOGFONTA lf         = {};
+        lf.lfHeight         = -7;
+        lf.lfWeight         = FW_BOLD;
+        lf.lfCharSet        = DEFAULT_CHARSET;
+        lf.lfQuality        = DEFAULT_QUALITY;
+        lf.lfPitchAndFamily = DEFAULT_PITCH | FF_SWISS;
+        lstrcpyA(lf.lfFaceName, "Tahoma");
+        HFONT hBtn    = CreateFontIndirectA(&lf);
+        HFONT hOldBtn = (HFONT)SelectObject(hdc, hBtn);
+
         const int kRowH = kStatusH / 3;
         for (int li = 0; li < 3; ++li)
         {
             const int ry = y + li * kRowH;
-            RECT lr = { x + 1, ry, x + W - 1, ry + kRowH };
-            HBRUSH hbr = CreateSolidBrush(leds[li].on ? leds[li].col : RGB(24, 24, 24));
+            RECT lr = { x, ry, x + W - 1, ry + kRowH };
+
+            // Active: colored fill; inactive: strip bg (flat, REAPER-style)
+            HBRUSH hbr = CreateSolidBrush(leds[li].on ? leds[li].onCol : kStripBg);
             FillRect(hdc, &lr, hbr);
             DeleteObject(hbr);
-            SetTextColor(hdc, leds[li].on ? RGB(255, 255, 255) : RGB(65, 65, 65));
+
+            // 1-px separator between rows (REAPER-style divider)
+            if (li < 2)
+            {
+                RECT sp = { x, ry + kRowH - 1, x + W - 1, ry + kRowH };
+                HBRUSH hs = CreateSolidBrush(RGB(28, 28, 28));
+                FillRect(hdc, &sp, hs);
+                DeleteObject(hs);
+            }
+
+            SetTextColor(hdc, leds[li].on ? RGB(255, 255, 255) : RGB(85, 85, 85));
+            SetBkMode(hdc, TRANSPARENT);
             DrawTextA(hdc, leds[li].lbl, -1, &lr,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
+        SelectObject(hdc, hOldBtn);
+        DeleteObject(hBtn);
     }
     y += kStatusH;
 
-    // ── 5. Safe mask dots ────────────────────────────────────────────────────
+    // ── 5. Safe indicator dots ────────────────────────────────────────────────
     {
         RECT rcBg = { x, y, x + W - 1, y + kSafeH };
-        HBRUSH hbg = CreateSolidBrush(RGB(13, 13, 13));
+        HBRUSH hbg = CreateSolidBrush(RGB(32, 32, 32));
         FillRect(hdc, &rcBg, hbg);
         DeleteObject(hbg);
 
@@ -377,8 +474,8 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             { TS_FXPARAMS, RGB(185,   0, 185) },
         };
         const int nD = (int)(sizeof(kDots) / sizeof(kDots[0]));
-        const int dW = (W - 4) / nD;
-        int dx = x + 2;
+        const int dW = (W - 2) / nD;
+        int dx = x + 1;
         for (int di = 0; di < nD; ++di)
         {
             if (s.safeMask & kDots[di].bit)
@@ -392,10 +489,10 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
         }
     }
 
-    // ── Separator (right edge) ───────────────────────────────────────────────
+    // ── Right separator: 1 px, near-black (col_tr1_divline ≈ RGB(38,38,38)) ──
     {
         RECT rl = { x + W - 1, 0, x + W, clientH };
-        HBRUSH hbr = CreateSolidBrush(RGB(40, 40, 40));
+        HBRUSH hbr = CreateSolidBrush(RGB(30, 30, 30));
         FillRect(hdc, &rl, hbr);
         DeleteObject(hbr);
     }
@@ -418,6 +515,102 @@ static void UpdateScrollBar(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// Settings dialog proc
+// ---------------------------------------------------------------------------
+static INT_PTR CALLBACK MeterBridgeSettingsDlgProc(HWND hwnd, UINT msg,
+                                                    WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+    {
+        InitCommonControls();
+
+        // Helper: set edit box text + configure spin control
+        auto setupSpin = [&](int editId, int spinId, int val, int lo, int hi) {
+            SetDlgItemInt(hwnd, editId, (UINT)val, FALSE);
+            HWND hSpin = GetDlgItem(hwnd, spinId);
+            if (hSpin)
+            {
+                SendMessage(hSpin, UDM_SETRANGE32, (WPARAM)lo, (LPARAM)hi);
+                SendMessage(hSpin, UDM_SETPOS32, 0, (LPARAM)val);
+                SendMessage(hSpin, UDM_SETBUDDY, (WPARAM)GetDlgItem(hwnd, editId), 0);
+            }
+        };
+
+        setupSpin(IDC_MB_STRIP_W,   IDC_MB_STRIP_W_SPIN,   g_mb_StripW,         6, 80);
+        setupSpin(IDC_MB_FONT_SIZE,  IDC_MB_FONT_SIZE_SPIN, g_mb_FontSize,       4, 32);
+        setupSpin(IDC_MB_NAME_H,     IDC_MB_NAME_H_SPIN,    g_mb_NameH,         10,200);
+        setupSpin(IDC_MB_PEAKHOLD,   IDC_MB_PEAKHOLD_SPIN,  g_mb_PeakHoldTicks,  0,300);
+        setupSpin(IDC_MB_FPS,        IDC_MB_FPS_SPIN,       g_mb_Fps,            1, 60);
+        return TRUE;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK)
+        {
+            BOOL ok = TRUE;
+            auto getInt = [&](int id, int lo, int hi) -> int {
+                BOOL translated = FALSE;
+                int v = (int)GetDlgItemInt(hwnd, id, &translated, FALSE);
+                if (!translated) { ok = FALSE; return lo; }
+                if (v < lo) v = lo;
+                if (v > hi) v = hi;
+                return v;
+            };
+
+            int sw   = getInt(IDC_MB_STRIP_W,   6,  80);
+            int fs   = getInt(IDC_MB_FONT_SIZE,  4,  32);
+            int nh   = getInt(IDC_MB_NAME_H,    10, 200);
+            int ph   = getInt(IDC_MB_PEAKHOLD,   0, 300);
+            int fps  = getInt(IDC_MB_FPS,        1,  60);
+
+            if (!ok)
+            {
+                MessageBoxA(hwnd, "Please enter valid numbers in all fields.",
+                            "Meter Bridge Settings", MB_OK | MB_ICONWARNING);
+                return TRUE;
+            }
+
+            g_mb_StripW        = sw;
+            g_mb_FontSize      = fs;
+            g_mb_NameH         = nh;
+            g_mb_PeakHoldTicks = ph;
+            g_mb_Fps           = fps;
+
+            MB_SaveSettings();
+
+            // Apply changes live: restart timer, recalculate layout, redraw
+            if (g_wnd && IsWindow(g_wnd))
+            {
+                KillTimer(g_wnd, k_TimerID);
+                SetTimer(g_wnd, k_TimerID,
+                         (UINT)(1000 / (g_mb_Fps > 0 ? g_mb_Fps : 1)), nullptr);
+
+                RECT rc;
+                GetClientRect(g_wnd, &rc);
+                const int scrollH = 16;
+                const int clientW = rc.right;
+                s_visibleCount = (g_mb_StripW > 0) ? (clientW / g_mb_StripW) : 1;
+                if (s_visibleCount < 1) s_visibleCount = 1;
+
+                InvalidateRect(g_wnd, nullptr, FALSE);
+            }
+
+            EndDialog(hwnd, IDOK);
+            return TRUE;
+        }
+        if (LOWORD(wParam) == IDCANCEL)
+        {
+            EndDialog(hwnd, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+// ---------------------------------------------------------------------------
 // Dialog proc
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
@@ -428,6 +621,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
     case WM_INITDIALOG:
     {
         g_wnd = hwnd;
+        MB_LoadSettings();
 
         // Create a horizontal scrollbar along the bottom edge
         RECT rc;
@@ -440,7 +634,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
                                     hwnd, (HMENU)(UINT_PTR)IDC_MB_SCROLL,
                                     g_hInst, nullptr);
 
-        SetTimer(hwnd, k_TimerID, k_TimerMs, nullptr);
+        SetTimer(hwnd, k_TimerID, (UINT)(1000 / (g_mb_Fps > 0 ? g_mb_Fps : 1)), nullptr);
         return TRUE;
     }
 
@@ -484,7 +678,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         // when the window is first added to the docker).
         if (s_visibleCount <= 0 && clientW > 0)
         {
-            s_visibleCount = clientW / k_StripW;
+            s_visibleCount = clientW / g_mb_StripW;
             if (s_visibleCount < 1) s_visibleCount = 1;
         }
 
@@ -501,7 +695,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
 
         // Background
         RECT rcAll = { 0, 0, clientW, clientH };
-        HBRUSH hbgBrush = CreateSolidBrush(RGB(15, 15, 15));
+        HBRUSH hbgBrush = CreateSolidBrush(RGB(51, 51, 51));  // col_mixerbg
         FillRect(hdcMem, &rcAll, hbgBrush);
         DeleteObject(hbgBrush);
 
@@ -520,7 +714,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         for (int i = 0; i < s_visibleCount; ++i)
         {
             int trackIdx = s_bankOffset + i;
-            int sx = i * k_StripW;
+            int sx = i * g_mb_StripW;
             DrawStrip(hdcMem, sx, clientH, trackIdx);
         }
 
@@ -550,7 +744,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         const int clientH = HIWORD(lParam);
         const int scrollH = 16;
 
-        s_visibleCount = (k_StripW > 0) ? (clientW / k_StripW) : 1;
+        s_visibleCount = (g_mb_StripW > 0) ? (clientW / g_mb_StripW) : 1;
         if (s_visibleCount < 1) s_visibleCount = 1;
 
         // Clamp bank offset
@@ -629,6 +823,9 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         bool isDocked = (DockIsChildOfDock(hwnd, &isFloat) >= 0);
         AppendMenuA(hMenu, MF_STRING, 201,
                     isDocked ? "Undock" : "Dock to Docker");
+        AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuA(hMenu, MF_STRING, 203, "Settings...");
+        AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenuA(hMenu, MF_STRING, 202, "Close");
         int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
                                  GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam),
@@ -636,7 +833,6 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         DestroyMenu(hMenu);
         if (cmd == 201)
         {
-            // Destroy and recreate with opposite dock state (same pattern as Scenes)
             bool newDocked = !isDocked;
             SetExtState(k_ExtSection, k_DockKey, newDocked ? "1" : "0", true);
             g_suppressDockStateSave = true;
@@ -648,6 +844,11 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         {
             if (isDocked) DockWindowRemove(hwnd);
             DestroyWindow(hwnd);
+        }
+        else if (cmd == 203)
+        {
+            DialogBoxA(g_hInst, MAKEINTRESOURCEA(IDD_METERBRIDGE_SETTINGS),
+                       hwnd, MeterBridgeSettingsDlgProc);
         }
         return 0;
     }

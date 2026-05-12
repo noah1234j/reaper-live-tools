@@ -220,6 +220,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (g_globalSafeMask & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (g_globalSafeMask & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (g_globalSafeMask & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS)       ? BST_CHECKED : BST_UNCHECKED);
 
         // Per-track enable toggle
         CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
@@ -244,18 +245,20 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         HWND hGrp = GetDlgItem(hDlg, IDC_GSAFES_GROUP);
         if (hGrp) SetWindowPos(hGrp, nullptr, MARGIN, MARGIN, W - MARGIN*2, GRP_H, SWP_NOZORDER);
 
-        // 7+4 param checkboxes spread evenly inside groupbox (2 rows)
+        // 7+4+1 param checkboxes spread evenly inside groupbox (2 rows)
+        // Row 0: Vol Pan Mute Solo Phase FX Vis
+        // Row 1: Name Color Height Order Layers
         static const int k_gsIds[] = {
             IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO,
             IDC_GSAFE_PHASE, IDC_GSAFE_FX, IDC_GSAFE_VIS,
-            IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT, IDC_GSAFE_ORDER
+            IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT, IDC_GSAFE_ORDER,
+            IDC_GSAFE_LAYERS
         };
-        static const int k_gsRow[] = { 0,0,0,0,0,0,0, 1,1,1,1 };
-        static const int k_gsCol[] = { 0,1,2,3,4,5,6, 0,1,2,3 };
+        static const int k_gsRow[] = { 0,0,0,0,0,0,0, 1,1,1,1,1 };
+        static const int k_gsCol[] = { 0,1,2,3,4,5,6, 0,1,2,3,4 };
         const int grpInner = W - MARGIN*2 - 14;
         const int slot7 = grpInner / 7;
-        const int slot4 = grpInner / 7; // same spacing for layout row
-        for (int i = 0; i < 11; ++i) {
+        for (int i = 0; i < 12; ++i) {
             HWND h = GetDlgItem(hDlg, k_gsIds[i]);
             if (!h) continue;
             int col = k_gsCol[i];
@@ -309,6 +312,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  BST_UNCHECKED);
+            CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, BST_UNCHECKED);
             if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
             break;
 
@@ -324,6 +328,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         case IDC_GSAFE_COLOR:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_COLOR)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKCOLOR;  else g_globalSafeMask &= ~TS_TRACKCOLOR;  break;
         case IDC_GSAFE_HEIGHT: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_HEIGHT) == BST_CHECKED) g_globalSafeMask |= TS_TRACKHEIGHT; else g_globalSafeMask &= ~TS_TRACKHEIGHT; break;
         case IDC_GSAFE_ORDER:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ORDER)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKORDER;  else g_globalSafeMask &= ~TS_TRACKORDER;  break;
+        case IDC_GSAFE_LAYERS: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_LAYERS) == BST_CHECKED) g_globalSafeMask |= TS_LAYERS;      else g_globalSafeMask &= ~TS_LAYERS;      break;
 
         case IDC_TRACK_SAFES_EN:
             g_trackSafesEnabled = (IsDlgButtonChecked(hDlg, IDC_TRACK_SAFES_EN) == BST_CHECKED);

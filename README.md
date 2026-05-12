@@ -1,4 +1,8 @@
-This project is a work in progress it is not ready for use.
+> **⚠ BETA — v0.0.2-beta**
+> This plugin is functional and actively used, but it is **not yet production-hardened**.
+> Expect rough edges, missing polish, and the occasional crash or unexpected behaviour.
+> **Back up your REAPER projects before using scene recall on anything critical.**
+> Bug reports and feedback are welcome — please [open an issue](../../issues) on GitHub.
 
 # Live Tools — Transition Snapshots for REAPER
 

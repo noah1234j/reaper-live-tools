@@ -81,6 +81,15 @@ add_library(reaper_transitions SHARED
   LiveOptimizeWnd.cpp
   LiveLockEngine.cpp
   LiveLockWnd.cpp
+  TalkbackWnd.cpp
+  LayersEngine.cpp
+  LayersWnd.cpp
+  BtnMapWnd.cpp
+  MuteGroup.cpp
+  MuteGroupsWnd.cpp
+  DcaGroup.cpp
+  DcaEngine.cpp
+  DcaWnd.cpp
   reaper_transitions.rc
 )
 

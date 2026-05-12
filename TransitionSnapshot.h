@@ -31,6 +31,7 @@ static const int TS_TRACKNAME   = 0x0800; // track name
 static const int TS_TRACKCOLOR  = 0x1000; // track colour (I_CUSTOMCOLOR)
 static const int TS_TRACKHEIGHT = 0x2000; // TCP height override
 static const int TS_TRACKORDER  = 0x4000; // track order within the project
+static const int TS_LAYERS      = 0x8000; // active layer (LayersEngine)
 
 // Convenience presets
 static const int TS_MIX    = (TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_FXPARAMS | TS_PHASE);
@@ -112,6 +113,22 @@ struct TrackState
 };
 
 // ---------------------------------------------------------------------------
+// CapturedLayerTrack / CapturedLayer – full layer snapshot stored per scene
+// ---------------------------------------------------------------------------
+struct CapturedLayerTrack
+{
+    GUID guid     = {};
+    bool isSpacer = false;
+};
+
+struct CapturedLayer
+{
+    std::string                     name;
+    std::vector<CapturedLayerTrack> tracks;
+    int                             maxChannels = 0;
+};
+
+// ---------------------------------------------------------------------------
 // TransitionSnapshot – top-level container
 // ---------------------------------------------------------------------------
 class TransitionSnapshot
@@ -128,6 +145,7 @@ public:
                                            ProjectStateContext* ctx);
 
     // ---- Data fields -------------------------------------------------------
+    bool        m_isSpacer = false;  // if true, this row is a visual separator with no track data
     int         m_slot     = 0;
     std::string m_name;
     std::string m_notes;
@@ -138,6 +156,13 @@ public:
     double      m_duration = 2.0;
     int         m_taper    = TAPER_SCURVE;
     double      m_taperExp = 2.0;  // used when m_taper == TAPER_CUSTOM
+
+    // Layer assignment – active layer index at capture time (-1 = none)
+    int         m_layerIdx = -1;
+
+    // Full layer state snapshot (all layers at capture time). When non-empty
+    // this is used on recall instead of the bare m_layerIdx above.
+    std::vector<CapturedLayer> m_layers;
 
     std::vector<TrackState> m_tracks;
 

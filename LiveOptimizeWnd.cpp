@@ -15,7 +15,6 @@
 
 #include <commctrl.h>
 #include <windowsx.h>
-#include <intrin.h>        // __cpuid for hypervisor detection
 #include <powrprof.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -478,25 +477,36 @@ static void RunChecks()
 
     // --- Check 7: Process priority (5 pts) ---
     {
-        // Since reaper_transitions.dll is loaded inside REAPER, GetCurrentProcess()
-        // IS the REAPER process.  GetPriorityClass() gives the real running priority
-        // regardless of what is written in the INI.
-        DWORD pclass = GetPriorityClass(GetCurrentProcess());
-        bool high = (pclass == HIGH_PRIORITY_CLASS ||
-                     pclass == REALTIME_PRIORITY_CLASS ||
-                     pclass == ABOVE_NORMAL_PRIORITY_CLASS);
+        // priorhigh is an int config var. Use get_config_var raw int pointer
+        // (same pattern as anticipativefx) – get_config_var_string doesn't
+        // reliably convert int-type vars, and REAPER manages audio thread
+        // priority internally rather than via SetPriorityClass.
+        int priVal   = 0;
+        bool varFound = false;
+        if (get_config_var)
+        {
+            int sz  = 0;
+            void* raw = get_config_var("priorhigh", &sz);
+            if (raw && sz == sizeof(int))
+            { varFound = true; priVal = *(int*)raw; }
+        }
+        if (!varFound)
+            priVal = GetIniInt("reaper", "priorhigh", 0);
+
+        // REAPER priorhigh values: 0=Normal, 1=High, 2=Above Normal
+        bool high = (priVal >= 1);
         const char* priLabel;
-        if      (pclass == REALTIME_PRIORITY_CLASS)     priLabel = "Realtime";
-        else if (pclass == HIGH_PRIORITY_CLASS)         priLabel = "High";
-        else if (pclass == ABOVE_NORMAL_PRIORITY_CLASS) priLabel = "Above Normal";
-        else if (pclass == BELOW_NORMAL_PRIORITY_CLASS) priLabel = "Below Normal";
-        else if (pclass == IDLE_PRIORITY_CLASS)         priLabel = "Idle";
-        else                                            priLabel = "Normal";
+        switch (priVal)
+        {
+        case 1:  priLabel = "High";         break;
+        case 2:  priLabel = "Above Normal"; break;
+        default: priLabel = "Normal";       break;
+        }
 
         Add("REAPER Prefs", "Process Priority",
             "Setting REAPER to High or Above Normal process priority ensures Windows "
             "schedules audio threads first.  Found in: Preferences > General > "
-            "\"Priority\" dropdown.  Changes take effect immediately when saved.",
+            "\"Priority\" dropdown.  Changes take effect on next REAPER restart.",
             5.f,
             high ? STATUS_GOOD : STATUS_WARN,
             high ? 5.f : 0.f,
@@ -931,9 +941,9 @@ static void RunChecks()
             "resources: browsers (Chrome, Firefox), video apps (OBS, Zoom, Discord), "
             "cloud sync (OneDrive, Dropbox), and antivirus scanners.  Close them before "
             "a live performance for best stability.",
-            2.f,
+            5.f,
             good ? STATUS_GOOD : STATUS_WARN,
-            good ? 2.f : 0.f,
+            good ? 5.f : 0.f,
             val,
             good ? "No known offenders running" : "Close listed apps before performing",
             false, nullptr);
@@ -941,37 +951,45 @@ static void RunChecks()
 
     // --- Check 21: Hypervisor / Hyper-V (5 pts) ---
     {
-        // CPUID leaf 1, ECX bit 31 is set by any hypervisor (Hyper-V, VMware, VBox).
-        // When Hyper-V is enabled, Windows runs as a "root partition" under the
-        // hypervisor.  Hardware interrupts are virtualized, adding DPC latency spikes
-        // that cause audio dropouts even when no VMs are running.
-        int cpuInfo[4] = {};
-        __cpuid(cpuInfo, 1);
-        bool hvPresent = (cpuInfo[2] & (1 << 31)) != 0;
-
-        // Also check Hyper-V service to distinguish HV from other hypervisors
-        bool hvService = false;
+        // We check whether Hyper-V services are actually RUNNING, not whether
+        // the service keys exist.  On all modern Windows 10/11 installs the
+        // HvHost key is present regardless of Hyper-V being on or off.
+        //
+        // CPUID leaf-1 ECX bit-31 is intentionally NOT used: Windows 11 VBS /
+        // Core Isolation / HVCI also sets that bit without Hyper-V being active.
+        //
+        // vmms  = Hyper-V Virtual Machine Management (only runs when HV is active)
+        // HvHost = Hyper-V Host Compute Service
+        bool hvRunning = false;
+        SC_HANDLE scm2 = OpenSCManager(nullptr, nullptr, SC_MANAGER_CONNECT);
+        if (scm2)
         {
-            HKEY hk = nullptr;
-            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                "SYSTEM\\CurrentControlSet\\Services\\HvHost",
-                0, KEY_READ, &hk) == ERROR_SUCCESS)
-            { hvService = true; RegCloseKey(hk); }
+            const char* hvSvcs[] = { "vmms", "HvHost", nullptr };
+            for (int i = 0; hvSvcs[i] && !hvRunning; ++i)
+            {
+                SC_HANDLE svc = OpenServiceA(scm2, hvSvcs[i], SERVICE_QUERY_STATUS);
+                if (svc)
+                {
+                    SERVICE_STATUS ss2 = {};
+                    QueryServiceStatus(svc, &ss2);
+                    if (ss2.dwCurrentState == SERVICE_RUNNING) hvRunning = true;
+                    CloseServiceHandle(svc);
+                }
+            }
+            CloseServiceHandle(scm2);
         }
-
-        bool bad = hvPresent || hvService;
         Add("System Health", "Hypervisor / Hyper-V",
-            "When Hyper-V (or any hypervisor) is active, Windows itself runs inside a "
-            "virtual machine.  Hardware interrupt routing is virtualized, which can add "
-            "0.5–10 ms of unexpected DPC latency and is a leading cause of random audio "
-            "dropouts.  To disable: run 'bcdedit /set hypervisorlaunchtype off' as "
-            "Administrator and reboot.  Also check: Windows Features > Hyper-V.",
+            "When Hyper-V is active, Windows runs as the 'root partition' under a "
+            "hypervisor.  Hardware interrupt routing is virtualized, adding 0.5-10 ms "
+            "of unexpected DPC latency -- a leading cause of audio dropouts.  "
+            "To disable: run 'bcdedit /set hypervisorlaunchtype off' as Administrator "
+            "and reboot, then disable Hyper-V in Windows Features.",
             5.f,
-            bad ? STATUS_BAD : STATUS_GOOD,
-            bad ? 0.f : 5.f,
-            bad ? (hvService ? "Hyper-V detected" : "Hypervisor detected") : "Not detected",
-            bad ? "Disable Hyper-V & reboot (bcdedit /set hypervisorlaunchtype off)"
-                : "Good – no hypervisor",
+            hvRunning ? STATUS_BAD : STATUS_GOOD,
+            hvRunning ? 0.f : 5.f,
+            hvRunning ? "Hyper-V services running" : "Not detected",
+            hvRunning ? "Disable Hyper-V & reboot (bcdedit /set hypervisorlaunchtype off)"
+                      : "Good - Hyper-V not active",
             false, nullptr);
     }
 
@@ -1105,6 +1123,95 @@ static void RunChecks()
     // ===================================================================
     // CATEGORY 4 – Project State  (10 pts)
     // ===================================================================
+
+    // --- Check 26: MMCSS Pro Audio task priority (3 pts) ---
+    {
+        // The 'Pro Audio' MMCSS task profile governs how Windows schedules REAPER's
+        // audio threads.  Priority=6 and Scheduling Category=High are the correct
+        // defaults.  If this key is missing or corrupted, REAPER's audio threads
+        // won't receive elevated scheduling and audio glitches become more likely.
+        DWORD priority = 0;
+        char  schedCat[64] = {};
+        bool  keyFound = false;
+        {
+            HKEY hKey = nullptr;
+            if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia"
+                "\\SystemProfile\\Tasks\\Pro Audio",
+                0, KEY_READ, &hKey) == ERROR_SUCCESS)
+            {
+                keyFound = true;
+                DWORD cbVal = sizeof(DWORD);
+                RegQueryValueExA(hKey, "Priority", nullptr, nullptr,
+                                 reinterpret_cast<LPBYTE>(&priority), &cbVal);
+                cbVal = sizeof(schedCat);
+                RegQueryValueExA(hKey, "Scheduling Category", nullptr, nullptr,
+                                 reinterpret_cast<LPBYTE>(schedCat), &cbVal);
+                RegCloseKey(hKey);
+            }
+        }
+        bool good = keyFound && priority >= 6 &&
+                    (_stricmp(schedCat, "High") == 0 || _stricmp(schedCat, "Medium") == 0);
+        char valStr[64] = {};
+        if (!keyFound)
+            snprintf(valStr, sizeof(valStr), "Key missing");
+        else
+            snprintf(valStr, sizeof(valStr), "Priority=%lu, Cat=%s",
+                     (unsigned long)priority, schedCat[0] ? schedCat : "?");
+
+        Add("System Health", "MMCSS Pro Audio Task",
+            "Windows MMCSS uses the 'Pro Audio' task profile to schedule REAPER's audio "
+            "threads.  Priority should be 6 and Scheduling Category 'High'.  If the key "
+            "is missing or has wrong values REAPER's audio threads won't receive proper "
+            "elevated scheduling.  Fix: run regedit and restore defaults under "
+            "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Multimedia"
+            "\\SystemProfile\\Tasks\\Pro Audio.",
+            3.f,
+            good ? STATUS_GOOD : STATUS_WARN,
+            good ? 3.f : 0.f,
+            valStr,
+            good ? "Optimal" : "Restore Pro Audio MMCSS task defaults in regedit",
+            false, nullptr);
+    }
+
+    // --- Check 27: Fast Startup / Hiberboot (3 pts) ---
+    {
+        // Windows Fast Startup uses hybrid hibernation (hiberboot) to speed up boot.
+        // Audio drivers are left in a cached state from the previous session.
+        // Some audio interfaces fail to reinitialise cleanly, causing glitches or
+        // device-not-found errors until the driver is fully cycled.
+        // Disable via: Control Panel > Power Options > Choose what the power buttons
+        // do > uncheck 'Turn on fast startup'.
+        DWORD hiberboot = 0;
+        DWORD cbVal = sizeof(DWORD);
+        HKEY  hKey = nullptr;
+        bool  keyRead = false;
+        if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+            "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power",
+            0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            keyRead = (RegQueryValueExA(hKey, "HiberbootEnabled", nullptr, nullptr,
+                         reinterpret_cast<LPBYTE>(&hiberboot), &cbVal) == ERROR_SUCCESS);
+            RegCloseKey(hKey);
+        }
+        bool fastStartOn = (hiberboot != 0);
+        if (keyRead)
+        {
+            Add("System Health", "Fast Startup (Hiberboot)",
+                "Windows Fast Startup leaves audio drivers in a cached hibernation state "
+                "between boots.  Some audio interfaces fail to reinitialise cleanly after "
+                "a fast-start reboot, producing glitches or device-not-found errors.  "
+                "Disable via: Control Panel > Power Options > Choose what the power "
+                "buttons do > uncheck 'Turn on fast startup'.",
+                3.f,
+                fastStartOn ? STATUS_WARN : STATUS_GOOD,
+                fastStartOn ? 0.f : 3.f,
+                fastStartOn ? "Enabled" : "Disabled",
+                fastStartOn ? "Disable via Power Options > fast startup"
+                            : "Good - Fast Startup off",
+                false, nullptr);
+        }
+    }
 
     int numTracks = GetNumTracks ? GetNumTracks() : 0;
 
@@ -1291,11 +1398,12 @@ static void PopulateList(HWND hwnd)
 
     SortChecks();
 
-    // Remember selected name to restore after repopulate
+    // Remember selected name and top-visible-row to restore after repopulate
     std::string selName;
     int selIdx = ListView_GetNextItem(g_hList, -1, LVNI_SELECTED);
     if (selIdx >= 0 && selIdx < (int)g_checks.size())
         selName = g_checks[selIdx].name;
+    int topIdx = ListView_GetTopIndex(g_hList);
 
     ListView_DeleteAllItems(g_hList);
 
@@ -1326,9 +1434,25 @@ static void PopulateList(HWND hwnd)
             {
                 ListView_SetItemState(g_hList, i, LVIS_SELECTED | LVIS_FOCUSED,
                                      LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(g_hList, i, FALSE);
                 break;
             }
+        }
+    }
+
+    // Restore scroll position so viewport doesn't jump to the top on every refresh.
+    // Two-pass EnsureVisible: scroll down to the bottom of the old viewport, then
+    // scroll back up to topIdx -- this makes topIdx the first visible row.
+    {
+        int count = ListView_GetItemCount(g_hList);
+        if (topIdx >= count) topIdx = count - 1;
+        if (topIdx >= 0)
+        {
+            int perPage = ListView_GetCountPerPage(g_hList);
+            int bottomIdx = topIdx + perPage - 1;
+            if (bottomIdx >= count) bottomIdx = count - 1;
+            if (bottomIdx >= 0)
+                ListView_EnsureVisible(g_hList, bottomIdx, FALSE);
+            ListView_EnsureVisible(g_hList, topIdx, FALSE);
         }
     }
 

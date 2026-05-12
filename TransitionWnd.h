@@ -40,3 +40,8 @@ void TransitionWnd_RefreshList();
 // Headless action helpers (called from registered REAPER actions, index is 0-based)
 void TransitionWnd_RecallScene(int index);   // recall scene at slot index
 void TransitionWnd_OverwriteScene(int index); // re-capture scene at slot index
+
+// Cue list persistence (called from reaper_transitions.cpp project-state hooks)
+void TransitionWnd_SaveCueList(ProjectStateContext* ctx);
+bool TransitionWnd_LoadCueListLine(const char* line);
+void TransitionWnd_ResetCueList();

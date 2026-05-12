@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <cmath>
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -114,9 +115,20 @@ static void OnAudioBuffer(bool isPost, int len, double srate,
             double period  = (double)len / srate;
             double frac    = elapsed / period;
             if (frac < 0.0) frac = 0.0;
-            if (frac > 2.0) frac = 2.0;  // cap at 200%
-            // Exponential moving average (250 ms timer reads this safely)
-            s_rtCpuFraction = s_rtCpuFraction * 0.85 + frac * 0.15;
+            if (frac > 3.0) frac = 3.0;  // cap at 300% to filter scheduler outliers
+
+            // Asymmetric peak-hold smoothing, matching REAPER's RT meter behavior:
+            //   Rise: ~5 ms time constant  (shows spikes quickly)
+            //   Fall: ~400 ms time constant (holds peaks, then decays slowly)
+            // Using 1-exp(-period/tau) gives correct results regardless of
+            // buffer size or sample rate.
+            double cur = s_rtCpuFraction;
+            double alpha;
+            if (frac >= cur)
+                alpha = 1.0 - exp(-period / 0.005);  // fast attack  (~5 ms)
+            else
+                alpha = 1.0 - exp(-period / 0.400);  // slow release (~400 ms)
+            s_rtCpuFraction = cur * (1.0 - alpha) + frac * alpha;
         }
     }
 }
@@ -139,38 +151,58 @@ struct MonitorMetrics
 static MonitorMetrics s_m = {};
 
 // ---------------------------------------------------------------------------
-// CPU helper  (Windows only – system-wide idle/total fraction)
+// CPU helper – REAPER process CPU as a fraction of total system CPU capacity.
+// Uses GetProcessTimes to match what REAPER's own performance meter displays
+// (REAPER's CPU bar shows REAPER's process load, not system-wide load).
 // ---------------------------------------------------------------------------
 static double SampleCpu()
 {
-    static ULARGE_INTEGER sPrevIdle   = {};
     static ULARGE_INTEGER sPrevKernel = {};
     static ULARGE_INTEGER sPrevUser   = {};
+    static ULARGE_INTEGER sPrevWall   = {};
+    static bool           sFirst      = true;
+    static int            sNumCpus    = 0;
 
-    FILETIME ftIdle, ftKernel, ftUser;
-    if (!GetSystemTimes(&ftIdle, &ftKernel, &ftUser))
+    if (sNumCpus == 0)
+    {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        sNumCpus = (int)si.dwNumberOfProcessors;
+        if (sNumCpus < 1) sNumCpus = 1;
+    }
+
+    FILETIME ftCreation, ftExit, ftKernel, ftUser, ftNow;
+    if (!GetProcessTimes(GetCurrentProcess(), &ftCreation, &ftExit, &ftKernel, &ftUser))
         return 0.0;
+    GetSystemTimeAsFileTime(&ftNow);
 
-    ULARGE_INTEGER idle, kernel, user;
-    idle.LowPart    = ftIdle.dwLowDateTime;
-    idle.HighPart   = ftIdle.dwHighDateTime;
-    kernel.LowPart  = ftKernel.dwLowDateTime;
-    kernel.HighPart = ftKernel.dwHighDateTime;
-    user.LowPart    = ftUser.dwLowDateTime;
-    user.HighPart   = ftUser.dwHighDateTime;
+    ULARGE_INTEGER kernel, user, wall;
+    kernel.LowPart = ftKernel.dwLowDateTime; kernel.HighPart = ftKernel.dwHighDateTime;
+    user.LowPart   = ftUser.dwLowDateTime;   user.HighPart   = ftUser.dwHighDateTime;
+    wall.LowPart   = ftNow.dwLowDateTime;    wall.HighPart   = ftNow.dwHighDateTime;
 
-    ULONGLONG dIdle   = idle.QuadPart   - sPrevIdle.QuadPart;
-    ULONGLONG dKernel = kernel.QuadPart - sPrevKernel.QuadPart;
-    ULONGLONG dUser   = user.QuadPart   - sPrevUser.QuadPart;
+    if (sFirst)
+    {
+        sFirst      = false;
+        sPrevKernel = kernel;
+        sPrevUser   = user;
+        sPrevWall   = wall;
+        return 0.0;
+    }
 
-    sPrevIdle   = idle;
+    ULONGLONG dProcess = (kernel.QuadPart - sPrevKernel.QuadPart)
+                       + (user.QuadPart   - sPrevUser.QuadPart);
+    ULONGLONG dWall    =  wall.QuadPart   - sPrevWall.QuadPart;
+
     sPrevKernel = kernel;
     sPrevUser   = user;
+    sPrevWall   = wall;
 
-    ULONGLONG total = dKernel + dUser;
-    if (total == 0) return 0.0;
+    if (dWall == 0) return 0.0;
 
-    double frac = 1.0 - (double)dIdle / (double)total;
+    // Both dProcess and dWall are in 100ns FILETIME units.
+    // Multiply wall by core count to get total CPU capacity over the interval.
+    double frac = (double)dProcess / ((double)dWall * (double)sNumCpus);
     return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
 }
 
