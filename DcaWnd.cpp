@@ -113,11 +113,30 @@ static void LoadSettings()
 
 static void SaveSettings()
 {
-    char buf[32];
-    _itoa_s((int)g_defaultFlags, buf, sizeof(buf), 10);
-    SetExtState(k_ExtSection, k_DefFlagsKey, buf, true);
-    _itoa_s(g_startGroup, buf, sizeof(buf), 10);
-    SetExtState(k_ExtSection, k_StartGrpKey, buf, true);
+    // Settings are project-specific; persisted via SaveExtensionConfig -> DcaWnd_SaveSettings.
+    MarkProjectDirty(nullptr);
+}
+
+void DcaWnd_ResetSettings()
+{
+    g_defaultFlags = DCA_VOL | DCA_PAN | DCA_MUTE | DCA_SOLO;
+    g_startGroup   = 33;
+}
+
+bool DcaWnd_ProcessSettingsLine(const char* line)
+{
+    if (!line || strncmp(line, "LTDCASET ", 9) != 0) return false;
+    int flags    = (int)(DCA_VOL | DCA_PAN | DCA_MUTE | DCA_SOLO);
+    int startgrp = 33;
+    sscanf(line + 9, "flags=%d startgrp=%d", &flags, &startgrp);
+    g_defaultFlags = (uint32_t)flags;
+    if (startgrp >= 1 && startgrp <= 128) g_startGroup = startgrp;
+    return true;
+}
+
+void DcaWnd_SaveSettings(ProjectStateContext* ctx)
+{
+    ctx->AddLine("LTDCASET flags=%d startgrp=%d", (int)g_defaultFlags, g_startGroup);
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +180,7 @@ static void ShowContextMenu(HWND hwnd, int row, int screenX, int screenY);
 void DcaWnd_Init(HINSTANCE hInstance)
 {
     g_hInst = hInstance;
-    LoadSettings();
+    DcaWnd_ResetSettings();  // defaults; actual values loaded per-project via ProcessLine
 
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);

@@ -114,29 +114,61 @@ std::string CSurfSettings::Serialize() const
         followMCP    ? 1 : 0);
 
     std::string result = buf;
-    result += followLayers ? "|fl:1" : "|fl:0";
+    result += followLayers          ? "|fl:1"  : "|fl:0";
+    result += sendsSpillReceives     ? "|ssr:1" : "|ssr:0";
+    result += showTouchedChannels    ? "|touch:1" : "|touch:0";
+    result += debugLog               ? "|dbg:1"   : "|dbg:0";
+    { char tmp[16]; snprintf(tmp, sizeof(tmp), "|sdm:%d", sendsDisplayMode); result += tmp; }
+
+    // Per-extender: in,out,offset,proto,preset
     result += "|exts:";
     for (int i = 0; i < (int)extenders.size(); ++i)
     {
         if (i > 0) result += ';';
-        char tmp[32];
-        snprintf(tmp, sizeof(tmp), "%d,%d", extenders[i].midiInDev, extenders[i].midiOutDev);
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "%d,%d,%d,%d,%d",
+            extenders[i].midiInDev, extenders[i].midiOutDev,
+            extenders[i].channelOffset,
+            (int)extenders[i].proto, extenders[i].devicePreset);
         result += tmp;
     }
+
+    // Helper lambda: serialize a BtnMap into a string "note:type:cmd,..."
+    auto serializeBtnMap = [](const BtnMap& m) -> std::string {
+        if (m.empty()) return {};
+        std::string s;
+        char tmp[32];
+        bool first = true;
+        for (const auto& kv : m)
+        {
+            if (!first) s += ',';
+            snprintf(tmp, sizeof(tmp), "%02X:%d:%d",
+                (unsigned)kv.first, (int)kv.second.type, kv.second.cmdId);
+            s += tmp;
+            first = false;
+        }
+        return s;
+    };
+
+    // Global btnMap
     if (!btnMap.empty())
     {
         result += "|btnmap:";
-        char tmp[32];
-        bool first = true;
-        for (const auto& kv : btnMap)
+        result += serializeBtnMap(btnMap);
+    }
+
+    // Per-extender button maps
+    for (int i = 0; i < (int)extenders.size(); ++i)
+    {
+        if (!extenders[i].btnMap.empty())
         {
-            if (!first) result += ',';
-            snprintf(tmp, sizeof(tmp), "%02X:%d:%d",
-                (unsigned)kv.first, (int)kv.second.type, kv.second.cmdId);
-            result += tmp;
-            first = false;
+            char tag[32];
+            snprintf(tag, sizeof(tag), "|e%dbtn:", i);
+            result += tag;
+            result += serializeBtnMap(extenders[i].btnMap);
         }
     }
+
     return result;
 }
 
@@ -157,6 +189,15 @@ CSurfSettings CSurfSettings::Deserialize(const char* cfg)
             &fSel, &fVU, &fNames, &fMode, &bOff, &sCols, &fMCP);
         const char* fl = strstr(cfg, "|fl:");
         if (fl) s.followLayers = (fl[4] != '0');
+        const char* ssr = strstr(cfg, "|ssr:");
+        if (ssr) s.sendsSpillReceives = (ssr[5] != '0');
+        const char* tc = strstr(cfg, "|touch:");
+        if (tc) s.showTouchedChannels = (tc[7] != '0');
+        const char* dbg = strstr(cfg, "|dbg:");
+        if (dbg) s.debugLog = (dbg[5] != '0');
+        const char* sdm = strstr(cfg, "|sdm:");
+        if (sdm) { int v = 0; sscanf(sdm + 5, "%d", &v); s.sendsDisplayMode = v; }
+
         const char* exts = strstr(cfg, "|exts:");
         if (exts)
         {
@@ -164,11 +205,18 @@ CSurfSettings CSurfSettings::Deserialize(const char* cfg)
             const char* cur = exts;
             while (*cur && *cur != '|')
             {
-                int in2 = -1, out2 = -1;
-                sscanf(cur, "%d,%d", &in2, &out2);
+                int in2 = -1, out2 = -1, off2 = -1, proto2 = 0, preset2 = -1;
+                int nParsed = sscanf(cur, "%d,%d,%d,%d,%d",
+                    &in2, &out2, &off2, &proto2, &preset2);
                 if (in2 >= 0 || out2 >= 0)
                 {
-                    ExtenderPort ep; ep.midiInDev = in2; ep.midiOutDev = out2;
+                    ExtenderPort ep;
+                    ep.midiInDev     = in2;
+                    ep.midiOutDev    = out2;
+                    ep.channelOffset = (nParsed >= 3 && off2 >= 0)
+                        ? off2 : ((int)s.extenders.size() + 1) * 8;
+                    ep.proto        = (nParsed >= 4) ? (CSurfProtocol)proto2 : CSurfProtocol::MCU;
+                    ep.devicePreset = (nParsed >= 5) ? preset2 : -1;
                     s.extenders.push_back(ep);
                 }
                 const char* semi = strchr(cur, ';');
@@ -208,23 +256,34 @@ CSurfSettings CSurfSettings::Deserialize(const char* cfg)
     s.sendColors   = (sCols  != 0);
     s.followMCP    = (fMCP   != 0);
 
-    const char* bm = strstr(cfg, "|btnmap:");
-    if (bm)
-    {
-        bm += 8;
-        while (*bm)
+    // Helper lambda to parse a btnmap string into a BtnMap
+    auto parseBtnMap = [](const char* bm, BtnMap& out) {
+        while (*bm && *bm != '|')
         {
             unsigned note = 0; int type = 0, cmd = 0;
             if (sscanf(bm, "%02X:%d:%d", &note, &type, &cmd) == 3)
             {
                 BtnAction a; a.type = (BtnActionType)type; a.cmdId = cmd;
-                s.btnMap[(uint8_t)note] = a;
+                out[(uint8_t)note] = a;
             }
             const char* next = strchr(bm, ',');
-            if (!next) break;
+            if (!next || *(next+1) == '\0' || *(next+1) == '|') break;
             bm = next + 1;
         }
+    };
+
+    const char* bm = strstr(cfg, "|btnmap:");
+    if (bm) parseBtnMap(bm + 8, s.btnMap);
+
+    // Per-extender button maps  "|eNbtn:data"
+    for (int i = 0; i < (int)s.extenders.size(); ++i)
+    {
+        char tag[16];
+        snprintf(tag, sizeof(tag), "|e%dbtn:", i);
+        const char* ebm = strstr(cfg, tag);
+        if (ebm) parseBtnMap(ebm + strlen(tag), s.extenders[i].btnMap);
     }
+
     return s;
 }
 
@@ -443,7 +502,10 @@ void TransCSurf::Run()
     }
 
     // ---- Poll MIDI input ---------------------------------------------------
-    auto pollInput = [&](midi_Input* inp, int stripOffset)
+    // pollInput now accepts per-port protocol + button map pointer so extender
+    // ports can have a different protocol and their own button overrides.
+    auto pollInput = [&](midi_Input* inp, int stripOffset,
+                         CSurfProtocol portProto, const BtnMap* portBtnMap)
     {
         if (!inp) return;
         inp->SwapBufs(GetTickCount());
@@ -452,19 +514,36 @@ void TransCSurf::Run()
         MIDI_event_t* ev;
         while ((ev = evList->EnumItems(&bpos)))
         {
-            if (m_s.proto == CSurfProtocol::FP16)
-                FP16_ProcessMIDI(ev);        // all 16 ch on one port, no offset
-            else if (m_s.proto == CSurfProtocol::MCU)
+            // Set active port's button map so SetButtonAction methods can check it
+            m_curPortBtnMap = portBtnMap;
+
+            if (portProto == CSurfProtocol::FP16)
+                FP16_ProcessMIDI(ev);
+            else if (portProto == CSurfProtocol::MCU)
                 MCU_ProcessMIDI(ev, stripOffset);
-            else
+            else if (portProto == CSurfProtocol::HUI)
                 HUI_ProcessMIDI(ev, stripOffset);
+            else // RAW – route note-on/off through MCU button action handler only
+            {
+                uint8_t status = ev->midi_message[0] & 0xF0;
+                if (status == 0x90 || status == 0x80)
+                {
+                    bool noteDown = (status == 0x90) && (ev->midi_message[2] != 0);
+                    MCU_SetButtonAction(ev->midi_message[1], noteDown, stripOffset);
+                }
+            }
+
+            m_curPortBtnMap = nullptr;
         }
     };
-    pollInput(m_midiIn, 0);
+    pollInput(m_midiIn, 0, m_s.proto, &m_s.btnMap);
     if (m_s.proto != CSurfProtocol::FP16)
     {
         for (int e = 0; e < (int)m_extIn.size(); ++e)
-            pollInput(m_extIn[e], 8 + e * 8);
+            pollInput(m_extIn[e],
+                      m_s.extenders[e].channelOffset,
+                      m_s.extenders[e].proto,
+                      &m_s.extenders[e].btnMap);
     }
 
     // ---- Cursor key hold processing (every 100ms) -------------------------
@@ -1092,6 +1171,23 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down, int stripOffset)
 {
     int nCh = std::min(m_s.channelCount, 8); // MCU note groups are always 8-wide per port
 
+    // ---- Check per-port button map overrides (same logic as FP16) ----------
+    if (m_curPortBtnMap)
+    {
+        auto it = m_curPortBtnMap->find(note);
+        if (it != m_curPortBtnMap->end())
+        {
+            const BtnAction& a = it->second;
+            if (a.type == BtnActionType::None) return;   // disabled
+            if (a.type == BtnActionType::Command)
+            {
+                if (down) Main_OnCommand(a.cmdId, 0);
+                return;
+            }
+            // BtnActionType::Default → fall through to built-in behaviour
+        }
+    }
+
     // ---- Handlers that fire on BOTH press AND release ----------------------
 
     // Fader touch
@@ -1099,7 +1195,32 @@ void TransCSurf::MCU_SetButtonAction(uint8_t note, bool down, int stripOffset)
     {
         int strip = note - MCU_TOUCH_BASE + stripOffset;
         if (strip >= 0 && strip < 16)
+        {
             m_touchState[strip] = down;
+
+            // Optionally highlight the touched track in MCP
+            if (m_s.showTouchedChannels)
+            {
+                MediaTrack* tr = GetTrackForStrip(strip - stripOffset);
+                if (tr)
+                {
+                    if (down)
+                    {
+                        int* cp = (int*)GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", nullptr);
+                        m_touchSavedColor[strip] = cp ? *cp : 0;
+                        m_touchColored[strip] = true;
+                        // Bright amber-orange with custom color bit set
+                        int highlight = 0x010080FF; // R=255,G=128,B=0 as 0x01_00_80_FF
+                        GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", &highlight);
+                    }
+                    else if (m_touchColored[strip])
+                    {
+                        GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", &m_touchSavedColor[strip]);
+                        m_touchColored[strip] = false;
+                    }
+                }
+            }
+        }
         return;
     }
 
@@ -1414,10 +1535,11 @@ void TransCSurf::FP16_ProcessMIDI(const MIDI_event_t* ev)
 
 void TransCSurf::FP16_SetButtonAction(uint8_t note, bool down)
 {
-    // Check custom button map overrides first
+    // Check custom button map overrides first (per-port map set by pollInput)
+    if (m_curPortBtnMap)
     {
-        auto it = m_s.btnMap.find(note);
-        if (it != m_s.btnMap.end())
+        auto it = m_curPortBtnMap->find(note);
+        if (it != m_curPortBtnMap->end())
         {
             const BtnAction& a = it->second;
             if (a.type == BtnActionType::None)
@@ -1435,7 +1557,31 @@ void TransCSurf::FP16_SetButtonAction(uint8_t note, bool down)
     if (note >= 0x68 && note <= 0x77)
     {
         int strip = note - 0x68;
-        if (strip < 16) m_touchState[strip] = down;
+        if (strip < 16)
+        {
+            m_touchState[strip] = down;
+
+            if (m_s.showTouchedChannels)
+            {
+                MediaTrack* tr = GetTrackForStrip(strip);
+                if (tr)
+                {
+                    if (down)
+                    {
+                        int* cp = (int*)GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", nullptr);
+                        m_touchSavedColor[strip] = cp ? *cp : 0;
+                        m_touchColored[strip] = true;
+                        int highlight = 0x010080FF;
+                        GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", &highlight);
+                    }
+                    else if (m_touchColored[strip])
+                    {
+                        GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", &m_touchSavedColor[strip]);
+                        m_touchColored[strip] = false;
+                    }
+                }
+            }
+        }
         return;
     }
 

@@ -90,7 +90,9 @@
 #define REAPERAPI_WANT_CSurf_TrackFromID
 #define REAPERAPI_WANT_CSurf_TrackToID
 #define REAPERAPI_WANT_GetTrackColor
+#define REAPERAPI_WANT_SetTrackColor
 #define REAPERAPI_WANT_ColorFromNative
+#define REAPERAPI_WANT_ColorToNative
 
 // Live Monitor – latency / PDC queries + RT CPU audio hook
 #define REAPERAPI_WANT_GetInputOutputLatency

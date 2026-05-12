@@ -36,9 +36,7 @@ static std::string s_srcGuidStr;
 // ---------------------------------------------------------------------------
 static bool s_intercept  = false;
 static int  s_sendType   = 3;   // 3 = Pre-Fader (Post-FX) in REAPER
-static int  s_hwOut      = 0;   // 0 = none
-static bool s_autoSetup  = false; // Ensure setup on project start
-static bool s_hideFader  = true;  // Hide PAFL bus fader (default: hidden)
+static bool s_autoSetup  = false; // Active on project startup
 
 // ---------------------------------------------------------------------------
 // Dialog handle / instance
@@ -255,12 +253,8 @@ static void LoadSettings()
     s_intercept = (!v || !v[0]) ? true : (atoi(v) != 0); // default: active
     v = GetExtState(k_appSection, "sendtype");
     s_sendType  = (v && v[0]) ? atoi(v) : 3;
-    v = GetExtState(k_appSection, "hwout");
-    s_hwOut     = (v && v[0]) ? atoi(v) : 0;
     v = GetExtState(k_appSection, "autosetup");
     s_autoSetup = (v && atoi(v) != 0);
-    v = GetExtState(k_appSection, "hidefader");
-    s_hideFader = (!v || !v[0]) ? true : (atoi(v) != 0); // default: hidden
 }
 
 static void SaveSettings()
@@ -270,12 +264,8 @@ static void SaveSettings()
     SetExtState(k_appSection, "intercept", buf, true);
     snprintf(buf, sizeof(buf), "%d", s_sendType);
     SetExtState(k_appSection, "sendtype", buf, true);
-    snprintf(buf, sizeof(buf), "%d", s_hwOut);
-    SetExtState(k_appSection, "hwout", buf, true);
     snprintf(buf, sizeof(buf), "%d", s_autoSetup ? 1 : 0);
     SetExtState(k_appSection, "autosetup", buf, true);
-    snprintf(buf, sizeof(buf), "%d", s_hideFader ? 1 : 0);
-    SetExtState(k_appSection, "hidefader", buf, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -319,24 +309,6 @@ static void FillSrcTrackCombo(HWND hwnd)
         if (srcTr == tr) selIdx = cbIdx;
     }
     SendMessageA(hCombo, CB_SETCURSEL, selIdx, 0);
-}
-
-static void FillHwOutCombo(HWND hwnd)
-{
-    HWND hCombo = GetDlgItem(hwnd, IDC_PAFL_HWOUT);
-    SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
-    int ni = (int)SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)"<none>");
-    SendMessageA(hCombo, CB_SETITEMDATA, ni, 0);
-
-    int count = 0;
-    while (const char* chName = GetOutputChannelName(count))
-    {
-        int cbIdx = (int)SendMessageA(hCombo, CB_ADDSTRING, 0, (LPARAM)chName);
-        SendMessageA(hCombo, CB_SETITEMDATA, cbIdx, (LPARAM)(count + 1));
-        count++;
-    }
-    int sel = (s_hwOut >= 0 && s_hwOut <= count) ? s_hwOut : 0;
-    SendMessageA(hCombo, CB_SETCURSEL, sel, 0);
 }
 
 static void FillSendTypeCombo(HWND hwnd)
@@ -535,8 +507,7 @@ static void DoCreateNewBus(HWND hwnd)
     if (!busTr) return;
 
     GetSetMediaTrackInfo_String(busTr, "P_NAME", (char*)"PAFL", true);
-    int vis = s_hideFader ? 0 : 1;
-    int one = 1, zero = 0;
+    int one = 1, zero = 0, vis = 1;
     GetSetMediaTrackInfo(busTr, "B_SHOWINTCP",   &vis);
     GetSetMediaTrackInfo(busTr, "B_SHOWINMIXER", &vis);
     GetSetMediaTrackInfo(busTr, "B_SOLO_DEFEAT", &one);
@@ -575,8 +546,7 @@ static void DoInitBus(HWND hwnd)
 
         GetSetMediaTrackInfo_String(busTr, "P_NAME", (char*)"PAFL", true);
 
-        int vis = s_hideFader ? 0 : 1;
-        int one = 1, zero = 0;
+        int one = 1, zero = 0, vis = 1;
         GetSetMediaTrackInfo(busTr, "B_SHOWINTCP",   &vis);
         GetSetMediaTrackInfo(busTr, "B_SHOWINMIXER", &vis);
         GetSetMediaTrackInfo(busTr, "B_SOLO_DEFEAT", &one);
@@ -637,14 +607,11 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
     case WM_INITDIALOG:
         FillBusTrackCombo(hwnd);
         FillSrcTrackCombo(hwnd);
-        FillHwOutCombo(hwnd);
         FillSendTypeCombo(hwnd);
         CheckDlgButton(hwnd, IDC_PAFL_ACTIVE,
                        s_intercept ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_PAFL_AUTOSETUP,
                        s_autoSetup ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_PAFL_HIDEFADER,
-                       s_hideFader ? BST_CHECKED : BST_UNCHECKED);
         UpdateStatus();
         return TRUE;
 
@@ -683,15 +650,6 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
                 MediaTrack* busTr = GetBusTrack();
                 if (tr && busTr && tr != busTr)
                     EnsureSend(tr, busTr, 0, false);
-            }
-            break;
-
-        case IDC_PAFL_HWOUT:
-            if (HIWORD(wParam) == CBN_SELCHANGE)
-            {
-                int sel = (int)SendDlgItemMessageA(hwnd, IDC_PAFL_HWOUT, CB_GETCURSEL, 0, 0);
-                s_hwOut = (int)SendDlgItemMessageA(hwnd, IDC_PAFL_HWOUT, CB_GETITEMDATA, sel, 0);
-                SaveSettings();
             }
             break;
 
@@ -735,21 +693,6 @@ static INT_PTR CALLBACK PaflDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /
         case IDC_PAFL_AUTOSETUP:
             s_autoSetup = (IsDlgButtonChecked(hwnd, IDC_PAFL_AUTOSETUP) == BST_CHECKED);
             SaveSettings();
-            break;
-
-        case IDC_PAFL_HIDEFADER:
-            s_hideFader = (IsDlgButtonChecked(hwnd, IDC_PAFL_HIDEFADER) == BST_CHECKED);
-            SaveSettings();
-            {
-                MediaTrack* busTr = GetBusTrack();
-                if (busTr)
-                {
-                    int vis = s_hideFader ? 0 : 1;
-                    GetSetMediaTrackInfo(busTr, "B_SHOWINTCP",   &vis);
-                    GetSetMediaTrackInfo(busTr, "B_SHOWINMIXER", &vis);
-                    TrackList_AdjustWindows(false);
-                }
-            }
             break;
 
         case IDCANCEL:

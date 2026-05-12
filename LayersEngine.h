@@ -88,6 +88,11 @@ public:
     void SaveExtState();
     void LoadExtState();
 
+    // Project-specific persistence (project_config_extension_t hooks)
+    void SaveConfig(ProjectStateContext* ctx);
+    bool ProcessLine(const char* line, ProjectStateContext* ctx);
+    void ResetForProject();
+
     // --- Track name refresh ---
     void RefreshTrackNames(int layerIdx);
     void RefreshAllTrackNames();

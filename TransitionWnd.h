@@ -45,3 +45,8 @@ void TransitionWnd_OverwriteScene(int index); // re-capture scene at slot index
 void TransitionWnd_SaveCueList(ProjectStateContext* ctx);
 bool TransitionWnd_LoadCueListLine(const char* line);
 void TransitionWnd_ResetCueList();
+
+// Default transition settings – project-specific persistence
+void TransitionWnd_SaveSettings(ProjectStateContext* ctx);
+bool TransitionWnd_ProcessSettingsLine(const char* line);
+void TransitionWnd_ResetSettings();

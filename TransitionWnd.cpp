@@ -294,6 +294,37 @@ bool TransitionWnd_LoadCueListLine(const char* line)
 }
 
 // ---------------------------------------------------------------------------
+// Default transition settings – project-specific persistence
+// ---------------------------------------------------------------------------
+void TransitionWnd_ResetSettings()
+{
+    g_defaultDuration = 2.0;
+    g_defaultTaper    = TAPER_SCURVE;
+    g_defaultTaperExp = 2.0;
+    g_placeMarker     = false;
+}
+
+bool TransitionWnd_ProcessSettingsLine(const char* line)
+{
+    if (!line || strncmp(line, "LTDEFSETTINGS ", 14) != 0) return false;
+    double dur = 2.0, taperExp = 2.0;
+    int taper = TAPER_SCURVE, marker = 0;
+    sscanf(line + 14, "%lf %d %lf %d", &dur, &taper, &taperExp, &marker);
+    g_defaultDuration = (dur >= 0.0) ? dur : 2.0;
+    g_defaultTaper    = (taper >= 0 && taper <= TAPER_CUSTOM) ? taper : TAPER_SCURVE;
+    g_defaultTaperExp = (taperExp > 0.0) ? taperExp : 2.0;
+    g_placeMarker     = (marker != 0);
+    return true;
+}
+
+void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
+{
+    ctx->AddLine("LTDEFSETTINGS %.4f %d %.4f %d",
+                 g_defaultDuration, g_defaultTaper,
+                 g_defaultTaperExp, g_placeMarker ? 1 : 0);
+}
+
+// ---------------------------------------------------------------------------
 // GetSelectedListIndex
 // ---------------------------------------------------------------------------
 static int GetSelectedListIndex(HWND hwnd)
@@ -976,17 +1007,8 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             double ex = atof(exBuf);
             g_defaultTaperExp = (ex > 0.0) ? ex : 2.0;
 
-            // Persist
-            char tmp[64];
-            snprintf(tmp, sizeof(tmp), "%.4f", g_defaultDuration);
-            SetExtState("reaper_transitions", "def_duration", tmp, true);
-            snprintf(tmp, sizeof(tmp), "%d", g_defaultTaper);
-            SetExtState("reaper_transitions", "def_taper", tmp, true);
-            snprintf(tmp, sizeof(tmp), "%.4f", g_defaultTaperExp);
-            SetExtState("reaper_transitions", "def_taper_exp", tmp, true);
-
             g_placeMarker = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER) == BST_CHECKED);
-            SetExtState("reaper_transitions", "place_marker", g_placeMarker ? "1" : "0", true);
+            MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);
             return TRUE;
@@ -1755,17 +1777,8 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         CheckDlgButton(hwnd, IDC_MODE_SCENES, BST_CHECKED);
         CheckDlgButton(hwnd, IDC_MODE_CUE,    BST_UNCHECKED);
 
-        // ---- Global default transition settings --------------------------
-        {
-            const char* dd = GetExtState("reaper_transitions", "def_duration");
-            if (dd && dd[0]) { double d = atof(dd); g_defaultDuration = (d >= 0.0) ? d : 2.0; }
-            const char* dt = GetExtState("reaper_transitions", "def_taper");
-            if (dt && dt[0]) { int t = atoi(dt); g_defaultTaper = (t >= 0 && t <= TAPER_CUSTOM) ? t : TAPER_SCURVE; }
-            const char* de = GetExtState("reaper_transitions", "def_taper_exp");
-            if (de && de[0]) { double e = atof(de); g_defaultTaperExp = (e > 0.0) ? e : 2.0; }
-            const char* dm = GetExtState("reaper_transitions", "place_marker");
-            g_placeMarker = (dm && dm[0] == '1');
-        }
+        // ---- Default transition settings are loaded per-project via
+        //      TransitionWnd_ProcessSettingsLine (called from ProcessExtensionLine).
 
         // ---- Initial editor state ----------------------------------------
         LoadEditorFromSnapshot(hwnd, nullptr);

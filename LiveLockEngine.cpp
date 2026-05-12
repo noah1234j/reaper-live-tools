@@ -49,19 +49,8 @@ void LiveLockSettings::Load()
 
 void LiveLockSettings::Save() const
 {
-    char buf[16];
-    auto setB = [](const char* key, bool v) {
-        SetExtState(k_Sect, key, v ? "1" : "0", true);
-    };
-    setB("ll_routing",    lockRouting);
-    setB("ll_selonly",    lockSelectedOnly);
-    setB("ll_hwout",      lockHardwareOut);
-    setB("ll_mastersend", lockMasterSend);
-    setB("ll_fxbypass",   lockFxBypass);
-    setB("ll_recarm",     lockRecArm);
-    setB("ll_confirm",    requireConfirm);
-    snprintf(buf, sizeof(buf), "%d", intervalMs);
-    SetExtState(k_Sect, "ll_intervalms", buf, true);
+    // Settings are project-specific; persisted via SaveExtensionConfig -> SaveConfig.
+    MarkProjectDirty(nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -390,11 +379,52 @@ void LiveLockEngine::TimerCallback()
 }
 
 // ---------------------------------------------------------------------------
+// Project-specific persistence (project_config_extension_t hooks)
+// ---------------------------------------------------------------------------
+void LiveLockEngine::ResetSettingsToDefaults()
+{
+    m_settings = LiveLockSettings{};
+}
+
+void LiveLockEngine::SaveConfig(ProjectStateContext* ctx)
+{
+    ctx->AddLine("LTLOCKSET routing=%d selonly=%d hwout=%d mastersend=%d fxbypass=%d recarm=%d confirm=%d intervalms=%d",
+                 m_settings.lockRouting      ? 1 : 0,
+                 m_settings.lockSelectedOnly ? 1 : 0,
+                 m_settings.lockHardwareOut  ? 1 : 0,
+                 m_settings.lockMasterSend   ? 1 : 0,
+                 m_settings.lockFxBypass     ? 1 : 0,
+                 m_settings.lockRecArm       ? 1 : 0,
+                 m_settings.requireConfirm   ? 1 : 0,
+                 m_settings.intervalMs);
+}
+
+bool LiveLockEngine::ProcessLine(const char* line)
+{
+    if (!line || strncmp(line, "LTLOCKSET ", 10) != 0) return false;
+
+    int r = 1, so = 0, hw = 1, ms = 1, fx = 1, ra = 1, cf = 0, ims = 250;
+    sscanf(line + 10,
+           "routing=%d selonly=%d hwout=%d mastersend=%d fxbypass=%d recarm=%d confirm=%d intervalms=%d",
+           &r, &so, &hw, &ms, &fx, &ra, &cf, &ims);
+
+    m_settings.lockRouting      = (r  != 0);
+    m_settings.lockSelectedOnly = (so != 0);
+    m_settings.lockHardwareOut  = (hw != 0);
+    m_settings.lockMasterSend   = (ms != 0);
+    m_settings.lockFxBypass     = (fx != 0);
+    m_settings.lockRecArm       = (ra != 0);
+    m_settings.requireConfirm   = (cf != 0);
+    m_settings.intervalMs       = (ims >= 50 && ims <= 2000) ? ims : 250;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Init / Cleanup
 // ---------------------------------------------------------------------------
 void LiveLockEngine_Init()
 {
-    LiveLockEngine::Get().LoadSettings();
+    LiveLockEngine::Get().ResetSettingsToDefaults();
 }
 
 void LiveLockEngine_Cleanup()

@@ -108,6 +108,10 @@ static void BeginLoadProjectState(bool isUndo,
     g_layouts.clear();
     g_dcaGroups.clear();
     TransitionWnd_ResetCueList();
+    TransitionWnd_ResetSettings();
+    LayersEngine::Get().ResetForProject();
+    LiveLockEngine::Get().ResetSettingsToDefaults();
+    DcaWnd_ResetSettings();
     PaflWnd_ResetProjectState();
     MuteGroupsEngine::Get().ResetForProject();
     if (!isUndo)
@@ -181,6 +185,10 @@ static bool ProcessExtensionLine(const char* line,
     }
 
     if (TransitionWnd_LoadCueListLine(line)) return true;
+    if (TransitionWnd_ProcessSettingsLine(line)) return true;
+    if (LayersEngine::Get().ProcessLine(line, ctx)) return true;
+    if (LiveLockEngine::Get().ProcessLine(line)) return true;
+    if (DcaWnd_ProcessSettingsLine(line)) return true;
 
     return false;
 }
@@ -200,6 +208,10 @@ static void SaveExtensionConfig(ProjectStateContext* ctx,
     for (const auto& dca : g_dcaGroups)
         dca->Serialize(ctx);
     TransitionWnd_SaveCueList(ctx);
+    TransitionWnd_SaveSettings(ctx);
+    LayersEngine::Get().SaveConfig(ctx);
+    LiveLockEngine::Get().SaveConfig(ctx);
+    DcaWnd_SaveSettings(ctx);
 }
 
 // ---------------------------------------------------------------------------

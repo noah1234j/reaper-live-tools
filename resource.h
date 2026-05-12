@@ -222,35 +222,6 @@
 #define IDC_LL_INTERVAL_EDIT     2717   // check interval edit box
 #define IDC_LL_INTERVAL_SPIN     2718   // check interval spin control
 
-// ---- Control Surface new controls (extenders, follow layers, button map) --
-#define IDC_CSURF_FOLLOW_LAYERS  2518
-#define IDC_CSURF_BTN_MAP_BTN    2519
-#define IDC_CSURF_EXT_LIST       2520
-#define IDC_CSURF_EXT_ADD        2521
-#define IDC_CSURF_EXT_EDIT       2522
-#define IDC_CSURF_EXT_REMOVE     2523
-#define IDD_CSURF_EXTENDER_EDIT  221
-#define IDC_EXT_MIDI_IN          2524
-#define IDC_EXT_MIDI_OUT         2525
-
-// ---- Button Map dialog ----------------------------------------------------
-#define IDD_BTN_MAP              222
-#define IDC_BM_SURFACE_LABEL     2530
-#define IDC_BM_FILTER            2531
-#define IDC_BM_LIST              2532
-#define IDC_BM_ASSIGN            2533
-#define IDC_BM_DEFAULT           2534
-#define IDC_BM_DISABLE           2535
-#define IDC_BM_RESETALL          2536
-
-// ---- Button Assign sub-dialog ---------------------------------------------
-#define IDD_BTN_ASSIGN           223
-#define IDC_BA_LABEL             2540
-#define IDC_BA_DEF               2541
-#define IDC_BA_NONE              2542
-#define IDC_BA_CMD               2543
-#define IDC_BA_CMDID             2544
-
 // ---- Meter Bridge settings dialog ----------------------------------------
 #define IDD_METERBRIDGE_SETTINGS 210
 #define IDC_MB_STRIP_W           2601   // strip width edit
@@ -274,6 +245,43 @@
 #define IDC_CSURF_EXT_REMOVE     2521   // Remove extender button
 #define IDC_EXT_MIDI_IN          2522   // extender MIDI input combo
 #define IDC_EXT_MIDI_OUT         2523   // extender MIDI output combo
+#define IDC_EXT_CHAN_OFFSET      2524   // channel offset edit
+#define IDC_EXT_CHAN_OFFSET_SPIN 2525   // channel offset spin
+#define IDC_CSURF_SENDS_SPILL   2526   // "Sends spill receives" checkbox
+#define IDC_CSURF_SENDS_ACTIVE  2527   // radio: shows active sends only
+#define IDC_CSURF_SENDS_CREATE  2528   // radio: shows all channels, creates send on fader
+#define IDC_CSURF_TOUCH_CHAN    2529   // Show Touched Channels in MCP checkbox
+#define IDC_CSURF_DEBUG_LOG     2530   // Enable Debug Log checkbox
+#define IDC_CSURF_EXPORT_TPL    2531   // Export Template button
+#define IDC_CSURF_IMPORT_TPL    2532   // Import Template button
+#define IDC_CSURF_DBG_OPEN      2533   // Open Debug Log button
+#define IDC_CSURF_WIZARD_BTN    2534   // Setup Wizard button
+// --- Per-port controls in extender edit dialog ---------------------------
+#define IDC_EXT_PROTO_MCU       2535   // per-port MCU radio button
+#define IDC_EXT_PROTO_HUI       2536   // per-port HUI radio button
+#define IDC_EXT_PROTO_RAW       2537   // per-port Raw MIDI radio button
+#define IDC_EXT_DEVICE_PRESET   2538   // per-port device preset combo
+#define IDC_EXT_BTN_MAP         2539   // per-port Button Map button
+// --- Debug log window ---------------------------------------------------
+#define IDD_CSURF_DEBUG         230
+#define IDC_CSURF_DBG_LIST      2540   // log list box (multiline edit)
+#define IDC_CSURF_DBG_CLEAR     2541   // clear button
+#define IDC_CSURF_DBG_COPY      2542   // copy-all button
+// --- Setup Wizard dialog ------------------------------------------------
+#define IDD_CSURF_WIZARD        231
+#define IDC_WIZ_CONTENT         2543   // scrollable instructions (multiline edit)
+#define IDC_WIZ_TMPL_LABEL      2544
+#define IDC_WIZ_TMPL            2545   // template combo (step 3)
+#define IDC_WIZ_IN_LABEL        2546
+#define IDC_WIZ_MIDI_IN         2547   // MIDI in combo  (step 3)
+#define IDC_WIZ_OUT_LABEL       2548
+#define IDC_WIZ_MIDI_OUT        2549   // MIDI out combo (step 3)
+#define IDC_WIZ_STEP            2550   // "Step N / 5" label
+#define IDC_WIZ_BACK            2551
+#define IDC_WIZ_NEXT            2552
+// --- Button map import / export -----------------------------------------
+#define IDC_BM_IMPORT           2553
+#define IDC_BM_EXPORT           2554
 
 // ---- Monitor RT-CPU thresholds (added after initial IO/PDC/RT rows) ------
 #define IDC_MON_RC_YEL           2513   // RT CPU yellow threshold

@@ -85,6 +85,8 @@ add_library(reaper_transitions SHARED
   LayersEngine.cpp
   LayersWnd.cpp
   BtnMapWnd.cpp
+  CSurfDebugWnd.cpp
+  CSurfWizardDlg.cpp
   MuteGroup.cpp
   MuteGroupsWnd.cpp
   DcaGroup.cpp

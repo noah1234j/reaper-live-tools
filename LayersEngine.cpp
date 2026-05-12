@@ -6,6 +6,7 @@
 // tracks appear in the mixer, up to a configurable max-channel count.
 // ---------------------------------------------------------------------------
 #include "LayersEngine.h"
+#include "LayersWnd.h"
 #include "api.h"
 
 #include <cstdio>
@@ -44,10 +45,8 @@ void LayersSettings::Load()
 
 void LayersSettings::Save() const
 {
-    SetExtState(k_Sec, "lyr_mcpvis",  applyMcpVisibility  ? "1" : "0", true);
-    SetExtState(k_Sec, "lyr_hidetcp", hideTcpToo          ? "1" : "0", true);
-    SetExtState(k_Sec, "lyr_reorder", reorderTracks       ? "1" : "0", true);
-    SetExtState(k_Sec, "lyr_restore", restoreOnDeactivate ? "1" : "0", true);
+    // Settings are project-specific; persisted via SaveExtensionConfig / SaveConfig.
+    MarkProjectDirty(nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -63,8 +62,10 @@ LayersEngine& LayersEngine::Get()
 
 void LayersEngine::Init()
 {
-    m_settings.Load();
-    LoadExtState();
+    // Do NOT call LoadExtState() here – layer data is project-specific and
+    // will be loaded via BeginLoadProjectState → ProcessLine().  Actions
+    // are registered below; the initial project state arrives through the
+    // project_config_extension_t callbacks shortly after plugin registration.
     RegisterAllActions();
 }
 
@@ -255,10 +256,7 @@ void LayersEngine::ActivateLayer(int idx)
     if (idx < 0 || idx >= n) return;
     m_activeLayer = idx;
     DoApplyLayer(idx);
-
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d", m_activeLayer);
-    SetExtState(k_Sec, "lyr_active", buf, true);
+    MarkProjectDirty(nullptr);  // active layer saved per-project via SaveConfig
 }
 
 void LayersEngine::Deactivate()
@@ -266,7 +264,7 @@ void LayersEngine::Deactivate()
     m_activeLayer = -1;
     if (m_settings.restoreOnDeactivate)
         RestoreAllVisible();
-    SetExtState(k_Sec, "lyr_active", "-1", true);
+    MarkProjectDirty(nullptr);  // active layer saved per-project via SaveConfig
 }
 
 void LayersEngine::NextLayer()
@@ -390,54 +388,9 @@ void LayersEngine::RefreshAllTrackNames()
 // ---------------------------------------------------------------------------
 void LayersEngine::SaveExtState()
 {
-    m_settings.Save();
-
-    int count = (int)m_layers.size();
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%d", count);
-    SetExtState(k_Sec, "lyr_count", buf, true);
-
-    snprintf(buf, sizeof(buf), "%d", m_nextUid);
-    SetExtState(k_Sec, "lyr_nextuid", buf, true);
-
-    for (int i = 0; i < count; i++)
-    {
-        char key[64];
-        const LayerDef& ld = m_layers[i];
-
-        snprintf(key, sizeof(key), "lyr_%d_name", i);
-        SetExtState(k_Sec, key, ld.name, true);
-
-        char uidBuf[16];
-        snprintf(uidBuf, sizeof(uidBuf), "%d", ld.uid);
-        snprintf(key, sizeof(key), "lyr_%d_uid", i);
-        SetExtState(k_Sec, key, uidBuf, true);
-
-        char numBuf[16];
-        snprintf(numBuf, sizeof(numBuf), "%d", ld.maxChannels);
-        snprintf(key, sizeof(key), "lyr_%d_maxch", i);
-        SetExtState(k_Sec, key, numBuf, true);
-
-        std::string trackData;
-        trackData.reserve(ld.tracks.size() * 42);
-        for (const auto& lt : ld.tracks)
-        {
-            if (!trackData.empty()) trackData += "|";
-            if (lt.isSpacer)
-                trackData += "SPACER";
-            else
-            {
-                char gs[40];
-                GuidToStr(lt.guid, gs);
-                trackData += gs;
-            }
-        }
-        snprintf(key, sizeof(key), "lyr_%d_tracks", i);
-        SetExtState(k_Sec, key, trackData.c_str(), true);
-    }
-
-    snprintf(buf, sizeof(buf), "%d", m_activeLayer);
-    SetExtState(k_Sec, "lyr_active", buf, true);
+    // Layer data is now project-specific; just mark the project dirty so that
+    // REAPER will call SaveExtensionConfig -> SaveConfig() on next save.
+    MarkProjectDirty(nullptr);
 }
 
 void LayersEngine::LoadExtState()
@@ -766,6 +719,181 @@ void LayersEngine::UnregisterAllActions()
     uids.reserve(m_cmdIds.size());
     for (auto& p : m_cmdIds) uids.push_back(p.first);
     for (int uid : uids) UnregisterLayerAction(uid);
+}
+
+// ---------------------------------------------------------------------------
+// Project-specific persistence (project_config_extension_t hooks)
+// ---------------------------------------------------------------------------
+void LayersEngine::ResetForProject()
+{
+    m_settings = LayersSettings{};
+    m_layers.clear();
+    m_nextUid     = 1;
+    m_activeLayer = -1;
+
+    // Seed 5 default empty layers for brand-new projects
+    for (int i = 0; i < 5; i++)
+    {
+        LayerDef ld;
+        ld.uid = m_nextUid++;
+        snprintf(ld.name, sizeof(ld.name), "Layer %d", i + 1);
+        m_layers.push_back(ld);
+    }
+
+    LayersWnd_Refresh();
+}
+
+// Format:
+//   <LTLAYERS nextuid=N active=N mcpvis=1 hidetcp=0 reorder=0 restore=1
+//   LAYER uid=N maxch=N name="..." tracks={guid}|SPACER|{guid2}
+//   ...
+//   >
+void LayersEngine::SaveConfig(ProjectStateContext* ctx)
+{
+    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d",
+                 m_nextUid, m_activeLayer,
+                 m_settings.applyMcpVisibility  ? 1 : 0,
+                 m_settings.hideTcpToo          ? 1 : 0,
+                 m_settings.reorderTracks       ? 1 : 0,
+                 m_settings.restoreOnDeactivate ? 1 : 0);
+
+    for (const auto& ld : m_layers)
+    {
+        // Build pipe-separated track list
+        std::string trackData;
+        trackData.reserve(ld.tracks.size() * 42);
+        for (const auto& lt : ld.tracks)
+        {
+            if (!trackData.empty()) trackData += "|";
+            if (lt.isSpacer)
+                trackData += "SPACER";
+            else
+            {
+                char gs[40];
+                GuidToStr(lt.guid, gs);
+                trackData += gs;
+            }
+        }
+
+        // Escape double-quotes in name
+        std::string safeName = ld.name;
+        for (char& c : safeName) if (c == '"') c = '\'';
+
+        ctx->AddLine("LAYER uid=%d maxch=%d name=\"%s\" tracks=%s",
+                     ld.uid, ld.maxChannels, safeName.c_str(), trackData.c_str());
+    }
+
+    ctx->AddLine(">");
+}
+
+bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
+{
+    if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
+
+    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1;
+    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d",
+           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore);
+
+    m_nextUid = (nextuid >= 1) ? nextuid : 1;
+    m_settings.applyMcpVisibility  = (mcpvis  != 0);
+    m_settings.hideTcpToo          = (hidetcp != 0);
+    m_settings.reorderTracks       = (reorder != 0);
+    m_settings.restoreOnDeactivate = (restore != 0);
+    m_layers.clear();
+
+    char subline[4096];
+    while (ctx->GetLine(subline, sizeof(subline)) == 0)
+    {
+        char* trimmed = subline;
+        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
+
+        if (strcmp(trimmed, ">") == 0) break;
+
+        if (strncmp(trimmed, "LAYER ", 6) == 0)
+        {
+            LayerDef ld = {};
+
+            // Parse uid and maxch
+            int uid = 0, maxch = 0;
+            sscanf(trimmed, "LAYER uid=%d maxch=%d", &uid, &maxch);
+            ld.uid        = uid;
+            ld.maxChannels = maxch;
+
+            // Extract quoted name
+            const char* nq = strchr(trimmed, '"');
+            if (nq)
+            {
+                ++nq;
+                int ni = 0;
+                while (*nq && *nq != '"' && ni < (int)sizeof(ld.name) - 1)
+                    ld.name[ni++] = *nq++;
+                ld.name[ni] = '\0';
+            }
+            if (!ld.name[0])
+                snprintf(ld.name, sizeof(ld.name), "Layer %d", (int)m_layers.size() + 1);
+
+            // Parse tracks= portion
+            const char* tp = strstr(trimmed, "tracks=");
+            if (tp)
+            {
+                tp += 7; // skip "tracks="
+                char tdata[8192];
+                strncpy(tdata, tp, sizeof(tdata) - 1);
+                tdata[sizeof(tdata) - 1] = '\0';
+
+                char* p = tdata;
+                while (*p)
+                {
+                    char* sep = strchr(p, '|');
+                    if (sep) *sep = '\0';
+
+                    if (strcmp(p, "SPACER") == 0)
+                    {
+                        LayerTrack lt = {};
+                        lt.isSpacer = true;
+                        strncpy(lt.name, "--- Spacer ---", sizeof(lt.name) - 1);
+                        ld.tracks.push_back(lt);
+                    }
+                    else if (p[0])
+                    {
+                        GUID g = {};
+                        if (StrToGuid(p, g))
+                        {
+                            LayerTrack lt = {};
+                            lt.guid = g;
+                            ld.tracks.push_back(lt);
+                        }
+                    }
+
+                    if (sep) p = sep + 1; else break;
+                }
+            }
+
+            if (ld.uid <= 0)        ld.uid = m_nextUid++;
+            if (ld.uid >= m_nextUid) m_nextUid = ld.uid + 1;
+            m_layers.push_back(ld);
+        }
+    }
+
+    // If block was empty (or all layers stripped) seed defaults
+    if (m_layers.empty())
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            LayerDef ld;
+            ld.uid = m_nextUid++;
+            snprintf(ld.name, sizeof(ld.name), "Layer %d", i + 1);
+            m_layers.push_back(ld);
+        }
+    }
+
+    m_activeLayer = active;
+    if (m_activeLayer < -1 || m_activeLayer >= (int)m_layers.size())
+        m_activeLayer = -1;
+
+    RefreshAllTrackNames();
+    LayersWnd_Refresh();
+    return true;
 }
 
 // ---------------------------------------------------------------------------

@@ -71,6 +71,11 @@ public:
     // Load settings from ExtState (called at plugin init)
     void LoadSettings();
 
+    // Project-specific persistence (project_config_extension_t hooks)
+    void SaveConfig(ProjectStateContext* ctx);
+    bool ProcessLine(const char* line);
+    void ResetSettingsToDefaults();
+
     // Registered with plugin_register("timer", ...)
     static void TimerCallback();
 

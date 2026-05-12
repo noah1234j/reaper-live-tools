@@ -8,7 +8,7 @@
 // ---------------------------------------------------------------------------
 // Protocols
 // ---------------------------------------------------------------------------
-enum class CSurfProtocol : int { MCU = 0, HUI = 1, FP16 = 2 };
+enum class CSurfProtocol : int { MCU = 0, HUI = 1, FP16 = 2, RAW = 3 };
 
 // ---------------------------------------------------------------------------
 // Button action override (used by BtnMap)
@@ -33,8 +33,12 @@ using BtnMap = std::unordered_map<uint8_t, BtnAction>;
 // ---------------------------------------------------------------------------
 struct ExtenderPort
 {
-    int midiInDev  = -1;
-    int midiOutDev = -1;
+    int           midiInDev     = -1;
+    int           midiOutDev    = -1;
+    int           channelOffset = 0;   // MIDI channel strip offset
+    CSurfProtocol proto         = CSurfProtocol::MCU;  // per-port protocol
+    int           devicePreset  = -1;  // index into k_csurfTemplates (-1 = none)
+    BtnMap        btnMap;              // per-port button overrides
 };
 
 // ---------------------------------------------------------------------------
@@ -61,16 +65,20 @@ struct CSurfSettings
     int           midiOutDev    = -1;
     int           templateIdx   = 0;
     int           channelCount  = 8;    // 8 or 16
-    bool          followSel     = true; // bank scrolls to selected track
-    int           faderMode     = 0;    // 0=Volume, 1=Pan, 2=Sends
-    int           bankOffset    = 0;    // initial bank starting track index
-    bool          sendColors    = false; // send X-Touch scribble strip colors
-    bool          followMCP     = false; // use MCP (mixer) track order
-    bool          followLayers  = false; // bank follows active Layer track list
+    bool          followSel            = true;  // bank scrolls to selected track
+    int           faderMode            = 0;     // 0=Volume, 1=Pan, 2=Sends (toggled on surface)
+    int           bankOffset           = 0;     // initial bank starting track index
+    bool          sendColors           = false; // send X-Touch scribble strip colors
+    bool          followMCP            = false; // use MCP (mixer) track order
+    bool          followLayers         = false; // bank follows active Layer track list
+    bool          sendsSpillReceives   = false; // Sends btn spills receive sends of selected track
+    int           sendsDisplayMode     = 0;     // 0=active only, 1=all channels+create send
+    bool          showTouchedChannels  = false; // highlight touched fader tracks in MCP
+    bool          debugLog             = false; // enable MIDI debug log window
 
     std::vector<ExtenderPort> extenders; // additional MCU extender ports
 
-    BtnMap        btnMap;               // per-button action overrides (FP16)
+    BtnMap        btnMap;               // global per-button action overrides (FP16)
 
     std::string Serialize()   const;
     static CSurfSettings Deserialize(const char* cfg);
@@ -128,8 +136,13 @@ private:
 
     int  m_bankOffset = 0;  // first visible track index (1-based REAPER index)
 
+    // Active port button map (set per-pollInput call)
+    const BtnMap* m_curPortBtnMap = nullptr;
+
     // Per-strip state (up to 16)
     bool   m_touchState[16]      = {};
+    int    m_touchSavedColor[16] = {}; // saved I_CUSTOMCOLOR before highlight
+    bool   m_touchColored[16]    = {}; // whether we currently have highlight set
     double m_lastFaderMove[16]   = {}; // time_precise() debounce timer
     double m_lastSentVol[16]     = {}; // last fader value sent to surface
     bool   m_lastMute[16]        = {};
@@ -226,6 +239,9 @@ std::string CSurf_GetCurrentConfig();
 
 // Open a standalone (modal) settings dialog from the Extensions menu
 void CSurf_ShowStandaloneConfig(HWND parent);
+
+// Setup wizard
+void CSurf_ShowWizard(HWND parent, HINSTANCE hInst);
 
 // Button map access (live instance)
 BtnMap      CSurf_GetBtnMap();
