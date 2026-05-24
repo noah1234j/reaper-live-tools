@@ -52,6 +52,13 @@ static std::vector<int> g_cueList;
 // Whether to place a project marker at the play-cursor on each recall
 static bool g_placeMarker = false;
 
+// Scene list interaction settings
+static bool g_singleClickRecall   = false;  // single click recalls a scene
+static bool g_altClickDelete      = false;  // Alt+click deletes a scene
+static bool g_ctrlClickOverwrite  = false;  // Ctrl+click overwrites a scene
+// FX window setting (non-static so TransitionEngine.cpp can extern it)
+bool g_keepFxWindowsOpen          = false;  // keep FX windows open during recall
+
 // Global default transition settings for newly created scenes
 static double g_defaultDuration = 2.0;
 static int    g_defaultTaper    = TAPER_SCURVE;
@@ -298,10 +305,14 @@ bool TransitionWnd_LoadCueListLine(const char* line)
 // ---------------------------------------------------------------------------
 void TransitionWnd_ResetSettings()
 {
-    g_defaultDuration = 2.0;
-    g_defaultTaper    = TAPER_SCURVE;
-    g_defaultTaperExp = 2.0;
-    g_placeMarker     = false;
+    g_defaultDuration    = 2.0;
+    g_defaultTaper       = TAPER_SCURVE;
+    g_defaultTaperExp    = 2.0;
+    g_placeMarker        = false;
+    g_singleClickRecall  = false;
+    g_altClickDelete     = false;
+    g_ctrlClickOverwrite = false;
+    g_keepFxWindowsOpen  = false;
 }
 
 bool TransitionWnd_ProcessSettingsLine(const char* line)
@@ -309,19 +320,30 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
     if (!line || strncmp(line, "LTDEFSETTINGS ", 14) != 0) return false;
     double dur = 2.0, taperExp = 2.0;
     int taper = TAPER_SCURVE, marker = 0;
-    sscanf(line + 14, "%lf %d %lf %d", &dur, &taper, &taperExp, &marker);
-    g_defaultDuration = (dur >= 0.0) ? dur : 2.0;
-    g_defaultTaper    = (taper >= 0 && taper <= TAPER_CUSTOM) ? taper : TAPER_SCURVE;
-    g_defaultTaperExp = (taperExp > 0.0) ? taperExp : 2.0;
-    g_placeMarker     = (marker != 0);
+    int singleClick = 0, altDelete = 0, ctrlOverwrite = 0, keepFxWin = 0;
+    sscanf(line + 14, "%lf %d %lf %d %d %d %d %d",
+           &dur, &taper, &taperExp, &marker,
+           &singleClick, &altDelete, &ctrlOverwrite, &keepFxWin);
+    g_defaultDuration    = (dur >= 0.0) ? dur : 2.0;
+    g_defaultTaper       = (taper >= 0 && taper <= TAPER_CUSTOM) ? taper : TAPER_SCURVE;
+    g_defaultTaperExp    = (taperExp > 0.0) ? taperExp : 2.0;
+    g_placeMarker        = (marker != 0);
+    g_singleClickRecall  = (singleClick != 0);
+    g_altClickDelete     = (altDelete != 0);
+    g_ctrlClickOverwrite = (ctrlOverwrite != 0);
+    g_keepFxWindowsOpen  = (keepFxWin != 0);
     return true;
 }
 
 void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
 {
-    ctx->AddLine("LTDEFSETTINGS %.4f %d %.4f %d",
+    ctx->AddLine("LTDEFSETTINGS %.4f %d %.4f %d %d %d %d %d",
                  g_defaultDuration, g_defaultTaper,
-                 g_defaultTaperExp, g_placeMarker ? 1 : 0);
+                 g_defaultTaperExp, g_placeMarker ? 1 : 0,
+                 g_singleClickRecall ? 1 : 0,
+                 g_altClickDelete ? 1 : 0,
+                 g_ctrlClickOverwrite ? 1 : 0,
+                 g_keepFxWindowsOpen ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -947,6 +969,10 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         bool instant = (g_defaultDuration == 0.0);
         CheckDlgButton(hwnd, IDC_GSET_INSTANT, instant ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_MARKER,  g_placeMarker ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_SINGLE_CLICK,    g_singleClickRecall   ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_ALT_DELETE,      g_altClickDelete      ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_CTRL_OVERWRITE,  g_ctrlClickOverwrite  ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_KEEP_FX_WINDOWS, g_keepFxWindowsOpen   ? BST_CHECKED : BST_UNCHECKED);
 
         char buf[64];
         snprintf(buf, sizeof(buf), "%.2f", instant ? 2.0 : g_defaultDuration);
@@ -1008,6 +1034,10 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_defaultTaperExp = (ex > 0.0) ? ex : 2.0;
 
             g_placeMarker = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER) == BST_CHECKED);
+            g_singleClickRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SINGLE_CLICK)    == BST_CHECKED);
+            g_altClickDelete      = (IsDlgButtonChecked(hwnd, IDC_GSET_ALT_DELETE)       == BST_CHECKED);
+            g_ctrlClickOverwrite  = (IsDlgButtonChecked(hwnd, IDC_GSET_CTRL_OVERWRITE)   == BST_CHECKED);
+            g_keepFxWindowsOpen   = (IsDlgButtonChecked(hwnd, IDC_GSET_KEEP_FX_WINDOWS)  == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);
@@ -1036,6 +1066,36 @@ static LRESULT CALLBACK CueLvSubclassProc(HWND hList, UINT msg,
 {
     switch (msg)
     {
+    case WM_RBUTTONDOWN:
+    {
+        // Right-click on the cue-order (right) list: offer "Remove from Cue"
+        if (hList == s_cueRight && s_cueEditList)
+        {
+            LVHITTESTINFO htiR = {};
+            htiR.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            int item = ListView_HitTest(hList, &htiR);
+            if (item >= 0 && item < (int)s_cueEditList->size())
+            {
+                ListView_SetItemState(hList, item,
+                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+                ClientToScreen(hList, &ptScreen);
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenu(hMenu, MF_STRING, 1, "Remove from Cue");
+                int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                         ptScreen.x, ptScreen.y, 0, hList, nullptr);
+                DestroyMenu(hMenu);
+                if (cmd == 1)
+                {
+                    s_cueEditList->erase(s_cueEditList->begin() + item);
+                    RefillCueRightList(s_cueRight, *s_cueEditList);
+                }
+                return 0;
+            }
+        }
+        break;
+    }
+
     case WM_LBUTTONDOWN:
     {
         LRESULT r = CallWindowProc(s_origCueLvProc, hList, msg, wParam, lParam);
@@ -1567,6 +1627,45 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
     {
     case WM_LBUTTONDOWN:
     {
+        // Alt+click → delete scene (scenes mode only)
+        if (g_altClickDelete && !g_cueMode)
+        {
+            LVHITTESTINFO htiMod = {};
+            htiMod.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            int clickedMod = ListView_HitTest(hList, &htiMod);
+            if ((GetKeyState(VK_MENU) & 0x8000) && clickedMod >= 0 &&
+                clickedMod < (int)g_snapshots.size())
+            {
+                int snapIdx = clickedMod;
+                g_cueList.erase(
+                    std::remove(g_cueList.begin(), g_cueList.end(), snapIdx),
+                    g_cueList.end());
+                for (auto& ci : g_cueList)
+                    if (ci > snapIdx) ci--;
+                g_snapshots.erase(g_snapshots.begin() + snapIdx);
+                for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
+                RefreshListView(dlg);
+                LoadEditorFromSnapshot(dlg, nullptr);
+                Undo_OnStateChangeEx("Delete Scene", -1, -1);
+                return 0;
+            }
+        }
+        // Ctrl+click → overwrite scene (scenes mode only, non-spacer)
+        if (g_ctrlClickOverwrite && !g_cueMode && (wParam & MK_CONTROL))
+        {
+            LVHITTESTINFO htiMod = {};
+            htiMod.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            int clickedMod = ListView_HitTest(hList, &htiMod);
+            if (clickedMod >= 0 && clickedMod < (int)g_snapshots.size() &&
+                !g_snapshots[clickedMod]->m_isSpacer)
+            {
+                g_snapshots[clickedMod]->Capture(TS_CAPTURE_ALL);
+                g_snapshots[clickedMod]->m_time = (int)std::time(nullptr);
+                RefreshListView(dlg);
+                Undo_OnStateChangeEx("Overwrite Scene", -1, -1);
+                return 0;
+            }
+        }
         // Let the list handle selection first
         LRESULT r = CallWindowProc(s_origListProc, hList, msg, wParam, lParam);
         // Record position for potential drag – do NOT capture yet (avoid
@@ -1690,6 +1789,8 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
     }
 
     case WM_LBUTTONUP:
+    {
+        const bool wasTracking = s_lbTracking;
         s_lbTracking = false;
         if (g_dragSrc >= 0)
         {
@@ -1697,7 +1798,20 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
             DoEndDrag(dlg);
             return 0;
         }
-        break;  // let the original list proc handle the normal click/release
+        // Single-click recall: fire on release when no drag, no modifiers,
+        // and the mouse didn't move past the drag threshold (wasTracking).
+        if (g_singleClickRecall && wasTracking && s_lbDownItem >= 0 &&
+            s_lbDownItem < (int)g_snapshots.size() &&
+            !g_snapshots[s_lbDownItem]->m_isSpacer &&
+            !(GetKeyState(VK_MENU)    & 0x8000) &&
+            !(GetKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetKeyState(VK_SHIFT)   & 0x8000))
+        {
+            DoRecall(dlg, s_lbDownItem);
+            return 0;
+        }
+        break;
+    }
 
     case WM_CAPTURECHANGED:
         s_lbTracking = false;
@@ -2019,8 +2133,13 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             if (hdr->code == NM_DBLCLK)
             {
-                NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
-                if (nia->iItem >= 0) DoRecall(hwnd, nia->iItem);
+                // Skip double-click recall when single-click recall is active
+                // (single-click already fired on the first button release)
+                if (!g_singleClickRecall)
+                {
+                    NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
+                    if (nia->iItem >= 0) DoRecall(hwnd, nia->iItem);
+                }
             }
             else if (hdr->code == LVN_ITEMCHANGED)
             {

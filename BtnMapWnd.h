@@ -7,4 +7,6 @@
 // proto is used to select the appropriate button list (MCU or FP16).
 void BtnMapWnd_ShowModal(HWND hParent, HINSTANCE hInst, BtnMap& map,
                          CSurfProtocol proto = CSurfProtocol::MCU,
-                         const char* portLabel = nullptr);
+                         const char* portLabel = nullptr,
+                         int channelOffset = 0,
+                         int templateIdx = -1);

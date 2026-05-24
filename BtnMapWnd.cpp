@@ -287,6 +287,14 @@ static int g_jogY = -1;
 static int g_jogW = 0;
 static int g_jogH = 0;
 
+// Encoder/V-Pot circle positions for channel strip layout (set by BuildXXXLayout)
+struct EncoderPosn { int x, y, w, h; };
+static std::vector<EncoderPosn> g_encoderCircles;
+
+// Motorized fader positions for channel strip layout (drawn as vertical slider graphic)
+struct FaderPosn { int x, y, w, h; };
+static std::vector<FaderPosn> g_faderRects;
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
@@ -306,259 +314,478 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 // ---------------------------------------------------------------------------
 // Layout builders
 // ---------------------------------------------------------------------------
-static void BuildFP16Layout()
+
+// ---------------------------------------------------------------------------
+// BuildFP16Part1Layout  –  FaderPort 16, main unit (channels 1-8 + full panel)
+// ---------------------------------------------------------------------------
+static void BuildFP16Part1Layout()
 {
-    // FaderPort 16 – hardware-accurate layout
-    // Left col | 16 channel strips | MIX col | AUTO 3x3 | SESSION NAV | TRANSPORT
-    // Channel strips: Select row on top, then M|S side-by-side per channel (matching hardware)
     g_layoutBtns.clear();
+    g_encoderCircles.clear();
+    g_faderRects.clear();
     g_jogX = -1;
 
-    const int BH  = 20;       // button height
-    const int BG  = 3;        // button gap
-    const int BS  = BH + BG;  // row stride = 23
-    const int HH  = 11;       // section-header height
-    const int HS  = HH + 3;   // header + gap = 14
+    const int BH  = 18;          // button height
+    const int BG  = 2;           // button gap
+    const int BS  = BH + BG;     // row stride = 20
+    const int HH  = 10;          // section-header height
+    const int HS  = HH + 4;      // header + gap = 14
 
-    // ── Left column ────────────────────────────────────────────────────────
-    // Hardware: Pan/Param at top, then Arm buttons, then global panel
-    const int LX = 4, LW = 46;
+    // ── Left column (global + arm buttons) ──────────────────────────────
+    const int LX = 4, LW = 44;
 
-    // "LEFT" header
     { SurfLayoutBtn b; b.x=LX; b.y=2; b.w=LW; b.h=HH;
       b.note=0xFF; b.group=7; lstrcpynA(b.label,"LEFT",sizeof(b.label));
       g_layoutBtns.push_back(b); }
 
     const int lc_y = 2 + HS;  // = 16
 
-    // Pan/Param (top of left column, like hardware)
-    { SurfLayoutBtn b; b.x=LX; b.y=lc_y; b.w=LW; b.h=BH;
-      b.note=0x20; b.group=5;
-      lstrcpynA(b.label,"Pan/Prm",sizeof(b.label));
-      g_layoutBtns.push_back(b); }
-
-    // RecArm ch 1-7 (individual arm buttons below Pan/Param)
-    {
-        const uint8_t armNotes[7] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06};
-        for (int i = 0; i < 7; ++i) {
-            SurfLayoutBtn b; b.x=LX; b.y=lc_y+(i+1)*BS; b.w=LW; b.h=BH;
-            b.note=armNotes[i]; b.group=0;  // group 0 = rec arm (orange-red)
-            char lbl[8]; snprintf(lbl,sizeof(lbl),"Arm%d",i+1);
-            lstrcpynA(b.label,lbl,sizeof(b.label));
-            g_layoutBtns.push_back(b);
-        }
-    }
-    // arm7 bottom: lc_y + 8*BS = 16 + 184 = 200; last btn bottom = 200+BH = 220? No:
-    // Pan/Param at lc_y+0*BS=16; Arm1 at lc_y+1*BS=39; ... Arm7 at lc_y+7*BS=177; bottom=197
-
-    // "GLOBAL" header
-    const int glob_hdr_y = lc_y + 8*BS;  // 16+184=200 (3px gap built into HS)
-    { SurfLayoutBtn b; b.x=LX; b.y=glob_hdr_y; b.w=LW; b.h=HH;
-      b.note=0xFF; b.group=7; lstrcpynA(b.label,"GLOBAL",sizeof(b.label));
-      g_layoutBtns.push_back(b); }
-
-    const int glob_y = glob_hdr_y + HS;  // = 214
+    // Global buttons (top of left column)
     {
         struct { uint8_t n; const char* l; } lGlob[] = {
             {0x64,"SoloCl"},{0x65,"MuteCl"},{0x66,"Bypass"},
-            {0x67,"Macro"}, {0x58,"Link"},  {0x46,"Shift"},
+            {0x67,"Macro"},{0x58,"Link"},
         };
-        for (int i = 0; i < 6; ++i) {
-            SurfLayoutBtn b; b.x=LX; b.y=glob_y+i*BS; b.w=LW; b.h=BH;
+        for (int i = 0; i < 5; ++i) {
+            SurfLayoutBtn b; b.x=LX; b.y=lc_y+i*BS; b.w=LW; b.h=BH;
             b.note=lGlob[i].n; b.group=5;
             lstrcpynA(b.label,lGlob[i].l,sizeof(b.label));
             g_layoutBtns.push_back(b);
         }
     }
-    // left col bottom: glob_y + 5*BS + BH = 214 + 115 + 20 = 349
+    // 5 global buttons bottom = lc_y + 4*BS + BH = 16+80+18 = 114
 
-    // ── 16 Channel strips ─────────────────────────────────────────────────
-    // Hardware: Select row on top; M (mute) and S (solo) side-by-side below
-    const int CX = LX + LW + 4;         // = 54
-    const int CW = 30, CG = 2, CS = CW + CG;  // CS=32  (16ch total = 512px)
-
-    // "CHANNEL STRIPS" header
-    { SurfLayoutBtn b; b.x=CX; b.y=2; b.w=16*CS-CG; b.h=HH;
-      b.note=0xFF; b.group=7; lstrcpynA(b.label,"CHANNEL STRIPS",sizeof(b.label));
+    // Pan/Param encoder-button (between global and arm sections)
+    const int panparam_y = lc_y + 5*BS + 2;  // = 118
+    { SurfLayoutBtn b; b.x=LX; b.y=panparam_y; b.w=LW; b.h=BH;
+      b.note=0x20; b.group=5;
+      lstrcpynA(b.label,"Pan/Prm",sizeof(b.label));
       g_layoutBtns.push_back(b); }
 
-    const int ch_y = 2 + HS;  // = 16
-    {
-        const uint8_t selNotes[16]  = {
-            0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F,
-            0x07,0x21,0x22,0x23,0x24,0x25,0x26,0x27
-        };
-        const uint8_t muteNotes[16] = {
-            0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
-            0x78,0x79,0x7A,0x7B,0x7C,0x7D,0x7E,0x7F
-        };
-        const uint8_t soloNotes[16] = {
-            0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
-            0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57
-        };
-
-        // M and S widths within one channel (CW=30, 1px gap in middle)
-        const int MW = (CW - 1) / 2;   // = 14
-        const int SW = CW - MW - 1;     // = 15
-
-        for (int i = 0; i < 16; ++i) {
-            int bx = CX + i*CS;
-            char lbl[8];
-
-            // Select: full channel width (teal – group 2)
-            { SurfLayoutBtn b; b.x=bx; b.y=ch_y; b.w=CW; b.h=BH;
-              b.note=selNotes[i]; b.group=2;
-              snprintf(lbl,sizeof(lbl),"Se%d",i+1);
-              lstrcpynA(b.label,lbl,sizeof(b.label));
-              g_layoutBtns.push_back(b); }
-
-            // Mute: left half of channel, same row as Solo (red – group 1)
-            { SurfLayoutBtn b; b.x=bx; b.y=ch_y+BS; b.w=MW; b.h=BH;
-              b.note=muteNotes[i]; b.group=1;
-              snprintf(lbl,sizeof(lbl),"M%d",i+1);
-              lstrcpynA(b.label,lbl,sizeof(b.label));
-              g_layoutBtns.push_back(b); }
-
-            // Solo: right half of channel, same row as Mute (green – group 3)
-            { SurfLayoutBtn b; b.x=bx+MW+1; b.y=ch_y+BS; b.w=SW; b.h=BH;
-              b.note=soloNotes[i]; b.group=3;
-              snprintf(lbl,sizeof(lbl),"S%d",i+1);
-              lstrcpynA(b.label,lbl,sizeof(b.label));
-              g_layoutBtns.push_back(b); }
-        }
-    }
-    // channel bottom: ch_y + BS + BH = 16 + 23 + 20 = 59
-
-    // ── Mix column ─────────────────────────────────────────────────────────
-    const int MX  = CX + 16*CS + 4;  // = 54 + 512 + 4 = 570
-    const int MCW = 52;
-
-    { SurfLayoutBtn b; b.x=MX; b.y=2; b.w=MCW; b.h=HH;
-      b.note=0xFF; b.group=7; lstrcpynA(b.label,"MIX",sizeof(b.label));
+    // ARM section header + 7 individual arm buttons (ch1-7)
+    const int arm_hdr_y = panparam_y + BH + 4;  // = 140
+    { SurfLayoutBtn b; b.x=LX; b.y=arm_hdr_y; b.w=LW; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"ARM",sizeof(b.label));
       g_layoutBtns.push_back(b); }
 
-    const int mix_y = 2 + HS;  // = 16
+    const int arm_y = arm_hdr_y + HS;  // = 154
     {
-        struct { uint8_t n; const char* l; } mixBtns[] = {
-            {0x28,"Track"}, {0x2B,"EditPl"},{0x29,"Sends"},{0x2A,"Pan M"},
-            {0x3E,"Audio"}, {0x3F,"VI"},    {0x40,"Bus"},  {0x41,"VCA"},
-            {0x42,"All"},   {0x46,"Shift"},
-        };
-        for (int i = 0; i < 10; ++i) {
-            SurfLayoutBtn b; b.x=MX; b.y=mix_y+i*BS; b.w=MCW; b.h=BH;
-            b.note=mixBtns[i].n; b.group=5;
-            lstrcpynA(b.label,mixBtns[i].l,sizeof(b.label));
+        const uint8_t armNotes[7] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06};
+        for (int i = 0; i < 7; ++i) {
+            SurfLayoutBtn b; b.x=LX; b.y=arm_y+i*BS; b.w=LW; b.h=BH;
+            b.note=armNotes[i]; b.group=0;
+            char lbl[8]; snprintf(lbl,sizeof(lbl),"Arm%d",i+1);
+            lstrcpynA(b.label,lbl,sizeof(b.label));
             g_layoutBtns.push_back(b);
         }
     }
-    // mix bottom: mix_y + 9*BS + BH = 16 + 207 + 20 = 243
+    // Arm7 bottom = arm_y + 6*BS + BH = 154+120+18 = 292
 
-    // ── Automation 3×3 grid ────────────────────────────────────────────────
-    const int AX  = MX + MCW + 4;           // = 570 + 52 + 4 = 626
-    const int ABW = 38, ABG = 3, ABS = ABW + ABG;  // stride=41
+    // ── 8 Channel strips ─────────────────────────────────────────────────
+    const int CX = LX + LW + 4;             // = 52
+    const int CW = 26, CG = 2, CS = CW+CG; // CS=28
 
-    { SurfLayoutBtn b; b.x=AX; b.y=2; b.w=3*ABS-ABG; b.h=HH;
-      b.note=0xFF; b.group=7; lstrcpynA(b.label,"AUTO",sizeof(b.label));
+    { SurfLayoutBtn b; b.x=CX; b.y=2; b.w=8*CS-CG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"CHANNEL STRIPS  1-8",sizeof(b.label));
       g_layoutBtns.push_back(b); }
 
-    const int auto_y = 2 + HS;  // = 16
+    const int ENC_SZ  = CW;          // 26 – perfect circle
+    const int ENC_ROW = ENC_SZ + 6;  // 32 – encoder row height
+    const int ch_y = 2 + HS;         // = 16
+
+    const uint8_t selNotes[8]  = {0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F};
+    const uint8_t soloNotes[8] = {0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F};
+    const uint8_t muteNotes[8] = {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17};
+    const int MW = (CW-1)/2;   // = 12  (solo half)
+    const int SW = CW-MW-1;    // = 13  (mute half)
+    const int fader_y = ch_y + ENC_ROW + 2*BS + 4;  // = 16+32+40+4 = 92
+
+    for (int i = 0; i < 8; ++i) {
+        int bx = CX + i*CS;
+        char lbl[8];
+        // Encoder circle (drawn as round knob in WM_PAINT)
+        g_encoderCircles.push_back({ bx, ch_y+3, ENC_SZ, ENC_SZ });
+        // SELECT button (full channel width)
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW; b.w=CW; b.h=BH;
+          b.note=selNotes[i]; b.group=2;
+          snprintf(lbl,sizeof(lbl),"Se%d",i+1);
+          lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        // SOLO (left half)
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW+BS; b.w=MW; b.h=BH;
+          b.note=soloNotes[i]; b.group=3;
+          snprintf(lbl,sizeof(lbl),"S%d",i+1);
+          lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        // MUTE (right half)
+        { SurfLayoutBtn b; b.x=bx+MW+1; b.y=ch_y+ENC_ROW+BS; b.w=SW; b.h=BH;
+          b.note=muteNotes[i]; b.group=1;
+          snprintf(lbl,sizeof(lbl),"M%d",i+1);
+          lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        // Fader placeholder – height filled after right panel is computed
+        g_faderRects.push_back({ bx, fader_y, CW, 0 });
+    }
+
+    // ── Right panel ───────────────────────────────────────────────────────
+    const int RX  = CX + 8*CS + 4;               // = 52+224+4 = 280
+    const int RBW = 38, RBG = 3, RBS = RBW+RBG;  // stride=41
+    const int RBH = BH;
+
+    // --- MIX section ---
+    { SurfLayoutBtn b; b.x=RX; b.y=2; b.w=4*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"MIX",sizeof(b.label));
+      g_layoutBtns.push_back(b); }
+    const int mix_y = 2+HS;  // = 16
     {
-        struct { uint8_t n; const char* l; } automBtns[3][3] = {
+        struct { uint8_t n; const char* l; } r1[] = {{0x28,"Track"},{0x2B,"EditPl"},{0x29,"Sends"},{0x2A,"Pan M"}};
+        struct { uint8_t n; const char* l; } r2[] = {{0x3E,"Audio"},{0x3F,"VI"},{0x40,"Bus"},{0x41,"VCA"}};
+        struct { uint8_t n; const char* l; } r3[] = {{0x42,"All"},{0x46,"Shift"}};
+        for (int i = 0; i < 4; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=mix_y;   b.w=RBW; b.h=RBH; b.note=r1[i].n; b.group=5;
+            lstrcpynA(b.label,r1[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        for (int i = 0; i < 4; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=mix_y+BS; b.w=RBW; b.h=RBH; b.note=r2[i].n; b.group=5;
+            lstrcpynA(b.label,r2[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        for (int i = 0; i < 2; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=mix_y+2*BS; b.w=RBW; b.h=RBH; b.note=r3[i].n; b.group=5;
+            lstrcpynA(b.label,r3[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // --- AUTO 3x3 grid ---
+    const int auto_hdr_y = mix_y + 3*BS + 2;  // = 78
+    { SurfLayoutBtn b; b.x=RX; b.y=auto_hdr_y; b.w=3*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"AUTO",sizeof(b.label));
+      g_layoutBtns.push_back(b); }
+    const int auto_y = auto_hdr_y + HS;  // = 92
+    {
+        struct { uint8_t n; const char* l; } ag[3][3] = {
             {{0x4E,"Latch"},{0x4C,"Trim"},{0x4F,"Off"}},
             {{0x4D,"Touch"},{0x4B,"Write"},{0x4A,"Read"}},
             {{0x47,"User1"},{0x48,"User2"},{0x49,"User3"}},
         };
         for (int r = 0; r < 3; ++r)
             for (int c = 0; c < 3; ++c) {
-                SurfLayoutBtn b; b.x=AX+c*ABS; b.y=auto_y+r*BS; b.w=ABW; b.h=BH;
-                b.note=automBtns[r][c].n; b.group=5;
-                lstrcpynA(b.label,automBtns[r][c].l,sizeof(b.label));
-                g_layoutBtns.push_back(b);
-            }
+                SurfLayoutBtn b; b.x=RX+c*RBS; b.y=auto_y+r*BS; b.w=RBW; b.h=RBH;
+                b.note=ag[r][c].n; b.group=5;
+                lstrcpynA(b.label,ag[r][c].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
     }
-    // auto bottom: 16 + 2*23 + 20 = 82
+    // AUTO bottom = auto_y + 2*BS + BH = 92+40+18 = 150
 
-    // ── Session Navigator ─────────────────────────────────────────────────
-    // 4 columns: Prev | JOG | Next | (4th used by nav rows)
-    const int nav_hdr_y = auto_y + 3*BS + 4;  // = 89
-
-    { SurfLayoutBtn b; b.x=AX; b.y=nav_hdr_y; b.w=4*ABS-ABG; b.h=HH;
+    // --- SESSION NAV ---
+    const int nav_hdr_y = auto_y + 3*BS + 2;  // = 154
+    { SurfLayoutBtn b; b.x=RX; b.y=nav_hdr_y; b.w=4*RBS-RBG; b.h=HH;
       b.note=0xFF; b.group=7; lstrcpynA(b.label,"SESSION NAV",sizeof(b.label));
       g_layoutBtns.push_back(b); }
+    const int nav_y = nav_hdr_y + HS;  // = 168
 
-    const int nav_y = nav_hdr_y + HS;  // = 103
-
-    // Prev (col 0) and Next (col 2); jog wheel occupies col 1
-    { SurfLayoutBtn b; b.w=ABW; b.h=BH; b.y=nav_y; b.group=5;
-      b.x=AX;         b.note=0x2E; lstrcpynA(b.label,"Prev",sizeof(b.label));
-      g_layoutBtns.push_back(b);
-      b.x=AX+2*ABS;   b.note=0x2F; lstrcpynA(b.label,"Next",sizeof(b.label));
-      g_layoutBtns.push_back(b); }
-
-    g_jogX = AX + ABS;   // jog visual at column 1
-    g_jogY = nav_y;
-    g_jogW = ABW;
-    g_jogH = BH;
-
-    // Nav mode rows
+    // Mode rows
     {
-        struct { uint8_t n; const char* l; } navRow1[] = {
-            {0x36,"Chan"},{0x37,"Zoom"},{0x38,"Scrl"},{0x39,"Bank"},
-        };
-        struct { uint8_t n; const char* l; } navRow2[] = {
-            {0x3A,"Mstr"},{0x3B,"Clck"},{0x3C,"Sect"},{0x3D,"Mkr"},
-        };
+        struct { uint8_t n; const char* l; } nr1[] = {{0x36,"Chan"},{0x38,"Scrl"},{0x39,"Bank"},{0x3C,"Sect"}};
+        struct { uint8_t n; const char* l; } nr2[] = {{0x3A,"Mstr"},{0x3B,"Clck"},{0x3D,"Mkr"},{0x37,"Zoom"}};
         for (int i = 0; i < 4; ++i) {
-            SurfLayoutBtn b; b.w=ABW; b.h=BH; b.group=5;
-            b.x=AX+i*ABS; b.y=nav_y+BS;
-            b.note=navRow1[i].n; lstrcpynA(b.label,navRow1[i].l,sizeof(b.label));
-            g_layoutBtns.push_back(b);
-            b.y=nav_y+2*BS;
-            b.note=navRow2[i].n; lstrcpynA(b.label,navRow2[i].l,sizeof(b.label));
-            g_layoutBtns.push_back(b);
-        }
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=nav_y;    b.w=RBW; b.h=RBH; b.note=nr1[i].n; b.group=5;
+            lstrcpynA(b.label,nr1[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        for (int i = 0; i < 4; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=nav_y+BS; b.w=RBW; b.h=RBH; b.note=nr2[i].n; b.group=5;
+            lstrcpynA(b.label,nr2[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
     }
-    // nav bottom: 103 + 2*23 + 20 = 169
 
-    // ── Transport (below Mix column) ────────────────────────────────────────
-    const int tr_hdr_y = mix_y + 10*BS + 4;  // = 250
-    const int TW = 40, TG = 4, TS = TW + TG;  // TS=44
+    // Jog wheel (large round) + Prev / Next
+    const int jog_area_y = nav_y + 2*BS + 4;  // = 212
+    const int JOG_SZ = 50;  // square → drawn as circle
 
-    { SurfLayoutBtn b; b.x=MX; b.y=tr_hdr_y; b.w=6*TS-TG; b.h=HH;
+    { SurfLayoutBtn b; b.x=RX; b.y=jog_area_y; b.w=RBW; b.h=RBH; b.note=0x2E; b.group=5;
+      lstrcpynA(b.label,"Prev",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    g_jogX = RX + RBS;  g_jogY = jog_area_y;  g_jogW = JOG_SZ;  g_jogH = JOG_SZ;
+    { SurfLayoutBtn b; b.x=RX+RBS+JOG_SZ+RBG; b.y=jog_area_y; b.w=RBW; b.h=RBH; b.note=0x2F; b.group=5;
+      lstrcpynA(b.label,"Next",sizeof(b.label)); g_layoutBtns.push_back(b); }
+
+    // Cursor arrows (row below jog)
+    const int arr_y = jog_area_y + JOG_SZ + 4;  // = 266
+    {
+        struct { uint8_t n; const char* l; } arrowBtns[] =
+            {{0x62,"Left"},{0x60,"Up"},{0x61,"Down"},{0x63,"Right"}};
+        for (int i = 0; i < 4; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=arr_y; b.w=RBW; b.h=RBH; b.note=arrowBtns[i].n; b.group=5;
+            lstrcpynA(b.label,arrowBtns[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // --- TRANSPORT ---
+    const int tr_hdr_y = arr_y + RBH + 4;  // = 288
+    { SurfLayoutBtn b; b.x=RX; b.y=tr_hdr_y; b.w=3*RBS-RBG; b.h=HH;
       b.note=0xFF; b.group=7; lstrcpynA(b.label,"TRANSPORT",sizeof(b.label));
       g_layoutBtns.push_back(b); }
-
-    const int trans_y = tr_hdr_y + HS;  // = 264
+    const int trans_y = tr_hdr_y + HS;  // = 302
     {
-        struct { uint8_t n; const char* l; int g; } transBtns[] = {
-            {0x56,"Loop",4},{0x5B,"<<",4},{0x5C,">>",4},
+        struct { uint8_t n; const char* l; int g; } tb[] = {
+            {0x56,"Loop",4},{0x5B,"<< ",4},{0x5C,">> ",4},
             {0x5D,"Stop",4},{0x5F,"Rec",4},{0x5E,"Play",4},
         };
-        for (int i = 0; i < 6; ++i) {
-            SurfLayoutBtn b; b.x=MX+i*TS; b.y=trans_y; b.w=TW; b.h=BH;
-            b.note=transBtns[i].n; b.group=transBtns[i].g;
-            lstrcpynA(b.label,transBtns[i].l,sizeof(b.label));
-            g_layoutBtns.push_back(b);
-        }
+        for (int i = 0; i < 3; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=trans_y;    b.w=RBW; b.h=RBH; b.note=tb[i].n; b.group=tb[i].g;
+            lstrcpynA(b.label,tb[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        for (int i = 3; i < 6; ++i) {
+            SurfLayoutBtn b; b.x=RX+(i-3)*RBS; b.y=trans_y+BS; b.w=RBW; b.h=RBH; b.note=tb[i].n; b.group=tb[i].g;
+            lstrcpynA(b.label,tb[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
     }
-    // transport bottom: 264 + 20 = 284
-    // left col bottom: 349  →  tallest column
+    // transport bottom = trans_y + BS + BH = 302+20+18 = 340
 
-    // ── Canvas dimensions (auto-computed) ─────────────────────────────────
-    int maxX = 0, maxY = 0;
-    for (const auto& b : g_layoutBtns) {
-        if (b.x + b.w > maxX) maxX = b.x + b.w;
-        if (b.y + b.h > maxY) maxY = b.y + b.h;
+    // ── Phase 2: compute canvas height, then fill in fader heights ────────
+    {
+        int maxX = 0, maxY = 0;
+        for (const auto& b : g_layoutBtns) {
+            if (b.x + b.w > maxX) maxX = b.x + b.w;
+            if (b.y + b.h > maxY) maxY = b.y + b.h;
+        }
+        if (g_jogX >= 0) {
+            if (g_jogX + g_jogW > maxX) maxX = g_jogX + g_jogW;
+            if (g_jogY + g_jogH > maxY) maxY = g_jogY + g_jogH;
+        }
+        int canvasH = maxY + 4;
+        int faderH  = canvasH - fader_y - 4;
+        if (faderH < 10) faderH = 10;
+        for (auto& f : g_faderRects) f.h = faderH;
+        g_layoutLogW = (float)(maxX + 4);
+        g_layoutLogH = (float)(canvasH);
     }
-    if (g_jogX >= 0 && g_jogX + g_jogW > maxX) maxX = g_jogX + g_jogW;
-    g_layoutLogW = (float)(maxX + 4);
-    g_layoutLogH = (float)(maxY + 4);
 }
 
+// ---------------------------------------------------------------------------
+// BuildFP16Part2Layout  –  FaderPort 16 extender  (channels 9-16 strips only)
+// ---------------------------------------------------------------------------
+static void BuildFP16Part2Layout()
+{
+    g_layoutBtns.clear();
+    g_encoderCircles.clear();
+    g_faderRects.clear();
+    g_jogX = -1;
+
+    const int BH  = 18, BG = 2, BS = BH+BG;
+    const int HH  = 10, HS = HH+4;
+    const int CW  = 26, CG = 2, CS = CW+CG;
+
+    const int CX = 4;
+    { SurfLayoutBtn b; b.x=CX; b.y=2; b.w=8*CS-CG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"CHANNEL STRIPS  9-16",sizeof(b.label));
+      g_layoutBtns.push_back(b); }
+
+    const int ENC_SZ = CW, ENC_ROW = ENC_SZ+6;
+    const int ch_y = 2+HS;  // = 16
+
+    const uint8_t selNotes[8]  = {0x07,0x21,0x22,0x23,0x24,0x25,0x26,0x27};
+    const uint8_t soloNotes[8] = {0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57};
+    const uint8_t muteNotes[8] = {0x78,0x79,0x7A,0x7B,0x7C,0x7D,0x7E,0x7F};
+    const int MW = (CW-1)/2, SW = CW-MW-1;
+    const int fader_y = ch_y + ENC_ROW + 2*BS + 4;  // = 92
+
+    for (int i = 0; i < 8; ++i) {
+        int bx = CX + i*CS;
+        char lbl[8];
+        g_encoderCircles.push_back({ bx, ch_y+3, ENC_SZ, ENC_SZ });
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW; b.w=CW; b.h=BH; b.note=selNotes[i]; b.group=2;
+          snprintf(lbl,sizeof(lbl),"Se%d",i+9); lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW+BS; b.w=MW; b.h=BH; b.note=soloNotes[i]; b.group=3;
+          snprintf(lbl,sizeof(lbl),"S%d",i+9); lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        { SurfLayoutBtn b; b.x=bx+MW+1; b.y=ch_y+ENC_ROW+BS; b.w=SW; b.h=BH; b.note=muteNotes[i]; b.group=1;
+          snprintf(lbl,sizeof(lbl),"M%d",i+9); lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        g_faderRects.push_back({ bx, fader_y, CW, 0 });
+    }
+
+    // Compute canvas and fill fader heights (match Part1 proportions ~248 units)
+    {
+        int maxX = 0, maxY = 0;
+        for (const auto& b : g_layoutBtns) {
+            if (b.x + b.w > maxX) maxX = b.x + b.w;
+            if (b.y + b.h > maxY) maxY = b.y + b.h;
+        }
+        int targetH = fader_y + 248 + 4;
+        int canvasH = (maxY + 4 > targetH) ? maxY + 4 : targetH;
+        int faderH  = canvasH - fader_y - 4;
+        if (faderH < 10) faderH = 10;
+        for (auto& f : g_faderRects) f.h = faderH;
+        g_layoutLogW = (float)(maxX + 4);
+        g_layoutLogH = (float)(canvasH);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BuildFP8Layout  –  FaderPort 8 in MCU mode (same visual style as Part 1)
+// ---------------------------------------------------------------------------
+static void BuildFP8Layout()
+{
+    g_layoutBtns.clear();
+    g_encoderCircles.clear();
+    g_faderRects.clear();
+    g_jogX = -1;
+
+    const int BH  = 18, BG = 2, BS = BH+BG;
+    const int HH  = 10, HS = HH+4;
+    const int CW  = 26, CG = 2, CS = CW+CG;
+    const int LX = 4, LW = 44;
+
+    // Left column
+    { SurfLayoutBtn b; b.x=LX; b.y=2; b.w=LW; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"LEFT",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int lc_y = 2+HS;  // = 16
+
+    {
+        struct { uint8_t n; const char* l; } lGlob[] = {
+            {0x5A,"ClrSol"},{0x64,"Zoom"},{0x65,"Scrub"},
+        };
+        for (int i = 0; i < 3; ++i) {
+            SurfLayoutBtn b; b.x=LX; b.y=lc_y+i*BS; b.w=LW; b.h=BH; b.note=lGlob[i].n; b.group=5;
+            lstrcpynA(b.label,lGlob[i].l,sizeof(b.label)); g_layoutBtns.push_back(b);
+        }
+    }
+
+    const int arm_hdr_y = lc_y + 3*BS + 4;  // = 80
+    { SurfLayoutBtn b; b.x=LX; b.y=arm_hdr_y; b.w=LW; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"ARM",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int arm_y = arm_hdr_y + HS;  // = 94
+    {
+        const uint8_t armNotes[8] = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07};
+        for (int i = 0; i < 8; ++i) {
+            SurfLayoutBtn b; b.x=LX; b.y=arm_y+i*BS; b.w=LW; b.h=BH; b.note=armNotes[i]; b.group=0;
+            char lbl[8]; snprintf(lbl,sizeof(lbl),"Arm%d",i+1);
+            lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b);
+        }
+    }
+
+    // 8 Channel strips (MCU notes, identical to FP16 ch1-8)
+    const int CX = LX+LW+4;  // = 52
+    { SurfLayoutBtn b; b.x=CX; b.y=2; b.w=8*CS-CG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"CHANNEL STRIPS  1-8",sizeof(b.label)); g_layoutBtns.push_back(b); }
+
+    const int ENC_SZ = CW, ENC_ROW = ENC_SZ+6;
+    const int ch_y = 2+HS;
+    const uint8_t selNotes[8]  = {0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F};
+    const uint8_t soloNotes[8] = {0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F};
+    const uint8_t muteNotes[8] = {0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17};
+    const int MW = (CW-1)/2, SW = CW-MW-1;
+    const int fader_y = ch_y + ENC_ROW + 2*BS + 4;
+
+    for (int i = 0; i < 8; ++i) {
+        int bx = CX + i*CS;
+        char lbl[8];
+        g_encoderCircles.push_back({ bx, ch_y+3, ENC_SZ, ENC_SZ });
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW;    b.w=CW; b.h=BH; b.note=selNotes[i]; b.group=2;
+          snprintf(lbl,sizeof(lbl),"Se%d",i+1); lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        { SurfLayoutBtn b; b.x=bx; b.y=ch_y+ENC_ROW+BS; b.w=MW; b.h=BH; b.note=soloNotes[i]; b.group=3;
+          snprintf(lbl,sizeof(lbl),"S%d",i+1);  lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        { SurfLayoutBtn b; b.x=bx+MW+1; b.y=ch_y+ENC_ROW+BS; b.w=SW; b.h=BH; b.note=muteNotes[i]; b.group=1;
+          snprintf(lbl,sizeof(lbl),"M%d",i+1);  lstrcpynA(b.label,lbl,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        g_faderRects.push_back({ bx, fader_y, CW, 0 });
+    }
+
+    // Right panel – MCU-style notes
+    const int RX  = CX + 8*CS + 4;               // = 280
+    const int RBW = 38, RBG = 3, RBS = RBW+RBG;
+    const int RBH = BH;
+
+    // MCU Function buttons
+    { SurfLayoutBtn b; b.x=RX; b.y=2; b.w=3*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"FUNC",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int func_y = 2+HS;
+    {
+        struct { uint8_t n; const char* l; } fr[]  = {{0x28,"Banks"},{0x29,"Sends"},{0x2A,"Pan"}};
+        struct { uint8_t n; const char* l; } fr2[] = {{0x2B,"PlugIn"},{0x2C,"EQ"},{0x2D,"Inst"}};
+        for (int i = 0; i < 3; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=func_y;    b.w=RBW; b.h=RBH; b.note=fr[i].n;  b.group=5;
+            lstrcpynA(b.label,fr[i].l,sizeof(b.label));  g_layoutBtns.push_back(b); }
+        for (int i = 0; i < 3; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=func_y+BS; b.w=RBW; b.h=RBH; b.note=fr2[i].n; b.group=5;
+            lstrcpynA(b.label,fr2[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // AUTO (MCU auto notes = same as FP16)
+    const int auto_hdr_y = func_y + 2*BS + 2;
+    { SurfLayoutBtn b; b.x=RX; b.y=auto_hdr_y; b.w=3*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"AUTO",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int auto_y = auto_hdr_y + HS;
+    {
+        struct { uint8_t n; const char* l; } ag[2][3] = {
+            {{0x4A,"Read"},{0x4B,"Write"},{0x4C,"Trim"}},
+            {{0x4D,"Touch"},{0x4E,"Latch"},{0x00,"---"}},
+        };
+        for (int r = 0; r < 2; ++r)
+            for (int c = 0; c < 3; ++c) {
+                if (r == 1 && c == 2) continue;
+                SurfLayoutBtn b; b.x=RX+c*RBS; b.y=auto_y+r*BS; b.w=RBW; b.h=RBH;
+                b.note=ag[r][c].n; b.group=5;
+                lstrcpynA(b.label,ag[r][c].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // NAVIGATE header + bank/chan
+    const int nav_hdr_y = auto_y + 2*BS + 2;
+    { SurfLayoutBtn b; b.x=RX; b.y=nav_hdr_y; b.w=4*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"NAVIGATE",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int nav_y = nav_hdr_y + HS;
+    {
+        struct { uint8_t n; const char* l; } nr[] =
+            {{0x2E,"B< "},{0x2F,"B> "},{0x30,"C< "},{0x31,"C> "}};
+        for (int i = 0; i < 4; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=nav_y; b.w=RBW; b.h=RBH; b.note=nr[i].n; b.group=5;
+            lstrcpynA(b.label,nr[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // Jog wheel + arrows
+    const int jog_area_y = nav_y + BS + 4;
+    const int JOG_SZ = 50;
+    { SurfLayoutBtn b; b.x=RX; b.y=jog_area_y; b.w=RBW; b.h=RBH; b.note=0x62; b.group=5;
+      lstrcpynA(b.label,"Left",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    g_jogX = RX+RBS;  g_jogY = jog_area_y;  g_jogW = JOG_SZ;  g_jogH = JOG_SZ;
+    { SurfLayoutBtn b; b.x=RX+RBS+JOG_SZ+RBG; b.y=jog_area_y; b.w=RBW; b.h=RBH; b.note=0x63; b.group=5;
+      lstrcpynA(b.label,"Right",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    { SurfLayoutBtn b; b.x=RX; b.y=jog_area_y+JOG_SZ/2; b.w=RBW; b.h=RBH; b.note=0x60; b.group=5;
+      lstrcpynA(b.label,"Up",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    { SurfLayoutBtn b; b.x=RX+RBS+JOG_SZ+RBG; b.y=jog_area_y+JOG_SZ/2; b.w=RBW; b.h=RBH; b.note=0x61; b.group=5;
+      lstrcpynA(b.label,"Down",sizeof(b.label)); g_layoutBtns.push_back(b); }
+
+    // TRANSPORT
+    const int tr_hdr_y = jog_area_y + JOG_SZ + 4;
+    { SurfLayoutBtn b; b.x=RX; b.y=tr_hdr_y; b.w=3*RBS-RBG; b.h=HH;
+      b.note=0xFF; b.group=7; lstrcpynA(b.label,"TRANSPORT",sizeof(b.label)); g_layoutBtns.push_back(b); }
+    const int trans_y = tr_hdr_y + HS;
+    {
+        struct { uint8_t n; const char* l; int g; } tb[] = {
+            {0x5B,"<< ",4},{0x5C,">> ",4},{0x5D,"Stop",4},
+            {0x5E,"Play",4},{0x5F,"Rec",4},{0x56,"Loop",4},
+        };
+        for (int i = 0; i < 3; ++i) {
+            SurfLayoutBtn b; b.x=RX+i*RBS; b.y=trans_y;    b.w=RBW; b.h=RBH; b.note=tb[i].n; b.group=tb[i].g;
+            lstrcpynA(b.label,tb[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+        for (int i = 3; i < 6; ++i) {
+            SurfLayoutBtn b; b.x=RX+(i-3)*RBS; b.y=trans_y+BS; b.w=RBW; b.h=RBH; b.note=tb[i].n; b.group=tb[i].g;
+            lstrcpynA(b.label,tb[i].l,sizeof(b.label)); g_layoutBtns.push_back(b); }
+    }
+
+    // Compute canvas and fill fader heights
+    {
+        int maxX = 0, maxY = 0;
+        for (const auto& b : g_layoutBtns) {
+            if (b.x + b.w > maxX) maxX = b.x + b.w;
+            if (b.y + b.h > maxY) maxY = b.y + b.h;
+        }
+        if (g_jogX >= 0) {
+            if (g_jogX + g_jogW > maxX) maxX = g_jogX + g_jogW;
+            if (g_jogY + g_jogH > maxY) maxY = g_jogY + g_jogH;
+        }
+        int canvasH = maxY + 4;
+        int faderH  = canvasH - fader_y - 4;
+        if (faderH < 10) faderH = 10;
+        for (auto& f : g_faderRects) f.h = faderH;
+        g_layoutLogW = (float)(maxX + 4);
+        g_layoutLogH = (float)(canvasH);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BuildMCULayout  –  Generic MCU surface (compact 8-channel grid)
+// ---------------------------------------------------------------------------
 static void BuildMCULayout()
 {
     g_layoutBtns.clear();
-    g_jogX = -1;  // no jog wheel on MCU layout
+    g_encoderCircles.clear();
+    g_faderRects.clear();
+    g_jogX = -1;
 
     const uint8_t armNotes[8]  = {0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07};
     const uint8_t soloNotes[8] = {0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F};
@@ -566,6 +793,9 @@ static void BuildMCULayout()
     const uint8_t selNotes[8]  = {0x18,0x19,0x1A,0x1B,0x1C,0x1D,0x1E,0x1F};
 
     const int SW = 40, SH = 14, SGAP = 2;
+    const int ENC_SZ  = 20;
+    const int ENC_ROW = ENC_SZ + 6;
+
     for (int i = 0; i < 8; ++i)
     {
         int bx = 2 + i * (SW + SGAP);
@@ -573,27 +803,28 @@ static void BuildMCULayout()
         SurfLayoutBtn b;
         b.w = SW; b.h = SH; b.x = bx;
 
-        b.y = 2; b.note = armNotes[i]; b.group = 3;
+        g_encoderCircles.push_back({ bx + (SW - ENC_SZ) / 2, 2 + 2, ENC_SZ, ENC_SZ });
+
+        b.y = 2+ENC_ROW; b.note = armNotes[i]; b.group = 3;
         snprintf(lbl, sizeof(lbl), "R%d", i+1); lstrcpynA(b.label, lbl, sizeof(b.label));
         g_layoutBtns.push_back(b);
 
-        b.y = 2+(SH+SGAP); b.note = soloNotes[i]; b.group = 0;
+        b.y = 2+ENC_ROW+(SH+SGAP); b.note = soloNotes[i]; b.group = 0;
         snprintf(lbl, sizeof(lbl), "S%d", i+1); lstrcpynA(b.label, lbl, sizeof(b.label));
         g_layoutBtns.push_back(b);
 
-        b.y = 2+(SH+SGAP)*2; b.note = muteNotes[i]; b.group = 1;
+        b.y = 2+ENC_ROW+(SH+SGAP)*2; b.note = muteNotes[i]; b.group = 1;
         snprintf(lbl, sizeof(lbl), "M%d", i+1); lstrcpynA(b.label, lbl, sizeof(b.label));
         g_layoutBtns.push_back(b);
 
-        b.y = 2+(SH+SGAP)*3; b.note = selNotes[i]; b.group = 2;
+        b.y = 2+ENC_ROW+(SH+SGAP)*3; b.note = selNotes[i]; b.group = 2;
         snprintf(lbl, sizeof(lbl), "Se%d", i+1); lstrcpynA(b.label, lbl, sizeof(b.label));
         g_layoutBtns.push_back(b);
     }
 
-    const int RX   = 2 + 8*(SW+SGAP) + 6;   // = 344
+    const int RX   = 2 + 8*(SW+SGAP) + 6;
     const int BW   = 26, BH = 14, BGAP = 2;
 
-    // Function row (y=2)
     struct { uint8_t note; const char* lbl; } func[] = {
         {0x28,"Banks"},{0x29,"Sends"},{0x2A,"Pan"},{0x2B,"PlugIn"},{0x2C,"EQ"},{0x2D,"Inst"},
     };
@@ -602,7 +833,6 @@ static void BuildMCULayout()
         lstrcpynA(b.label, func[i].lbl, sizeof(b.label)); g_layoutBtns.push_back(b);
     }
 
-    // Automation row (y=18)
     struct { uint8_t note; const char* lbl; } autom[] = {
         {0x4A,"A:R"},{0x4B,"A:W"},{0x4C,"A:T"},{0x4D,"A:Tc"},{0x4E,"A:L"},
     };
@@ -611,9 +841,8 @@ static void BuildMCULayout()
         lstrcpynA(b.label, autom[i].lbl, sizeof(b.label)); g_layoutBtns.push_back(b);
     }
 
-    const int Y3 = 2 + (BH+BGAP)*2;  // y=34 for transport+nav area
+    const int Y3 = 2 + (BH+BGAP)*2;
 
-    // Transport: 2 cols × 4 rows at x=RX
     struct { uint8_t note; const char* lbl; int g; } trans[] = {
         {0x5B,"<< ",4},{0x5C,">> ",4},{0x5D,"Stp",4},{0x5E,"Ply",4},
         {0x5F,"Rec",4},{0x56,"Lop",4},{0x59,"Clk",4},{0x54,"Mkr",4},
@@ -624,7 +853,6 @@ static void BuildMCULayout()
         lstrcpynA(b.label, trans[i].lbl, sizeof(b.label)); g_layoutBtns.push_back(b);
     }
 
-    // Nav: 2 cols × 5 rows at x=NX
     const int NX = RX + 2*(BW+BGAP) + 4;
     struct { uint8_t note; const char* lbl; int g; } nav[] = {
         {0x60,"^ ",5},{0x61,"v ",5},{0x62,"< ",5},{0x63,"> ",5},
@@ -637,7 +865,6 @@ static void BuildMCULayout()
         lstrcpynA(b.label, nav[i].lbl, sizeof(b.label)); g_layoutBtns.push_back(b);
     }
 
-    // Clear Solo + Jog on a 6th row below transport
     struct { uint8_t note; const char* lbl; } misc[] = {{0x5A,"CSl"},{0x3C,"Jog"}};
     for (int i = 0; i < 2; ++i) {
         SurfLayoutBtn b; b.x=RX+i*(BW+BGAP); b.y=Y3+4*(BH+BGAP);
@@ -645,7 +872,6 @@ static void BuildMCULayout()
         lstrcpynA(b.label, misc[i].lbl, sizeof(b.label)); g_layoutBtns.push_back(b);
     }
 
-    // Auto-compute canvas dimensions from actual button extents
     {
         int maxX = 0, maxY = 0;
         for (const auto& b : g_layoutBtns) {
@@ -673,9 +899,13 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         float sx = (float)(cr.right  - cr.left) / g_layoutLogW;
         float sy = (float)(cr.bottom - cr.top)  / g_layoutLogH;
 
-        FillRect(hdc, &cr, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        // Native background (matches REAPER dialog / Win32 appearance)
+        HBRUSH hBkBr = CreateSolidBrush(GetSysColor(COLOR_3DFACE));
+        FillRect(hdc, &cr, hBkBr);
+        DeleteObject(hBkBr);
+
         int oldBk  = SetBkMode(hdc, TRANSPARENT);
-        COLORREF oldTxt = SetTextColor(hdc, RGB(255,255,255));
+        COLORREF oldTxt = SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
 
         for (int i = 0; i < (int)g_layoutBtns.size(); ++i)
         {
@@ -684,14 +914,13 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 (LONG)(b.x * sx),        (LONG)(b.y * sy),
                 (LONG)((b.x+b.w) * sx),  (LONG)((b.y+b.h) * sy)
             };
-            // Section header (group 7): flat dark label band, not interactive
+            // Section header (group 7): dark label band, not interactive
             if (b.group == 7) {
-                HBRUSH hBr = CreateSolidBrush(RGB(42,42,58));
+                HBRUSH hBr = CreateSolidBrush(GetSysColor(COLOR_3DSHADOW));
                 FillRect(hdc, &r, hBr);
                 DeleteObject(hBr);
-                SetTextColor(hdc, RGB(150,165,185));
+                SetTextColor(hdc, GetSysColor(COLOR_HIGHLIGHTTEXT));
                 DrawTextA(hdc, b.label, -1, &r, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
-                SetTextColor(hdc, RGB(255,255,255));
                 continue;
             }
             auto it = g_btnMap.find(b.note);
@@ -699,36 +928,76 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             bool isDisable = (it != g_btnMap.end() && it->second.type == BtnActionType::None);
             bool hover     = (i == g_layoutHover);
 
-            COLORREF bg;
-            if (isDisable)
-                bg = hover ? RGB(210,80,80) : RGB(140,40,40);
-            else if (hasOvr)
-                bg = hover ? RGB(60,200,160) : RGB(30,160,120);
-            else {
-                COLORREF base = kGroupBgColor[b.group];
-                if (hover) {
-                    int r2 = (int)GetRValue(base)+50; if(r2>255)r2=255;
-                    int g2 = (int)GetGValue(base)+50; if(g2>255)g2=255;
-                    int b2 = (int)GetBValue(base)+50; if(b2>255)b2=255;
-                    bg = RGB(r2, g2, b2);
-                } else bg = base;
+            // Choose fill and text colors
+            COLORREF fillColor, textColor;
+            if (hover) {
+                fillColor = GetSysColor(COLOR_HIGHLIGHT);
+                textColor = GetSysColor(COLOR_HIGHLIGHTTEXT);
+            } else if (isDisable) {
+                fillColor = RGB(240, 210, 210);   // light red – disabled
+                textColor = RGB(140, 0, 0);
+            } else if (hasOvr) {
+                fillColor = RGB(210, 240, 210);   // light green – custom command
+                textColor = RGB(0, 100, 0);
+            } else {
+                fillColor = GetSysColor(COLOR_BTNFACE);
+                textColor = GetSysColor(COLOR_BTNTEXT);
             }
 
-            HBRUSH hBr = CreateSolidBrush(bg);
+            HBRUSH hBr = CreateSolidBrush(fillColor);
             FillRect(hdc, &r, hBr);
             DeleteObject(hBr);
 
-            HPEN hPen = CreatePen(PS_SOLID, 1, RGB(160,160,160));
-            HPEN hOld = (HPEN)SelectObject(hdc, hPen);
-            MoveToEx(hdc, r.left,   r.top,    nullptr);
-            LineTo  (hdc, r.right-1,r.top);
-            LineTo  (hdc, r.right-1,r.bottom-1);
-            LineTo  (hdc, r.left,   r.bottom-1);
-            LineTo  (hdc, r.left,   r.top);
-            SelectObject(hdc, hOld); DeleteObject(hPen);
+            // 3-D raised border (native button look)
+            DrawEdge(hdc, &r, EDGE_RAISED, BF_RECT | BF_SOFT);
 
+            SetTextColor(hdc, textColor);
             DrawTextA(hdc, b.label, -1, &r,
                 DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        // Draw encoder / V-Pot circles (round knob indicators)
+        for (const auto& enc : g_encoderCircles)
+        {
+            RECT er = {
+                (LONG)(enc.x * sx),          (LONG)(enc.y * sy),
+                (LONG)((enc.x+enc.w) * sx),  (LONG)((enc.y+enc.h) * sy)
+            };
+            HBRUSH eb  = CreateSolidBrush(GetSysColor(COLOR_3DSHADOW));
+            HPEN   ep  = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
+            HBRUSH oeb = (HBRUSH)SelectObject(hdc, eb);
+            HPEN   oep = (HPEN)SelectObject(hdc, ep);
+            Ellipse(hdc, er.left, er.top, er.right, er.bottom);
+            SelectObject(hdc, oeb); SelectObject(hdc, oep);
+            DeleteObject(eb); DeleteObject(ep);
+        }
+
+        // Draw motorized fader tracks + caps
+        for (const auto& f : g_faderRects)
+        {
+            int trackW = (int)(3.0f * ((sx + sy) * 0.5f) + 0.5f);
+            if (trackW < 2) trackW = 2;
+            int cxTrack = (int)((f.x + f.w * 0.5f) * sx);
+            RECT track = {
+                cxTrack - trackW/2, (LONG)(f.y * sy),
+                cxTrack + trackW/2 + 1, (LONG)((f.y + f.h) * sy)
+            };
+            HBRUSH trBr = CreateSolidBrush(GetSysColor(COLOR_3DSHADOW));
+            FillRect(hdc, &track, trBr);
+            DeleteObject(trBr);
+            DrawEdge(hdc, &track, EDGE_SUNKEN, BF_RECT);
+
+            int capH = (int)(10.0f * sy + 0.5f);
+            if (capH < 5) capH = 5;
+            int capMidY = (int)((f.y + f.h * 0.5f) * sy);
+            RECT cap = {
+                (LONG)(f.x * sx),       capMidY - capH/2,
+                (LONG)((f.x + f.w) * sx), capMidY + capH/2 + 1
+            };
+            HBRUSH capBr = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+            FillRect(hdc, &cap, capBr);
+            DeleteObject(capBr);
+            DrawEdge(hdc, &cap, EDGE_RAISED, BF_RECT | BF_SOFT);
         }
 
         SetBkMode(hdc, oldBk);
@@ -741,15 +1010,15 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 (LONG)(g_jogX * sx),         (LONG)(g_jogY * sy),
                 (LONG)((g_jogX+g_jogW) * sx), (LONG)((g_jogY+g_jogH) * sy)
             };
-            HBRUSH jb = CreateSolidBrush(RGB(55,55,55));
-            HPEN   jp = CreatePen(PS_SOLID, 1, RGB(190,190,190));
+            HBRUSH jb  = CreateSolidBrush(GetSysColor(COLOR_3DSHADOW));
+            HPEN   jp  = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_3DHILIGHT));
             HBRUSH ojb = (HBRUSH)SelectObject(hdc, jb);
             HPEN   ojp = (HPEN)SelectObject(hdc, jp);
             Ellipse(hdc, jr.left, jr.top, jr.right, jr.bottom);
             SelectObject(hdc, ojb); SelectObject(hdc, ojp);
             DeleteObject(jb); DeleteObject(jp);
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(220,220,220));
+            SetTextColor(hdc, GetSysColor(COLOR_HIGHLIGHTTEXT));
             DrawTextA(hdc, "JOG", -1, &jr, DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);
         }
 
@@ -866,7 +1135,8 @@ static LRESULT CALLBACK LayoutWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 // Public API
 // ---------------------------------------------------------------------------
 void BtnMapWnd_ShowModal(HWND hParent, HINSTANCE hInst, BtnMap& map,
-                         CSurfProtocol proto, const char* portLabel)
+                         CSurfProtocol proto, const char* portLabel,
+                         int channelOffset, int templateIdx)
 {
     g_hInstance = hInst;
     g_btnMap    = map;
@@ -887,8 +1157,12 @@ void BtnMapWnd_ShowModal(HWND hParent, HINSTANCE hInst, BtnMap& map,
     // Set up layout view for FP16 and MCU
     g_useLayoutView = (proto == CSurfProtocol::FP16 || proto == CSurfProtocol::MCU);
     g_layoutHover   = -1;
-    if (proto == CSurfProtocol::FP16)
-        BuildFP16Layout();
+    if (proto == CSurfProtocol::FP16 && channelOffset == 0)
+        BuildFP16Part1Layout();
+    else if (proto == CSurfProtocol::FP16 && channelOffset > 0)
+        BuildFP16Part2Layout();
+    else if (proto == CSurfProtocol::MCU && templateIdx == 3)
+        BuildFP8Layout();
     else if (proto == CSurfProtocol::MCU)
         BuildMCULayout();
     else

@@ -29,6 +29,7 @@ enum SafeCol {
     COL_COLOR,
     COL_HEIGHT,
     COL_ORDER,
+    COL_ALL,
     COL_COUNT
 };
 
@@ -47,16 +48,23 @@ static const int k_colBit[COL_COUNT] = {
     TS_TRACKCOLOR,
     TS_TRACKHEIGHT,
     TS_TRACKORDER,
+    0,                           // COL_ALL – handled specially
 };
 
 static const char* k_colName[COL_COUNT] = {
     "Track", "Vol", "Pan", "Mute", "Solo", "Phase", "FX", "Vis", "Sel",
-    "Name", "Color", "Height", "Order"
+    "Name", "Color", "Height", "Order", "All"
 };
 static const int k_colWidth[COL_COUNT] = {
     140, 32, 32, 36, 36, 40, 32, 32, 32,
-    38, 40, 44, 40
+    38, 40, 44, 40, 36
 };
+
+// Bitmask covering all safe-able parameters (used by COL_ALL toggle)
+static const int k_allBits =
+    TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
+    TS_FXPARAMS | TS_FXCHAIN | TS_VIS | TS_SELECTION |
+    TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_LAYERS;
 
 // ---------------------------------------------------------------------------
 // Row data (row 0 = Global)
@@ -353,7 +361,16 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             const int col = ht.iSubItem;
             if (row >= 0 && col > 0 && col < COL_COUNT)
             {
-                ToggleBit(row, k_colBit[col]);
+                if (col == COL_ALL)
+                {
+                    const int m = GetRowMask(row);
+                    SetRowMask(row, (m & k_allBits) == k_allBits
+                                    ? (m & ~k_allBits) : (m | k_allBits));
+                }
+                else
+                {
+                    ToggleBit(row, k_colBit[col]);
+                }
                 // Repaint just the clicked row
                 RECT rcRow;
                 ListView_GetItemRect(g_hList, row, &rcRow, LVIR_BOUNDS);
@@ -389,9 +406,10 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
                 ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
 
                 // Draw checkbox centred in cell
-                const int bit     = k_colBit[col];
                 const int rowMask = GetRowMask(row);
-                const bool checked = (rowMask & bit) != 0;
+                const bool checked = (col == COL_ALL)
+                    ? (rowMask & k_allBits) == k_allBits
+                    : (rowMask & k_colBit[col]) != 0;
 
                 const int cbSize = 13;
                 RECT rcCb;

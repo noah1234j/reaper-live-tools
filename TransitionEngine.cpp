@@ -21,6 +21,9 @@ int  g_globalSafeMask     = 0;
 bool g_trackSafesEnabled = true;
 std::vector<TrackSafeEntry> g_trackSafes;
 
+// Shared UI preference (defined non-static in TransitionWnd.cpp)
+extern bool g_keepFxWindowsOpen;
+
 int GetEffectiveSafeMask(const GUID& guid)
 {
     int safe = g_globalSafeMask;
@@ -140,6 +143,9 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             TrackFX_GetFXName(tr, i, name, sizeof(name));
             if (!inSnapshot(name, TrackFX_GetNumParams(tr, i)))
             {
+                // Close floating window before going offline to prevent flash
+                if (!g_keepFxWindowsOpen && TrackFX_GetOpen(tr, i))
+                    TrackFX_Show(tr, i, 0);
                 TrackFX_SetOffline(tr, i, true);
                 TrackFX_Delete(tr, i);
             }
@@ -152,11 +158,17 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 slot = TrackFX_AddByName(tr, fxs.name, false, -1000);
                 if (slot < 0) continue;
                 // Offline sandwich: prevent processing with uninitialised state
+                // (new plugin has no window, so save/restore is a no-op here)
+                bool fxWasOpenInst = !g_keepFxWindowsOpen && TrackFX_GetOpen(tr, slot);
+                if (fxWasOpenInst) TrackFX_Show(tr, slot, 0);
                 TrackFX_SetOffline(tr, slot, true);
                 TrackFX_SetEnabled(tr, slot, fxs.enabled);
                 for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
                 TrackFX_SetOffline(tr, slot, false);
+                if (fxWasOpenInst) TrackFX_Show(tr, slot, 1);
+                // Clear any delta-solo state that may have been restored
+                TrackFX_SetNamedConfigParm(tr, slot, "chain_bypass_delta", "0");
                 continue; // params already set above
             }
             TrackFX_SetEnabled(tr, slot, fxs.enabled);
@@ -203,10 +215,14 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 if (wetIdx >= 0)
                 {
                     TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
-                    wetLerps.push_back({ tr, i, wetIdx, 0.0, 1.0, false, false });
+                    wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
                 }
             }
-            // No change in enabled state → BuildLerpLists handles params
+            else
+            {
+                // No change in enabled state: BuildLerpLists will add a
+                // normal ParamLerp from current wet → target.wetVal.
+            }
         }
     }
 
@@ -223,6 +239,8 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         // Take the plugin offline immediately so the audio thread never sees
         // it processing audio with uninitialised DSP state (closes the race
         // window between AddByName and the wet=0 write below).
+        bool fxWasOpenTimed = !g_keepFxWindowsOpen && TrackFX_GetOpen(tr, slot);
+        if (fxWasOpenTimed) TrackFX_Show(tr, slot, 0);
         TrackFX_SetOffline(tr, slot, true);
 
         // Set all params to target while offline
@@ -237,10 +255,11 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
 
         // Bring online — plugin starts processing at correct params with wet=0
         TrackFX_SetOffline(tr, slot, false);
+        if (fxWasOpenTimed) TrackFX_Show(tr, slot, 1);
 
-        // Fade wet in if enabled
+        // Fade wet in from 0 to the saved value
         if (fxs.enabled && wetIdx >= 0)
-            wetLerps.push_back({ tr, slot, wetIdx, 0.0, 1.0, false, false });
+            wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
     }
 }
 
@@ -315,6 +334,11 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask)
         {
             std::vector<WetLerp> dummy; // instant path: no wet lerps needed
             SyncFXChain(tr, ts, false /*instant*/, dummy);
+            // Clear any delta-solo state that may linger from the chain sync.
+            // TrackFX_SetNamedConfigParm silently fails if the param is unsupported.
+            const int nfxPost = TrackFX_GetCount(tr);
+            for (int fx = 0; fx < nfxPost; ++fx)
+                TrackFX_SetNamedConfigParm(tr, fx, "chain_bypass_delta", "0");
         }
     }
 
@@ -359,6 +383,20 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask)
             GetSetMediaTrackInfo(tr, "I_SELECTED", &one);
             // Insert before track at target position
             ReorderSelectedTracks(pass, 0);
+        }
+    }
+
+    // Close all open FX windows unless the user wants them kept open
+    if (!g_keepFxWindowsOpen)
+    {
+        int nTr = CountTracks(nullptr);
+        for (int tIdx = 0; tIdx < nTr; tIdx++)
+        {
+            MediaTrack* trSweep = GetTrack(nullptr, tIdx);
+            int nfx = TrackFX_GetCount(trSweep);
+            for (int fx = 0; fx < nfx; fx++)
+                if (TrackFX_GetOpen(trSweep, fx))
+                    TrackFX_Show(trSweep, fx, 0);
         }
     }
 
@@ -422,12 +460,33 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask)
                 int slot = FindFX(tr, fxs.name, fxs.paramCount, fxs.slotIndex);
                 if (slot < 0) continue;
 
+                // Find the wet param index for this FX slot if SyncFXChain
+                // already added a WetLerp for it (timed path). Skip that param
+                // here to avoid a conflicting duplicate lerp entry.
+                int wetParamAlreadyLerped = -1;
+                for (const auto& wl : m_wetLerps)
+                    if (wl.tr == tr && wl.fxSlot == slot)
+                        { wetParamAlreadyLerped = wl.wetParamIdx; break; }
+
                 for (int p = 0; p < (int)fxs.normVals.size(); p++)
                 {
+                    if (p == wetParamAlreadyLerped) continue; // handled by WetLerp
                     double cur = TrackFX_GetParamNormalized(tr, slot, p);
                     double tgt = fxs.normVals[p];
                     if (fabs(cur - tgt) < 1e-7) continue;
                     m_paramLerps.push_back({tr, slot, p, cur, tgt});
+                }
+
+                // Wet/dry lerp: only if no WetLerp already owns this slot
+                if (wetParamAlreadyLerped < 0)
+                {
+                    int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
+                    if (wetIdx >= 0)
+                    {
+                        double curWet = TrackFX_GetParamNormalized(tr, slot, wetIdx);
+                        if (fabs(curWet - fxs.wetVal) > 1e-7)
+                            m_paramLerps.push_back({tr, slot, wetIdx, curWet, fxs.wetVal});
+                    }
                 }
             }
         }
@@ -679,6 +738,21 @@ void TransitionEngine::TimerCallback()
     {
         // Write exact end values and finalise wet lerps (delete/disable)
         eng.SnapToEnd();
+
+        // Close all open FX windows unless the user wants them kept open
+        if (!g_keepFxWindowsOpen)
+        {
+            int nTr = CountTracks(nullptr);
+            for (int tIdx = 0; tIdx < nTr; tIdx++)
+            {
+                MediaTrack* trSweep = GetTrack(nullptr, tIdx);
+                int nfx = TrackFX_GetCount(trSweep);
+                for (int fx = 0; fx < nfx; fx++)
+                    if (TrackFX_GetOpen(trSweep, fx))
+                        TrackFX_Show(trSweep, fx, 0);
+            }
+        }
+
         TrackList_AdjustWindows(false);
 
         plugin_register("-timer", (void*)&TransitionEngine::TimerCallback);

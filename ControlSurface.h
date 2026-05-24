@@ -193,6 +193,7 @@ private:
     void MCU_SendPanEncoder(int strip, double pan);
     void MCU_SendLED(uint8_t note, bool on);
     void MCU_SendLCD(int charOffset, const char* text, int len);
+    void MCU_SendLCDEx(midi_Output* out, int charOffset, const char* text, int len);
     void MCU_SendScribble(int strip, const char* topRow, const char* botRow);
     void MCU_SendStripColors(const uint8_t* colors8); // X-Touch scribble color SysEx
     void MCU_SendVU(int strip, int level_0_12);

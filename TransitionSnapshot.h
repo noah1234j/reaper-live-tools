@@ -64,6 +64,9 @@ struct FXState
 
     // Normalized [0..1] parameter values; size == paramCount
     std::vector<double> normVals;
+
+    // Wet/dry mix (REAPER per-FX wet control, accessed via ":wet" ident)
+    double wetVal = 1.0;
 };
 
 // ---------------------------------------------------------------------------

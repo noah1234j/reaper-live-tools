@@ -353,14 +353,15 @@ static void DoBtnMapForPort(HWND hDlg, int sel)
     if (sel == 0)
     {
         BtnMapWnd_ShowModal(hDlg, s_hInstForDlg, s_dlgMainPort.btnMap,
-            s_dlgMainPort.proto, "Main Surface");
+            s_dlgMainPort.proto, "Main Surface", 0, s_dlgMainPort.devicePreset);
     }
     else if (sel > 0 && sel - 1 < (int)s_dlgExtenders.size())
     {
         ExtenderPort& ext = s_dlgExtenders[sel - 1];
         char label[64];
         snprintf(label, sizeof(label), "Extender %d", sel);
-        BtnMapWnd_ShowModal(hDlg, s_hInstForDlg, ext.btnMap, ext.proto, label);
+        BtnMapWnd_ShowModal(hDlg, s_hInstForDlg, ext.btnMap, ext.proto, label,
+            ext.channelOffset, ext.devicePreset);
     }
 }
 

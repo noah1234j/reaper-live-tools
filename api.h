@@ -133,6 +133,10 @@
 
 // FX offline (TransitionEngine – FX chain offline swap)
 #define REAPERAPI_WANT_TrackFX_SetOffline
+// FX window state – save/restore open windows across offline sandwich
+#define REAPERAPI_WANT_TrackFX_GetOpen
+// FX named config param setter – used to clear delta-solo state after recall
+#define REAPERAPI_WANT_TrackFX_SetNamedConfigParm
 
 // Track sends removal (PAFL / Talkback)
 #define REAPERAPI_WANT_RemoveTrackSend

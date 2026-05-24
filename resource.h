@@ -163,6 +163,10 @@
 #define IDC_CUE_MOVE_UP          2238
 #define IDC_CUE_MOVE_DOWN        2239
 #define IDC_GSET_MARKER          2240   // "Place marker on recall" checkbox in global settings
+#define IDC_GSET_SINGLE_CLICK    2241   // "Single click to recall" checkbox in global settings
+#define IDC_GSET_ALT_DELETE      2242   // "Alt+click to delete" checkbox in global settings
+#define IDC_GSET_CTRL_OVERWRITE  2243   // "Ctrl+click to overwrite" checkbox in global settings
+#define IDC_GSET_KEEP_FX_WINDOWS 2244   // "Leave FX windows open during recall" checkbox
 
 // ---- Live Optimizer window ------------------------------------------------
 #define IDD_LIVE_OPTIMIZE        208

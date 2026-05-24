@@ -1,4 +1,4 @@
-> **⚠ BETA — v0.0.2-beta**
+> **⚠ BETA — v0.0.4-beta**
 > This plugin is functional and actively used, but it is **not yet production-hardened**.
 > Expect rough edges, missing polish, and the occasional crash or unexpected behaviour.
 > **Back up your REAPER projects before using scene recall on anything critical.**

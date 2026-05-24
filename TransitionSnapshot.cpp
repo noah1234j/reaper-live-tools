@@ -164,6 +164,10 @@ void TransitionSnapshot::Capture(int mask)
                 fs.normVals.resize(fs.paramCount);
                 for (int p = 0; p < fs.paramCount; p++)
                     fs.normVals[p] = TrackFX_GetParamNormalized(tr, fx, p);
+                {
+                    int wi = TrackFX_GetParamFromIdent(tr, fx, ":wet");
+                    fs.wetVal = (wi >= 0) ? TrackFX_GetParamNormalized(tr, fx, wi) : 1.0;
+                }
                 ts.fx.push_back(std::move(fs));
             }
         }
@@ -339,6 +343,7 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                 int pend = std::min(p + 8, (int)fx.normVals.size());
                 WriteParamLine(ctx, fx.normVals, p, pend);
             }
+            ctx->AddLine("FXWET %.6f", fx.wetVal);
             ctx->AddLine("FXEND");
         }
 
@@ -584,6 +589,10 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                 curFX.normVals.push_back(val);
                 p += consumed;
             }
+        }
+        else if (strncmp(trimmed, "FXWET ", 6) == 0)
+        {
+            sscanf(trimmed + 6, "%lf", &curFX.wetVal);
         }
         else if (strcmp(trimmed, "FXEND") == 0)
         {

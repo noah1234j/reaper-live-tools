@@ -350,7 +350,13 @@ TransCSurf::TransCSurf(const CSurfSettings& s, int* errStats)
     if (m_midiOut)
     {
         if (s.proto == CSurfProtocol::MCU)
+        {
             MCU_SendReset();
+            // Send host query to initiate handshake with devices that require it
+            // (e.g., Behringer X-Touch series). Harmless on other MCU devices.
+            uint8_t hostQuery[] = { 0xF0, 0x00, 0x00, 0x66, 0x14, 0x1A, 0xF7 };
+            SendSysEx(hostQuery, 7);
+        }
         RefreshAll();
     }
 }
@@ -877,6 +883,7 @@ void TransCSurf::SetTrackTitle(MediaTrack* tr, const char* title)
     {
         char bot[8];
         snprintf(bot, sizeof(bot), "T%-2d", m_bankOffset + strip + 1);
+        FP16_SendScribbleMode(strip, 2);  // ensure display mode set before text
         FP16_SendScribble(strip, title ? title : "", bot);
     }
     else if (m_s.proto == CSurfProtocol::MCU)
@@ -1113,6 +1120,31 @@ void TransCSurf::MCU_ProcessMIDI(const MIDI_event_t* ev, int stripOffset)
 
     uint8_t status = st & 0xF0;
     uint8_t chan   = st & 0x0F;
+
+    // ---- SysEx from device --------------------------------------------------
+    // Many MCU-compatible devices (X-Touch, Behringer, Icon etc.) send a
+    // "Go Online" SysEx on power-up / reconnect and expect the host to echo it
+    // before they start accepting LCD text commands.
+    if (st == 0xF0 && ev->size >= 7 &&
+        ev->midi_message[1] == 0x00 && ev->midi_message[2] == 0x00 &&
+        ev->midi_message[3] == 0x66 && ev->midi_message[4] == 0x14)
+    {
+        uint8_t mcuCmd = ev->midi_message[5];
+        // 0x1C = "Go Online" – echo back, send reset, refresh LCD
+        if (mcuCmd == 0x1C)
+        {
+            uint8_t goOnline[] = { 0xF0, 0x00, 0x00, 0x66, 0x14, 0x1C, 0xF7 };
+            SendSysEx(goOnline, 7);
+            MCU_SendReset();
+            RefreshAll();
+        }
+        // 0x1B = serial number response – echo back to complete handshake
+        else if (mcuCmd == 0x1B && ev->size >= 14)
+        {
+            SendSysEx(ev->midi_message, ev->size);
+        }
+        return;
+    }
 
     // ---- Fader move (pitch bend per channel) --------------------------------
     if (status == 0xE0)
@@ -1414,10 +1446,16 @@ void TransCSurf::MCU_SendLED(uint8_t note, bool on)
 
 void TransCSurf::MCU_SendLCD(int charOffset, const char* text, int len)
 {
-    if (!m_midiOut || !text) return;
+    // Convenience wrapper – send to main MIDI output only.
+    // Use MCU_SendLCDEx for extender-routed writes.
+    MCU_SendLCDEx(m_midiOut, charOffset, text, len);
+}
+
+void TransCSurf::MCU_SendLCDEx(midi_Output* out, int charOffset, const char* text, int len)
+{
+    if (!out || !text) return;
     // SysEx: F0 00 00 66 14 12 <offset> <ASCII...> F7
-    int tLen = std::min(len, 56);
-    // Header(7) + text + F7(1) = 8 + tLen bytes max
+    int tLen = len < 56 ? len : 56;
     uint8_t buf[72];
     int i = 0;
     buf[i++] = 0xF0;
@@ -1427,12 +1465,46 @@ void TransCSurf::MCU_SendLCD(int charOffset, const char* text, int len)
     for (int j = 0; j < tLen; ++j)
         buf[i++] = (uint8_t)(text[j] & 0x7F);
     buf[i++] = 0xF7;
-    SendSysEx(buf, i);
+    int allocSize = (int)sizeof(MIDI_event_t) - 4 + i;
+    void* mem = _alloca((size_t)allocSize);
+    MIDI_event_t* ev = (MIDI_event_t*)mem;
+    ev->frame_offset = -1;
+    ev->size = i;
+    memcpy(ev->midi_message, buf, (size_t)i);
+    out->SendMsg(ev, -1);
 }
 
 void TransCSurf::MCU_SendScribble(int strip, const char* topRow, const char* botRow)
 {
-    if (!m_midiOut || strip < 0 || strip >= 8) return;
+    if (strip < 0) return;
+
+    // Route to the correct MIDI output and local strip index.
+    // Main device handles strips 0–7; each MCU extender handles its own 0–7 range.
+    midi_Output* out      = nullptr;
+    int          localStrip = -1;
+
+    if (strip < 8 && m_midiOut)
+    {
+        out        = m_midiOut;
+        localStrip = strip;
+    }
+    else
+    {
+        for (int e = 0; e < (int)m_s.extenders.size() && e < (int)m_extOut.size(); ++e)
+        {
+            if (m_s.extenders[e].proto != CSurfProtocol::MCU) continue;
+            int ls = strip - m_s.extenders[e].channelOffset;
+            if (ls >= 0 && ls < 8 && m_extOut[e])
+            {
+                out        = m_extOut[e];
+                localStrip = ls;
+                break;
+            }
+        }
+    }
+
+    if (!out || localStrip < 0) return;
+
     // MCU LCD is 56 chars wide, two rows.
     // Top row: offsets 0–55, bottom row: 56–111.
     // Each strip occupies 7 chars per row.
@@ -1443,8 +1515,8 @@ void TransCSurf::MCU_SendScribble(int strip, const char* topRow, const char* bot
     // Pad to exactly 7 chars
     for (int j = (int)strlen(top7); j < 7; ++j) top7[j] = ' ';
     for (int j = (int)strlen(bot7); j < 7; ++j) bot7[j] = ' ';
-    MCU_SendLCD(strip * 7,      top7, 7);
-    MCU_SendLCD(56 + strip * 7, bot7, 7);
+    MCU_SendLCDEx(out, localStrip * 7,      top7, 7);
+    MCU_SendLCDEx(out, 56 + localStrip * 7, bot7, 7);
 }
 
 void TransCSurf::MCU_SendStripColors(const uint8_t* colors8)
