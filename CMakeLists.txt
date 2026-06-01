@@ -4,7 +4,7 @@ project(reaper_transitions LANGUAGES C CXX)
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../sws-master-2.14.0 - Copy/vendor")
+set(VENDOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
 
 # Install to the user's REAPER UserPlugins folder
 if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
@@ -66,32 +66,52 @@ endif()
 # Main target
 # ---------------------------------------------------------------------------
 add_library(reaper_transitions SHARED
+  # Entry point
   reaper_transitions.cpp
-  TransitionSnapshot.cpp
-  TransitionEngine.cpp
-  TransitionWnd.cpp
-  SafesWnd.cpp
-  LayoutSnapshot.cpp
-  LayoutsWnd.cpp
-  PaflWnd.cpp
-  MonitorWnd.cpp
-  MeterBridgeWnd.cpp
-  ControlSurface.cpp
-  CSurfConfigDlg.cpp
-  LiveOptimizeWnd.cpp
-  LiveLockEngine.cpp
-  LiveLockWnd.cpp
-  TalkbackWnd.cpp
-  LayersEngine.cpp
-  LayersWnd.cpp
-  BtnMapWnd.cpp
-  CSurfDebugWnd.cpp
-  CSurfWizardDlg.cpp
-  MuteGroup.cpp
-  MuteGroupsWnd.cpp
-  DcaGroup.cpp
-  DcaEngine.cpp
-  DcaWnd.cpp
+  # Core snapshot engine
+  core/TransitionSnapshot.cpp
+  core/TransitionEngine.cpp
+  core/PluginSafetyEngine.cpp
+  # Scenes
+  scenes/TransitionWnd.cpp
+  scenes/SafesWnd.cpp
+  # Layouts
+  layouts/LayoutSnapshot.cpp
+  layouts/LayoutsWnd.cpp
+  # Layers
+  layers/LayersEngine.cpp
+  layers/LayersWnd.cpp
+  # DCA groups
+  dca/DcaGroup.cpp
+  dca/DcaEngine.cpp
+  dca/DcaWnd.cpp
+  # Mute groups
+  mute/MuteGroup.cpp
+  mute/MuteGroupsWnd.cpp
+  # Monitors
+  monitors/PaflWnd.cpp
+  monitors/MonitorWnd.cpp
+  monitors/MeterBridgeWnd.cpp
+  monitors/LiveOptimizeWnd.cpp
+  # Livelock
+  livelock/LiveLockEngine.cpp
+  livelock/LiveLockWnd.cpp
+  # Control surface (CSI)
+  csurf/control_surface_integrator.cpp
+  csurf/control_surface_integrator_ui.cpp
+  csurf/SurfaceMonitorWnd.cpp
+  # WDL UTF8 shims (required by CSI)
+  ${VENDOR_DIR}/WDL/WDL/win32_utf8.c
+  # Talkback
+  talkback/TalkbackWnd.cpp
+  # Surface & Zone Editor
+  surface_editor/SurfaceModel.cpp
+  surface_editor/ZoneModel.cpp
+  surface_editor/CanvasWnd.cpp
+  surface_editor/ActionSearchDlg.cpp
+  surface_editor/ZoneEditorWnd.cpp
+  surface_editor/SurfaceEditorWnd.cpp
+  # Resources
   reaper_transitions.rc
 )
 
@@ -99,6 +119,17 @@ target_compile_features(reaper_transitions PRIVATE cxx_std_17)
 
 target_include_directories(reaper_transitions PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/core
+  ${CMAKE_CURRENT_SOURCE_DIR}/scenes
+  ${CMAKE_CURRENT_SOURCE_DIR}/layouts
+  ${CMAKE_CURRENT_SOURCE_DIR}/layers
+  ${CMAKE_CURRENT_SOURCE_DIR}/dca
+  ${CMAKE_CURRENT_SOURCE_DIR}/mute
+  ${CMAKE_CURRENT_SOURCE_DIR}/monitors
+  ${CMAKE_CURRENT_SOURCE_DIR}/livelock
+  ${CMAKE_CURRENT_SOURCE_DIR}/csurf
+  ${CMAKE_CURRENT_SOURCE_DIR}/talkback
+  ${CMAKE_CURRENT_SOURCE_DIR}/surface_editor
   "${VENDOR_DIR}/reaper-sdk/sdk"
   "${VENDOR_DIR}/WDL"          # only needed for swell.h on non-Windows
 )

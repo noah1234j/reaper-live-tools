@@ -1,17 +1,14 @@
 #pragma once
 
 // ---------------------------------------------------------------------------
-// REAPER API – minimal function set for reaper_transitions
+// REAPER API for reaper_transitions + CSI (Control Surface Integrator)
 //
-// REAPERAPI_MINIMAL means REAPERAPI_LoadAPI only checks the functions we
-// explicitly declare via REAPERAPI_WANT_*, keeping us compatible with older
-// REAPER builds that may be missing rarely-used API entries.
+// REAPERAPI_MINIMAL is NOT set so that REAPERAPI_LoadAPI loads all REAPER API
+// functions (required by CSI which uses many unlisted functions).
 //
 // One .cpp file must #define REAPERAPI_IMPLEMENT before including this header.
 // All other .cpp files include it as-is.
 // ---------------------------------------------------------------------------
-
-#define REAPERAPI_MINIMAL
 
 // Core track enumeration / info
 #define REAPERAPI_WANT_GetNumTracks
@@ -166,4 +163,13 @@
 // GUID ↔ string (MuteGroups)
 #define REAPERAPI_WANT_GuidToStr
 
+// Action enumeration (Surface/Zone Editor – action search dialog)
+#define REAPERAPI_WANT_kbd_enumerateActions   // iterate all actions in a section
+#define REAPERAPI_WANT_kbd_getTextFromCmd     // get display name from command id
+#define REAPERAPI_WANT_SectionFromUniqueID    // get KbdSectionInfo* by section id
+
+// Resource path (Surface/Zone Editor – locate CSI folder)
+#define REAPERAPI_WANT_GetResourcePath
+
+#include "WDL/wdltypes.h"
 #include "reaper_plugin_functions.h"

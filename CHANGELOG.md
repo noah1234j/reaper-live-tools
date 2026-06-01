@@ -1,5 +1,47 @@
 # Changelog
 
+## [v0.0.5-beta] — 2026-06-01
+
+### Bug Fixes
+
+- **Crash on project switch during active transition** (CRASH-1): If a transition was in progress
+  when the user switched or loaded a new project, the plugin would crash because the timer
+  callback was still accessing the old scene list while it was being cleared.
+  `TransitionEngine::StopAndReset()` is now called at the very start of `BeginLoadProjectState`,
+  before any snapshot state is touched.
+
+- **Crash when a track is deleted mid-transition** (CRASH-2): Track pointers are now validated
+  via `ValidatePtr2` before use in the timer callback and all FX chain manipulation paths.
+
+- **Safes window settings not persisting across projects**: Safes configuration is now saved and
+  restored via the project state context (`LTSAFES` lines), matching the persistence model used
+  by all other windows.
+
+### New Features
+
+- **"Preload new plugins offline" toggle** (Global Settings): When enabled, newly added plugins
+  are loaded offline ahead of the recall, then brought online during the transition. This
+  substantially reduces the live audio stutter caused by plugin initialisation on the audio thread.
+  The setting is persisted per-project as `LTPRELOADOFFLINE`.
+
+- **O(n log n) track lookup**: Track resolution during snapshot capture and recall now uses a
+  `std::map<GUID, MediaTrack*>` built once per operation instead of a linear scan, removing
+  the O(n²) worst case on sessions with many tracks.
+
+### Removed
+
+- **"Leave FX windows open during recall" setting**: This option has been removed from Global
+  Settings. FX windows are now always closed on scene recall. The underlying conditional sweep
+  is gone — all open FX windows are unconditionally swept and closed at the start of every
+  recall (instant and timed).
+
+### Internal
+
+- Source reorganised into feature subdirectories: `core/`, `csurf/`, `dca/`, `layers/`,
+  `layouts/`, `livelock/`, `monitors/`, `mute/`, `scenes/`, `talkback/`.
+
+---
+
 ## [v0.0.4-beta] — 2026-05-24
 
 ### Bug Fixes

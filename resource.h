@@ -49,6 +49,10 @@
 // Safes button (in main dialog)
 #define IDC_SAFES_BTN            2130
 
+// MIDI Surface dialog
+#define IDC_CHECK_MotorizedFaders 2131
+#define IDC_CHECK_InferTouch      2132
+
 // ---- New snapshot editor / transition controls -----------------------------
 #define IDC_INSTANT              2131   // "Instant" checkbox (in settings popup)
 #define IDC_TAPER                2132   // taper law combobox (in settings popup)
@@ -166,7 +170,7 @@
 #define IDC_GSET_SINGLE_CLICK    2241   // "Single click to recall" checkbox in global settings
 #define IDC_GSET_ALT_DELETE      2242   // "Alt+click to delete" checkbox in global settings
 #define IDC_GSET_CTRL_OVERWRITE  2243   // "Ctrl+click to overwrite" checkbox in global settings
-#define IDC_GSET_KEEP_FX_WINDOWS 2244   // "Leave FX windows open during recall" checkbox
+#define IDC_GSET_PRELOAD_OFFLINE 2245   // "Preload new plugins offline" checkbox
 
 // ---- Live Optimizer window ------------------------------------------------
 #define IDD_LIVE_OPTIMIZE        208
@@ -177,28 +181,6 @@
 #define IDC_LO_REFRESH           2504   // "Refresh" button
 #define IDC_LO_APPLY_FIX         2505   // "Apply Fix" button
 #define IDC_LO_STATUS            2506   // status label at bottom
-
-// ---- Control Surface config dialog ----------------------------------------
-#define IDD_CSURF_CONFIG         205
-#define IDC_CSURF_TEMPLATE       2500
-#define IDC_CSURF_PROTO_MCU      2501
-#define IDC_CSURF_PROTO_HUI      2502
-#define IDC_CSURF_MIDI_IN        2503
-#define IDC_CSURF_MIDI_OUT       2504
-#define IDC_CSURF_FOLLOW_SEL     2505
-#define IDC_CSURF_SHOW_VU        2506
-#define IDC_CSURF_SHOW_NAMES     2507
-#define IDC_CSURF_FADER_VOL      2508
-#define IDC_CSURF_FADER_PAN      2509
-#define IDC_CSURF_FADER_SEND     2510
-#define IDC_CSURF_BANK_OFFSET    2511
-#define IDC_CSURF_CHAN_COUNT     2512
-#define IDC_CSURF_DESC           2513
-#define IDC_CSURF_SEND_COLORS   2514
-#define IDC_CSURF_FOLLOW_MCP    2515
-
-// ---- Control Surface standalone settings dialog ---------------------------
-#define IDD_CSURF_STANDALONE     206
 
 // ---- Meter Bridge window --------------------------------------------------
 #define IDD_METERBRIDGE          209
@@ -238,54 +220,6 @@
 #define IDC_MB_PEAKHOLD_SPIN     2608   // peak hold spin
 #define IDC_MB_FPS               2609   // refresh rate edit
 #define IDC_MB_FPS_SPIN          2610   // refresh rate spin
-
-// ---- Control Surface extender sub-dialog ---------------------------------
-#define IDD_CSURF_EXTENDER_EDIT  211
-#define IDC_CSURF_FOLLOW_LAYERS  2516   // follow Layers track order checkbox
-#define IDC_CSURF_BTN_MAP_BTN    2517   // "Button Map..." button
-#define IDC_CSURF_EXT_LIST       2518   // extenders list box
-#define IDC_CSURF_EXT_ADD        2519   // Add extender button
-#define IDC_CSURF_EXT_EDIT       2520   // Edit extender button
-#define IDC_CSURF_EXT_REMOVE     2521   // Remove extender button
-#define IDC_EXT_MIDI_IN          2522   // extender MIDI input combo
-#define IDC_EXT_MIDI_OUT         2523   // extender MIDI output combo
-#define IDC_EXT_CHAN_OFFSET      2524   // channel offset edit
-#define IDC_EXT_CHAN_OFFSET_SPIN 2525   // channel offset spin
-#define IDC_CSURF_SENDS_SPILL   2526   // "Sends spill receives" checkbox
-#define IDC_CSURF_SENDS_ACTIVE  2527   // radio: shows active sends only
-#define IDC_CSURF_SENDS_CREATE  2528   // radio: shows all channels, creates send on fader
-#define IDC_CSURF_TOUCH_CHAN    2529   // Show Touched Channels in MCP checkbox
-#define IDC_CSURF_DEBUG_LOG     2530   // Enable Debug Log checkbox
-#define IDC_CSURF_EXPORT_TPL    2531   // Export Template button
-#define IDC_CSURF_IMPORT_TPL    2532   // Import Template button
-#define IDC_CSURF_DBG_OPEN      2533   // Open Debug Log button
-#define IDC_CSURF_WIZARD_BTN    2534   // Setup Wizard button
-// --- Per-port controls in extender edit dialog ---------------------------
-#define IDC_EXT_PROTO_MCU       2535   // per-port MCU radio button
-#define IDC_EXT_PROTO_HUI       2536   // per-port HUI radio button
-#define IDC_EXT_PROTO_RAW       2537   // per-port Raw MIDI radio button
-#define IDC_EXT_DEVICE_PRESET   2538   // per-port device preset combo
-#define IDC_EXT_BTN_MAP         2539   // per-port Button Map button
-// --- Debug log window ---------------------------------------------------
-#define IDD_CSURF_DEBUG         230
-#define IDC_CSURF_DBG_LIST      2540   // log list box (multiline edit)
-#define IDC_CSURF_DBG_CLEAR     2541   // clear button
-#define IDC_CSURF_DBG_COPY      2542   // copy-all button
-// --- Setup Wizard dialog ------------------------------------------------
-#define IDD_CSURF_WIZARD        231
-#define IDC_WIZ_CONTENT         2543   // scrollable instructions (multiline edit)
-#define IDC_WIZ_TMPL_LABEL      2544
-#define IDC_WIZ_TMPL            2545   // template combo (step 3)
-#define IDC_WIZ_IN_LABEL        2546
-#define IDC_WIZ_MIDI_IN         2547   // MIDI in combo  (step 3)
-#define IDC_WIZ_OUT_LABEL       2548
-#define IDC_WIZ_MIDI_OUT        2549   // MIDI out combo (step 3)
-#define IDC_WIZ_STEP            2550   // "Step N / 5" label
-#define IDC_WIZ_BACK            2551
-#define IDC_WIZ_NEXT            2552
-// --- Button map import / export -----------------------------------------
-#define IDC_BM_IMPORT           2553
-#define IDC_BM_EXPORT           2554
 
 // ---- Monitor RT-CPU thresholds (added after initial IO/PDC/RT rows) ------
 #define IDC_MON_RC_YEL           2513   // RT CPU yellow threshold
@@ -367,6 +301,127 @@
 #define IDC_PS_DETAIL            3104   // Detail static label at bottom
 #define IDC_PS_SHOW_WARNINGS     3105   // "Show warning icons in Scenes/Layouts" checkbox
 
+// ---- CSI (Control Surface Integrator) resource IDs -----------------------
+#define ID_RemoveListener               3
+#define ID_RemoveBroadcaster            4
+#define ID_BUTTON_AddBroadcaster        5
+#define ID_BUTTON_AddListener           6
+#define IDD_DIALOG_Page                 103
+#define IDD_DIALOG_LearnFX              117
+#define IDD_DIALOG_LearnFXLevel2        118
+#define IDD_DIALOG_LearnFXLevel3        119
+#define IDD_DIALOG_AdvancedSetup        123
+#define IDD_DIALOG_EditAdvanced         126
+#define IDD_DIALOG_EditFXAlias          129
+#define IDD_DIALOG_AdvancedSharing      130
+#define IDD_SURFACEEDIT_CSI             265
+#define IDD_DIALOG_MidiSurface          268
+#define IDD_DIALOG_PageSurface          270
+#define IDC_EDIT_PageName               1003
+#define IDC_COMBO_MidiIn                1020
+#define IDC_COMBO_MidiOut               1021
+#define IDC_EDIT_MidiSurfaceName        1022
+#define IDC_EDIT_MidiSurfaceRefreshRate 1023
+#define IDC_LIST_Pages                  1024
+#define IDC_EDIT_MidiSurfaceMaxSysExMessagesPerRun 1024
+#define IDC_BUTTON_AddPage              1025
+#define IDC_BUTTON_EditPage             1026
+#define IDC_BUTTON_RemovePage           1027
+#define IDC_LIST_PageSurfaces           1028
+#define IDC_BUTTON_AddPageSurface       1029
+#define IDC_BUTTON_EditPageSurface      1030
+#define IDC_BUTTON_RemovePageSurface    1031
+#define IDC_LIST_Surfaces               1032
+#define IDC_BUTTON_AddMidiSurface       1033
+#define IDC_BUTTON_EditSurface          1034
+#define IDC_BUTTON_RemoveSurface        1035
+#define IDC_BUTTON_Advanced             1037
+#define IDC_EDIT_NumChannels            1085
+#define IDC_EDIT_ChannelOffset          1088
+#define IDC_COMBO_PageSurface           1089
+#define IDC_COMBO_PageSurfaceFolder     1091
+#define IDC_COMBO_Surface               1092
+#define IDC_CHECK_SynchPages            1093
+#define IDC_CHECK_ScrollLink            1094
+#define IDC_CHECK_ScrollSynch           1096
+#define IDC_RADIO_MCP                   1097
+#define IDC_RADIO_TCP                   1098
+#define IDC_FXAlias                     1102
+#define IDC_DeepEdit                    1104
+#define IDC_Params                      1105
+#define IDC_Advanced                    1106
+#define IDC_EditSteps                   1107
+#define IDC_PickSteps                   1108
+#define IDC_PickRingStyle               1143
+#define IDC_FXParamNameEdit             1149
+#define IDC_Edit_FixedTextDisplayTop    1150
+#define IDC_Edit_FixedTextDisplayBottom 1151
+#define IDC_Edit_ParamValueDisplayTop   1152
+#define IDC_Edit_ParamValueDisplayBottom 1153
+#define IDC_AssignWidgetDisplay         1154
+#define IDC_AssignFXParamDisplay        1155
+#define IDC_FXParamValueDisplayPickFont 1163
+#define IDC_FixedTextDisplayPickFont    1166
+#define IDC_GroupFXParamValues          1170
+#define IDC_FXParamRingColor            1173
+#define IDC_FXParamIndicatorColor       1174
+#define IDC_FixedTextDisplayForegroundColor 1179
+#define IDC_FixedTextDisplayBackgroundColor 1182
+#define IDC_FXParamDisplayForegroundColor 1185
+#define IDC_FXParamDisplayBackgroundColor 1188
+#define IDC_Save                        1190
+#define IDC_Unassign                    1191
+#define IDC_Alias                       1192
+#define IDC_Assign                      1193
+#define IDC_Done                        1194
+#define IDC_FXParamRingColorBox         1205
+#define IDC_FXParamIndicatorColorBox    1208
+#define IDC_FXFixedTextDisplayForegroundColorBox 1211
+#define IDC_FXFixedTextDisplayBackgroundColorBox 1214
+#define IDC_FXParamValueDisplayBackgroundColorBox 1218
+#define IDC_FXParamValueDisplayForegroundColorBox 1221
+#define IDC_StepsPromptGroup            1231
+#define IDC_LIST_Listeners              1246
+#define IDC_LIST_Broadcasters           1247
+#define IDC_EDIT_Delta                  1248
+#define IDC_EDIT_RangeMin               1249
+#define IDC_EDIT_RangeMax               1250
+#define IDC_EDIT_DeltaValues            1251
+#define IDC_EDIT_TickValues             1252
+#define IDC_ListenCheckboxes            1253
+#define IDC_CHECK_GoHome                1254
+#define IDC_CHECK_SelectedTrackFX       1255
+#define IDC_CHECK_Sends                 1256
+#define IDC_CHECK_Receives              1257
+#define IDC_CHECK_FXMenu                1260
+#define IDC_AddBroadcaster              1261
+#define IDC_AddListener                 1262
+#define IDC_CHECK_Modifiers             1267
+#define IDC_CHECK_ShowRawInput          1268
+#define IDC_CHECK_ShowInput             1269
+#define IDC_CHECK_ShowOutput            1270
+#define IDC_CHECK_WriteFXParams         1271
+#define IDC_EDIT_DebugLevel             1272
+#define IDC_LABEL_DebugLevel            1273
+#define IDC_COMBO_Type                  1275
+#define IDC_AcceleratedTickValuesLabel  1277
+#define IDC_AcceleratedDeltaValuesLabel 1278
+#define IDC_RangeMaximumLabel           1279
+#define IDC_RangeMinimumLabel           1280
+#define IDC_DeltaValueLabel             1281
+#define IDC_Steps                       1283
+#define IDC_COMBO_PickNameDisplay       1292
+#define IDC_COMBO_PickValueDisplay      1293
+#define IDC_COMBO_PickAutoResetWidget   1294
+#define IDC_ApplyColorsToAll            1295
+#define IDC_EDIT_FXAlias                1300
+#define IDC_SurfaceName                 1304
+#define IDC_ApplyFontsAndMarginsToAll   1307
+#define IDC_GroupApplyToAll             1308
+#define IDC_EDIT_FREE_FORM              1309
+#define IDC_EraseControl                5
+#define IDC_PS_SHOW_WARNINGS     3105   // "Show warning icons in Scenes/Layouts" checkbox
+
 // ---- DCA Groups window ---------------------------------------------------
 #define IDD_DCA                  224
 #define IDC_DCA_ADDSTRIP         3200   // "+ Add DCA" button
@@ -401,3 +456,132 @@
 // Routing popup window
 #define IDD_TALKBACK_ROUTING     226
 #define IDC_TBR_LIST             3316   // SysListView32: destination tracks (routing popup)
+
+// ---- CSI Surface & Zone Editor (3400+) ------------------------------------
+// Main docked window (IDD not used – created programmatically)
+#define IDC_SE_TREE              3400   // TreeView: CSI file browser (left pane)
+#define IDC_SE_SPLITTER          3401   // splitter divider placeholder
+// Surface editor sub-panel
+#define IDC_SE_CANVAS            3402   // CanvasWnd placeholder (owner-draw panel)
+#define IDC_SE_PALETTE_LIST      3403   // ListBox: widget type palette
+#define IDC_SE_PROP_NAME         3404   // Edit: selected widget name
+#define IDC_SE_PROP_GENTYPE      3405   // ComboBox: generator type
+#define IDC_SE_PROP_BYTE0        3406   // Edit: generator byte 0 (status)
+#define IDC_SE_PROP_BYTE1        3407   // Edit: generator byte 1 (note/CC)
+#define IDC_SE_PROP_BYTE2        3408   // Edit: generator byte 2 (value)
+#define IDC_SE_PROP_TOUCH        3409   // CheckBox: has Touch sub-message
+#define IDC_SE_PROP_TOUCH_B0     3410   // Edit: Touch byte 0
+#define IDC_SE_PROP_TOUCH_B1     3411   // Edit: Touch byte 1
+#define IDC_SE_PROP_TOUCH_B2     3412   // Edit: Touch byte 2
+#define IDC_SE_PROP_TOGGLE       3413   // CheckBox: has Toggle sub-message
+#define IDC_SE_PROP_TOG_B0       3414   // Edit: Toggle byte 0
+#define IDC_SE_PROP_TOG_B1       3415   // Edit: Toggle byte 1
+#define IDC_SE_PROP_TOG_B2       3416   // Edit: Toggle byte 2
+#define IDC_SE_PROP_FBTYPE       3417   // ComboBox: feedback processor type
+#define IDC_SE_PROP_FB_B0        3418   // Edit: FB byte 0
+#define IDC_SE_PROP_FB_B1        3419   // Edit: FB byte 1
+#define IDC_SE_PROP_FB_B2        3420   // Edit: FB byte 2
+#define IDC_SE_PROP_DELETE       3421   // Button: delete selected widget
+#define IDC_SE_NEW_BTN           3422   // Button: new surface
+#define IDC_SE_OPEN_BTN          3423   // Button: open Surface.txt
+#define IDC_SE_SAVE_BTN          3424   // Button: save Surface.txt
+#define IDC_SE_CHANNELS_EDIT     3425   // Edit: channel count
+#define IDC_SE_CHANNELS_SPIN     3426   // Spin: channel count
+#define IDC_SE_STATUS            3427   // Static: status/filename label
+// Zone editor sub-panel
+#define IDC_ZE_ZONE_NAME         3430   // Edit: zone name
+#define IDC_ZE_ZONE_TYPE         3431   // ComboBox: zone type (Home/Track/etc.)
+#define IDC_ZE_INC_LIST          3432   // ListBox: IncludedZones
+#define IDC_ZE_INC_ADD           3433   // Button: add to IncludedZones
+#define IDC_ZE_INC_REMOVE        3434   // Button: remove from IncludedZones
+#define IDC_ZE_SUB_LIST          3435   // ListBox: SubZones
+#define IDC_ZE_SUB_ADD           3436   // Button: add to SubZones
+#define IDC_ZE_SUB_REMOVE        3437   // Button: remove from SubZones
+#define IDC_ZE_MOD_SHIFT         3438   // CheckBox: filter – Shift modifier
+#define IDC_ZE_MOD_OPTION        3439   // CheckBox: filter – Option modifier
+#define IDC_ZE_MOD_CONTROL       3440   // CheckBox: filter – Control modifier
+#define IDC_ZE_MOD_ALT           3441   // CheckBox: filter – Alt modifier
+#define IDC_ZE_MOD_FLIP          3442   // CheckBox: filter – Flip modifier
+#define IDC_ZE_MOD_HOLD          3443   // CheckBox: filter – Hold modifier
+#define IDC_ZE_CANVAS            3444   // CanvasWnd: zone assign visual view
+#define IDC_ZE_TABLE             3445   // ListView: zone assign table view
+#define IDC_ZE_TAB               3446   // TabControl: Visual / Table
+#define IDC_ZE_ADD_ROW           3447   // Button: add assignment row (table tab)
+#define IDC_ZE_DEL_ROW           3448   // Button: delete selected row (table tab)
+#define IDC_ZE_NEW_BTN           3449   // Button: new zone file
+#define IDC_ZE_OPEN_BTN          3450   // Button: open .zon file
+#define IDC_ZE_SAVE_BTN          3451   // Button: save .zon file
+#define IDC_ZE_STATUS            3452   // Static: status/filename label
+// Action search dialog (modal)
+#define IDD_ACTION_SEARCH        240
+#define IDC_AS_TAB               3460   // TabControl: REAPER Actions / CSI Actions
+#define IDC_AS_SEARCH            3461   // Edit: filter text box
+#define IDC_AS_LIST              3462   // ListView: action list
+#define IDC_AS_CUSTOM            3463   // Edit: free-form custom action entry
+#define IDC_AS_OK                3464   // Button: OK / assign
+#define IDC_AS_CANCEL            3465   // Button: Cancel
+// New Surface wizard dialog (modal)
+#define IDD_NEW_SURFACE          241
+#define IDC_NS_NAME              3470   // Edit: surface name
+#define IDC_NS_CHANNELS          3471   // Edit: channel count
+#define IDC_NS_CHANNELS_SPIN     3472   // Spin: channel count
+#define IDC_NS_ROWS              3473   // Edit: grid rows
+#define IDC_NS_ROWS_SPIN         3474   // Spin: grid rows
+#define IDC_NS_OK                3475   // Button: OK
+#define IDC_NS_CANCEL            3476   // Button: Cancel
+
+// ---- ZoneEditorWnd aliases (alternate names used in ZoneEditorWnd.cpp) ----
+#define IDC_ZE_INC_DEL           IDC_ZE_INC_REMOVE   // = 3434
+#define IDC_ZE_SUB_DEL           IDC_ZE_SUB_REMOVE   // = 3437
+#define IDC_ZE_SAVE              IDC_ZE_NEW_BTN       // = 3449
+#define IDC_ZE_ROW_ADD           IDC_ZE_ADD_ROW       // = 3447
+#define IDC_ZE_ROW_DEL           IDC_ZE_DEL_ROW       // = 3448
+
+// ---- SurfaceEditorWnd redesign — toolbar dropdowns + zone bar (3480+) ----
+#define IDC_SE_REFRESH_BTN       3480   // Button: refresh / rescan surfaces
+#define IDC_SE_SURFACE_LABEL     3481   // Static: "Surface:" toolbar label
+#define IDC_SE_SURFACE_COMBO     3482   // ComboBox: surface selector
+#define IDC_SE_ZONE_LABEL        3483   // Static: "Zone:" toolbar label
+#define IDC_SE_ZONE_COMBO        3484   // ComboBox: zone selector (+ "Surface Layout" sentinel)
+#define IDC_SE_ZONE_SAVE_BTN     3485   // Button: save current zone file (toolbar)
+// Zone bottom bar controls
+#define IDC_SE_ZONE_NAME_LBL     3486   // Static: "Zone:" label in zone bar
+#define IDC_SE_ZONE_NAME         3487   // Edit: zone name
+#define IDC_SE_ZONE_TYPE_LBL     3488   // Static: "Type:" label in zone bar
+#define IDC_SE_ZONE_TYPE         3489   // ComboBox: zone type (Home/Track/etc.)
+#define IDC_SE_ZONE_MOD_SHIFT    3490   // CheckBox: Shift modifier filter
+#define IDC_SE_ZONE_MOD_OPTION   3491   // CheckBox: Option modifier filter
+#define IDC_SE_ZONE_MOD_CONTROL  3492   // CheckBox: Control modifier filter
+#define IDC_SE_ZONE_MOD_ALT      3493   // CheckBox: Alt modifier filter
+#define IDC_SE_ZONE_MOD_FLIP     3494   // CheckBox: Flip modifier filter
+#define IDC_SE_ZONE_MOD_HOLD     3495   // CheckBox: Hold modifier filter
+#define IDC_SE_ZONE_INC_LBL      3496   // Static: "Included:" label
+#define IDC_SE_ZONE_INC          3497   // Edit: included zones (comma-separated)
+#define IDC_SE_ZONE_SUB_LBL      3498   // Static: "Sub zones:" label
+#define IDC_SE_ZONE_SUB          3499   // Edit: sub zones (comma-separated)
+// Surface bottom bar labels
+#define IDC_SE_PROP_NAME_LBL     3500   // Static: "Name:" label in prop bar
+
+// ---- CSI newer surface config dialog (live_tools/csurf) -------------------
+// IDD_SURFACEEDIT_CSI is updated to a single-ListView layout
+#define IDC_SURF_LIST            1310   // ListView: surfaces in main config
+#define IDC_SURF_ADD             1311   // Button: add surface
+#define IDC_SURF_ADVANCED        1312   // Button: advanced settings
+// IDD_DIALOG_SurfaceEdit – combined add/edit surface popup
+#define IDD_DIALOG_SurfaceEdit   272
+#define IDC_SE_NAME              1313   // Edit: surface name
+#define IDC_SE_CHANNELS          1314   // Edit: channel count
+#define IDC_SE_MIDI_IN           1315   // ComboBox: MIDI In port
+#define IDC_SE_MIDI_OUT          1316   // ComboBox: MIDI Out port
+#define IDC_SE_ZONE_FOLDER       1317   // ComboBox: zone folder
+#define IDC_SE_FX_ZONE_FOLDER    1318   // ComboBox: FX zone folder
+#define IDC_SE_REFRESH_RATE      1319   // Edit: refresh rate (Hz)
+#define IDC_SE_MAX_SYSEX         1320   // Edit: max sysex messages per run
+#define IDC_SE_MOTORIZED         1321   // CheckBox: motorized faders
+#define IDC_SE_INFER_TOUCH       1322   // CheckBox: infer touch from fader activity
+
+// ---- Surface Monitor window ----------------------------------------------
+#define IDD_SURFACE_MONITOR      229
+#define IDC_SURF_MON_EDIT        3500   // Read-only multiline edit (log output)
+#define IDC_SURF_MON_CLEAR       3501   // "Clear" button
+#define IDC_SURF_MON_DIAG        3502   // "Run Diagnostics" button

@@ -106,7 +106,7 @@ END
 //   Also: place-marker-on-recall toggle.
 // ---------------------------------------------------------------------------
 
-IDD_GLOBAL_SETTINGS DIALOGEX 0, 0, 205, 218
+IDD_GLOBAL_SETTINGS DIALOGEX 0, 0, 205, 208
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Global Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -134,12 +134,12 @@ BEGIN
     CONTROL         "Alt+click to delete scene",       IDC_GSET_ALT_DELETE,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 134, 185, 10
     CONTROL         "Ctrl+click to overwrite scene",   IDC_GSET_CTRL_OVERWRITE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 147, 185, 10
 
-    GROUPBOX        "FX Windows", IDC_STATIC, 5, 173, 194, 24
-    CONTROL         "Leave FX windows open during recall", IDC_GSET_KEEP_FX_WINDOWS, "Button",
+    GROUPBOX        "Live Performance", IDC_STATIC, 5, 173, 194, 20
+    CONTROL         "Preload new plugins offline (reduces live audio stuttering)", IDC_GSET_PRELOAD_OFFLINE, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 10, 183, 185, 10
 
-    DEFPUSHBUTTON   "OK",     IDOK,      60, 200, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 120, 200, 50, 14
+    DEFPUSHBUTTON   "OK",     IDOK,      60, 190, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 120, 190, 50, 14
 END
 
 // ---------------------------------------------------------------------------
@@ -445,124 +445,6 @@ BEGIN
     LTEXT           "",          IDC_LO_STATUS,    124, 340, 430, 10
 END
 
-// ---- Control Surface config dialog (embedded child panel) -----------------
-IDD_CSURF_CONFIG DIALOGEX 0, 0, 310, 256
-STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    CONTROL         "Fader follows track selection",          IDC_CSURF_FOLLOW_SEL,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 5,  5, 160, 10
-    CONTROL         "Follow MCP (mixer) track order",         IDC_CSURF_FOLLOW_MCP,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 19, 200, 10
-    CONTROL         "Follow Layers",                          IDC_CSURF_FOLLOW_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 33, 100, 10
-    CONTROL         "Sends spill receives of selected track", IDC_CSURF_SENDS_SPILL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 47, 200, 10
-
-    GROUPBOX        "Sends Display Mode", IDC_STATIC,            5, 59, 300, 24
-    CONTROL         "Active sends only",  IDC_CSURF_SENDS_ACTIVE, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 12, 69, 100, 10
-    CONTROL         "All channels; create send on fader move", IDC_CSURF_SENDS_CREATE, "Button", BS_AUTORADIOBUTTON, 116, 69, 180, 10
-
-    CONTROL         "Show Touched Channels in MCP", IDC_CSURF_TOUCH_CHAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 5, 89, 180, 10
-    CONTROL         "Enable Debug Log",              IDC_CSURF_DEBUG_LOG,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 103, 110, 10
-    PUSHBUTTON      "Open Log",                      IDC_CSURF_DBG_OPEN,   222, 100, 83, 12
-
-    GROUPBOX        "MIDI Ports",  IDC_STATIC,          5, 117, 300, 120
-    LISTBOX         IDC_CSURF_EXT_LIST, 10, 127, 222, 104, LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP | WS_BORDER
-    PUSHBUTTON      "Add Port",    IDC_CSURF_EXT_ADD,   236, 127, 62, 13
-
-    PUSHBUTTON      "Setup Wizard...", IDC_CSURF_WIZARD_BTN, 5, 242, 80, 13
-END
-
-// Standalone version (same controls + OK/Cancel, opened from Extensions menu)
-IDD_CSURF_STANDALONE DIALOGEX 0, 0, 310, 276
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Control Surface Settings"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    CONTROL         "Fader follows track selection",          IDC_CSURF_FOLLOW_SEL,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 5,  5, 160, 10
-    CONTROL         "Follow MCP (mixer) track order",         IDC_CSURF_FOLLOW_MCP,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 19, 200, 10
-    CONTROL         "Follow Layers",                          IDC_CSURF_FOLLOW_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 33, 100, 10
-    CONTROL         "Sends spill receives of selected track", IDC_CSURF_SENDS_SPILL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 47, 200, 10
-
-    GROUPBOX        "Sends Display Mode", IDC_STATIC,            5, 59, 300, 24
-    CONTROL         "Active sends only",  IDC_CSURF_SENDS_ACTIVE, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 12, 69, 100, 10
-    CONTROL         "All channels; create send on fader move", IDC_CSURF_SENDS_CREATE, "Button", BS_AUTORADIOBUTTON, 116, 69, 180, 10
-
-    CONTROL         "Show Touched Channels in MCP", IDC_CSURF_TOUCH_CHAN, "Button", BS_AUTOCHECKBOX | WS_TABSTOP | WS_GROUP, 5, 89, 180, 10
-    CONTROL         "Enable Debug Log",              IDC_CSURF_DEBUG_LOG,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 103, 110, 10
-    PUSHBUTTON      "Open Log",                      IDC_CSURF_DBG_OPEN,   222, 100, 83, 12
-
-    GROUPBOX        "MIDI Ports",  IDC_STATIC,          5, 117, 300, 120
-    LISTBOX         IDC_CSURF_EXT_LIST, 10, 127, 222, 104, LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP | WS_BORDER
-    PUSHBUTTON      "Add Port",    IDC_CSURF_EXT_ADD,   236, 127, 62, 13
-
-    PUSHBUTTON      "Setup Wizard...", IDC_CSURF_WIZARD_BTN, 5, 242, 80, 13
-
-    DEFPUSHBUTTON   "OK",     IDOK,     200, 258, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 256, 258, 50, 14
-END
-
-// ---- Extender port add/edit sub-dialog ------------------------------------
-IDD_CSURF_EXTENDER_EDIT DIALOGEX 0, 0, 240, 142
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Configure Port"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LTEXT    "MIDI In:",     IDC_STATIC,              5,  8, 48, 8
-    COMBOBOX IDC_EXT_MIDI_IN,  56, 6, 178, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT    "MIDI Out:",    IDC_STATIC,              5, 24, 48, 8
-    COMBOBOX IDC_EXT_MIDI_OUT, 56, 22, 178, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT    "Ch Offset:",   IDC_STATIC,              5, 40, 48, 8
-    EDITTEXT IDC_EXT_CHAN_OFFSET, 56, 38, 44, 12, ES_NUMBER | ES_AUTOHSCROLL
-    CONTROL  "", IDC_EXT_CHAN_OFFSET_SPIN, "msctls_updown32",
-             UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-             100, 38, 10, 12
-
-    GROUPBOX "Protocol",         IDC_STATIC,              5, 54, 228, 22
-    CONTROL  "MCU",  IDC_EXT_PROTO_MCU, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 12, 64, 40, 10
-    CONTROL  "HUI",  IDC_EXT_PROTO_HUI, "Button", BS_AUTORADIOBUTTON,                         60, 64, 40, 10
-    CONTROL  "Raw MIDI", IDC_EXT_PROTO_RAW, "Button", BS_AUTORADIOBUTTON,                    108, 64, 55, 10
-
-    LTEXT    "Device Preset:", IDC_STATIC,              5, 84, 56, 8
-    COMBOBOX IDC_EXT_DEVICE_PRESET, 64, 82, 170, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-
-    PUSHBUTTON "Button Map...", IDC_EXT_BTN_MAP, 64, 100, 80, 13
-
-    DEFPUSHBUTTON "OK",     IDOK,     130, 122, 50, 14
-    PUSHBUTTON    "Cancel", IDCANCEL, 184, 122, 50, 14
-END
-
-// ---- Button Map editor (modal, opened from CSurf settings) ----------------
-IDD_BTN_MAP DIALOGEX 0, 0, 400, 300
-STYLE DS_SETFONT | DS_MODALFRAME | WS_THICKFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Button Map"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LTEXT       "",            IDC_BM_SURFACE_LABEL, 5,  4, 280, 10
-    LTEXT       "Filter:",     IDC_STATIC,           5, 18,  22,  8
-    COMBOBOX    IDC_BM_FILTER, 30, 16, 100, 100, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON  "Reset All",   IDC_BM_RESETALL,     310, 14,  80, 14
-    LTEXT       "",            IDC_BM_LIST,           5, 32, 390, 236
-    PUSHBUTTON  "Assign...",   IDC_BM_ASSIGN,         5, 274,  55, 14
-    PUSHBUTTON  "Default",     IDC_BM_DEFAULT,       64, 274,  55, 14
-    PUSHBUTTON  "Disable",     IDC_BM_DISABLE,      123, 274,  55, 14
-    PUSHBUTTON  "Import",      IDC_BM_IMPORT,       182, 274,  50, 14
-    PUSHBUTTON  "Export",      IDC_BM_EXPORT,       236, 274,  50, 14
-    PUSHBUTTON  "Close",       IDCANCEL,            320, 274,  75, 14
-END
-
-// ---- Button assignment sub-dialog -----------------------------------------
-IDD_BTN_ASSIGN DIALOGEX 0, 0, 240, 105
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Assign Button"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LTEXT         "",              IDC_BA_LABEL,   5,  6, 230, 10
-    CONTROL       "Default",       IDC_BA_DEF,  "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,  5, 24, 60, 10
-    CONTROL       "Disable",       IDC_BA_NONE, "Button", BS_AUTORADIOBUTTON,                           5, 38, 60, 10
-    CONTROL       "Command ID:",   IDC_BA_CMD,  "Button", BS_AUTORADIOBUTTON,                           5, 52, 70, 10
-    EDITTEXT      IDC_BA_CMDID, 80, 50, 80, 14, ES_NUMBER | ES_AUTOHSCROLL
-    DEFPUSHBUTTON "OK",     IDOK,     130, 84, 50, 14
-    PUSHBUTTON    "Cancel", IDCANCEL, 184, 84, 50, 14
-END
-
 // ---------------------------------------------------------------------------
 // Up-down (spin) control styles – not defined in winres.h
 // ---------------------------------------------------------------------------
@@ -614,39 +496,7 @@ BEGIN
     PUSHBUTTON    "Cancel", IDCANCEL, 196, 195, 50, 14
 END
 
-// ---- Debug / MIDI event log window ----------------------------------------
-IDD_CSURF_DEBUG DIALOGEX 0, 0, 300, 220
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX
-CAPTION "Live Tools - MIDI Debug Log"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LISTBOX         IDC_CSURF_DBG_LIST,  4,   4, 292, 192, LBS_NOTIFY | WS_VSCROLL | WS_HSCROLL | WS_BORDER
-    PUSHBUTTON      "Clear",             IDC_CSURF_DBG_CLEAR,  4, 200, 50, 14
-    PUSHBUTTON      "Copy All",          IDC_CSURF_DBG_COPY,  58, 200, 50, 14
-    PUSHBUTTON      "Close",             IDCANCEL,           246, 200, 50, 14
-END
-
-// ---- Setup Wizard (5-step modal) ------------------------------------------
-IDD_CSURF_WIZARD DIALOGEX 0, 0, 360, 260
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Setup Wizard"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LTEXT       "Step 1 / 5",    IDC_WIZ_STEP,        4,  4, 352, 10
-    EDITTEXT    IDC_WIZ_CONTENT, 4, 18, 352, 148, ES_MULTILINE | ES_READONLY | WS_VSCROLL | NOT WS_BORDER
-    LTEXT       "Surface Type:", IDC_WIZ_TMPL_LABEL,  4, 170, 70, 10
-    COMBOBOX    IDC_WIZ_TMPL,   76, 168, 200, 80, CBS_DROPDOWNLIST | WS_VSCROLL
-    LTEXT       "MIDI Input:",   IDC_WIZ_IN_LABEL,    4, 186, 70, 10
-    COMBOBOX    IDC_WIZ_MIDI_IN,76, 184, 200, 80, CBS_DROPDOWNLIST | WS_VSCROLL
-    LTEXT       "MIDI Output:",  IDC_WIZ_OUT_LABEL,   4, 202, 70, 10
-    COMBOBOX    IDC_WIZ_MIDI_OUT,76, 200, 200, 80, CBS_DROPDOWNLIST | WS_VSCROLL
-    PUSHBUTTON  "< Back",        IDC_WIZ_BACK,      200, 240, 50, 14
-    PUSHBUTTON  "Next >",        IDC_WIZ_NEXT,      254, 240, 50, 14
-    PUSHBUTTON  "Cancel",        IDCANCEL,          306, 240, 50, 14
-END
-
-// ---------------------------------------------------------------------------
-// IDD_TALKBACK  -  Talkback window  (280 x 170 DU)
+// ---- IDD_TALKBACK  -  Talkback window  (280 x 170 DU)
 // Routing list moved to separate resizable popup (IDD_TALKBACK_ROUTING)
 // ---------------------------------------------------------------------------
 IDD_TALKBACK DIALOGEX 0, 0, 280, 170
@@ -728,3 +578,6 @@ BEGIN
     PUSHBUTTON      "Toggle Mute",  IDC_MG_TOGGLE,      5,  233, 160, 14
     LTEXT           "Ready",        IDC_MG_STATUS,    170,  237, 165, 10
 END
+
+// ---- CSI (Control Surface Integrator) dialogs ----------------------------
+#include "csurf/res.rc"
