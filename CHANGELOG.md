@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.0.6-beta] — 2026-06-02
+
+### Bug Fixes
+
+- **FX windows opening on scene recall**: When recalling a scene that adds new plugins via
+  `TrackFX_AddByName`, REAPER's "auto-open FX window on insert" preference would immediately
+  open a floating FX window for each plugin. The offline sandwich that followed would read
+  `TrackFX_GetOpen` as `true` and re-open the window after the sandwich completed, leaving all
+  newly-added plugin windows permanently visible. The window is now unconditionally closed
+  before the offline sandwich for newly-added plugins, and never re-opened afterward. This
+  affects both the instant recall path (with "Preload new plugins offline" enabled) and the
+  timed/crossfade recall path.
+
+---
+
 ## [v0.0.5-beta] — 2026-06-01
 
 ### Bug Fixes

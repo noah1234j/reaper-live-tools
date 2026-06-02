@@ -188,11 +188,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 {
                     // Offline sandwich: briefly take offline so resume() fires
                     // cleanly, then bring back online before writing params.
-                    bool wasOpen = TrackFX_GetOpen(tr, slot);
-                    if (wasOpen) TrackFX_Show(tr, slot, 0);
+                    // Always close the FX window first — REAPER may have auto-opened
+                    // it when AddByName fired. Don't re-open: this is a new add, not
+                    // a user-opened window being preserved.
+                    TrackFX_Show(tr, slot, 0);
                     TrackFX_SetOffline(tr, slot, true);
                     TrackFX_SetOffline(tr, slot, false);
-                    if (wasOpen) TrackFX_Show(tr, slot, 1);
                 }
             }
             else if (TrackFX_GetOffline(tr, slot))
@@ -312,11 +313,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         //   (b) TrackFX_SetEnabled must apply to a live plugin to stick.
         //   (c) Param writes must land after the plugin's resume()/activate()
         //       to avoid being wiped by plugin-internal initialization.
-        bool fxWasOpenTimed = TrackFX_GetOpen(tr, slot);
-        if (fxWasOpenTimed) TrackFX_Show(tr, slot, 0);
+        // Always close before the sandwich — REAPER may have auto-opened the
+        // window when AddByName fired. Don't re-open: this is a new add, not
+        // a user-opened window being preserved.
+        TrackFX_Show(tr, slot, 0);
         TrackFX_SetOffline(tr, slot, true);
         TrackFX_SetOffline(tr, slot, false);  // plugin resume() fires here; nothing written yet
-        if (fxWasOpenTimed) TrackFX_Show(tr, slot, 1);
 
         // All writes below are on a fully-live, post-resume plugin.
         TrackFX_SetEnabled(tr, slot, fxs.enabled);
