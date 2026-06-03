@@ -1,5 +1,6 @@
 #include "TransitionWnd.h"
 #include "TransitionEngine.h"
+#include "ChunkRecallList.h"
 #include "SafesWnd.h"
 #include "LayersEngine.h"
 #include "api.h"
@@ -58,9 +59,10 @@ static bool g_altClickDelete      = false;  // Alt+click deletes a scene
 static bool g_ctrlClickOverwrite  = false;  // Ctrl+click overwrites a scene
 // FX window setting (non-static so TransitionEngine.cpp can extern it)
 bool g_preloadOffline             = false;  // keep FX windows open during recall
+bool g_skipUnchangedParams        = false;  // skip writing params that haven't changed
 
 // Global default transition settings for newly created scenes
-static double g_defaultDuration = 2.0;
+static double g_defaultDuration = 0.0;
 static int    g_defaultTaper    = TAPER_SCURVE;
 static double g_defaultTaperExp = 2.0;
 
@@ -303,9 +305,11 @@ bool TransitionWnd_LoadCueListLine(const char* line)
 // ---------------------------------------------------------------------------
 // Default transition settings – project-specific persistence
 // ---------------------------------------------------------------------------
+static bool s_chunkPluginsLoadedFromProject = false;
+
 void TransitionWnd_ResetSettings()
 {
-    g_defaultDuration    = 2.0;
+    g_defaultDuration    = 0.0;
     g_defaultTaper       = TAPER_SCURVE;
     g_defaultTaperExp    = 2.0;
     g_placeMarker        = false;
@@ -313,6 +317,10 @@ void TransitionWnd_ResetSettings()
     g_altClickDelete     = false;
     g_ctrlClickOverwrite = false;
     g_preloadOffline     = false;
+    g_skipUnchangedParams = false;
+    g_chunkRecallKeywords = GetChunkRecallDefaults();  // restore defaults on project reset
+    g_chunkRecallNotify   = false;
+    s_chunkPluginsLoadedFromProject = false;  // allow project list to replace defaults
 }
 
 bool TransitionWnd_ProcessSettingsLine(const char* line)
@@ -342,6 +350,35 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_preloadOffline = (val != 0);
         return true;
     }
+    if (strncmp(line, "LTSKIPUNCHANGED ", 16) == 0)
+    {
+        int val = 0;
+        sscanf(line + 16, "%d", &val);
+        g_skipUnchangedParams = (val != 0);
+        return true;
+    }
+    if (strncmp(line, "LTCHUNKPLUGIN ", 14) == 0)
+    {
+        const char* kw = line + 14;
+        if (kw[0])
+        {
+            if (!s_chunkPluginsLoadedFromProject)
+            {
+                // First LTCHUNKPLUGIN from the project: replace defaults with the saved list.
+                g_chunkRecallKeywords.clear();
+                s_chunkPluginsLoadedFromProject = true;
+            }
+            g_chunkRecallKeywords.push_back(kw);
+        }
+        return true;
+    }
+    if (strncmp(line, "LTCHUNKNOTIFY ", 14) == 0)
+    {
+        int val = 0;
+        sscanf(line + 14, "%d", &val);
+        g_chunkRecallNotify = (val != 0);
+        return true;
+    }
     return false;
 }
 
@@ -354,6 +391,10 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_altClickDelete ? 1 : 0,
                  g_ctrlClickOverwrite ? 1 : 0);
     ctx->AddLine("LTPRELOADOFFLINE %d", g_preloadOffline ? 1 : 0);
+    ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
+    for (const auto& kw : g_chunkRecallKeywords)
+        ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
+    ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +1002,131 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
 }
 
 // ---------------------------------------------------------------------------
+// RefreshChunkRecallList – repopulate the list box in IDD_CHUNK_RECALL_PLUGINS
+// ---------------------------------------------------------------------------
+static void RefreshChunkRecallList(HWND hwnd)
+{
+    HWND hList = GetDlgItem(hwnd, IDC_CRP_LIST);
+    SendMessage(hList, LB_RESETCONTENT, 0, 0);
+
+    for (const auto& kw : g_chunkRecallKeywords)
+        SendMessage(hList, LB_ADDSTRING, 0, (LPARAM)kw.c_str());
+
+    EnableWindow(GetDlgItem(hwnd, IDC_CRP_REMOVE), FALSE);
+}
+
+// ---------------------------------------------------------------------------
+// AddKeywordDlgProc – simple text-input prompt (IDD_ADD_KEYWORD)
+// ---------------------------------------------------------------------------
+static char s_newKeywordBuf[256] = {};
+
+static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        s_newKeywordBuf[0] = '\0';
+        SetDlgItemText(hwnd, IDC_AK_EDIT, "");
+        SendDlgItemMessage(hwnd, IDC_AK_EDIT, EM_LIMITTEXT, (WPARAM)(sizeof(s_newKeywordBuf) - 1), 0);
+        return TRUE;
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam);
+        if (id == IDOK)
+        {
+            GetDlgItemText(hwnd, IDC_AK_EDIT, s_newKeywordBuf, (int)sizeof(s_newKeywordBuf));
+            // Trim leading whitespace
+            char* p = s_newKeywordBuf;
+            while (*p == ' ' || *p == '\t') p++;
+            if (p != s_newKeywordBuf) memmove(s_newKeywordBuf, p, strlen(p) + 1);
+            // Trim trailing whitespace
+            size_t len = strlen(s_newKeywordBuf);
+            while (len > 0 && (s_newKeywordBuf[len - 1] == ' ' || s_newKeywordBuf[len - 1] == '\t'))
+                s_newKeywordBuf[--len] = '\0';
+            if (s_newKeywordBuf[0] == '\0') return TRUE; // reject empty
+            EndDialog(hwnd, IDOK);
+            return TRUE;
+        }
+        if (id == IDCANCEL) { EndDialog(hwnd, IDCANCEL); return TRUE; }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+// ---------------------------------------------------------------------------
+// ChunkRecallPluginsDlgProc – IDD_CHUNK_RECALL_PLUGINS dialog
+// ---------------------------------------------------------------------------
+static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
+{
+    switch (msg)
+    {
+    case WM_INITDIALOG:
+        RefreshChunkRecallList(hwnd);
+        CheckDlgButton(hwnd, IDC_CRP_NOTIFY, g_chunkRecallNotify ? BST_CHECKED : BST_UNCHECKED);
+        return TRUE;
+
+    case WM_COMMAND:
+    {
+        int id = LOWORD(wParam), evt = HIWORD(wParam);
+
+        if (id == IDC_CRP_LIST && evt == LBN_SELCHANGE)
+        {
+            int sel = (int)SendDlgItemMessage(hwnd, IDC_CRP_LIST, LB_GETCURSEL, 0, 0);
+            EnableWindow(GetDlgItem(hwnd, IDC_CRP_REMOVE), (sel >= 0) ? TRUE : FALSE);
+            return TRUE;
+        }
+
+        if (id == IDC_CRP_ADD)
+        {
+            if (DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_ADD_KEYWORD),
+                               hwnd, AddKeywordDlgProc, 0) == IDOK
+                && s_newKeywordBuf[0])
+            {
+                // Reject duplicates (case-sensitive exact match)
+                bool found = false;
+                for (const auto& kw : g_chunkRecallKeywords)
+                    if (kw == s_newKeywordBuf) { found = true; break; }
+                if (!found)
+                {
+                    g_chunkRecallKeywords.push_back(s_newKeywordBuf);
+                    RefreshChunkRecallList(hwnd);
+                    // Select the newly added entry
+                    int newIdx = (int)g_chunkRecallKeywords.size() - 1;
+                    SendDlgItemMessage(hwnd, IDC_CRP_LIST, LB_SETCURSEL, (WPARAM)newIdx, 0);
+                    EnableWindow(GetDlgItem(hwnd, IDC_CRP_REMOVE), TRUE);
+                    MarkProjectDirty(nullptr);
+                }
+            }
+            return TRUE;
+        }
+
+        if (id == IDC_CRP_REMOVE)
+        {
+            int sel = (int)SendDlgItemMessage(hwnd, IDC_CRP_LIST, LB_GETCURSEL, 0, 0);
+            if (sel >= 0 && sel < (int)g_chunkRecallKeywords.size())
+            {
+                g_chunkRecallKeywords.erase(g_chunkRecallKeywords.begin() + sel);
+                RefreshChunkRecallList(hwnd);
+                MarkProjectDirty(nullptr);
+            }
+            return TRUE;
+        }
+
+        if (id == IDC_CRP_NOTIFY)
+        {
+            g_chunkRecallNotify = (IsDlgButtonChecked(hwnd, IDC_CRP_NOTIFY) == BST_CHECKED);
+            return TRUE;
+        }
+
+        if (id == IDCANCEL || id == IDOK) { EndDialog(hwnd, id); return TRUE; }
+        break;
+    }
+    }
+    return FALSE;
+}
+
+// ---------------------------------------------------------------------------
 // GlobalSettingsDialogProc – modal IDD_GLOBAL_SETTINGS dialog
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -983,6 +1149,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_ALT_DELETE,      g_altClickDelete      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_CTRL_OVERWRITE,  g_ctrlClickOverwrite  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_PRELOAD_OFFLINE,  g_preloadOffline      ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_SKIP_UNCHANGED,   g_skipUnchangedParams ? BST_CHECKED : BST_UNCHECKED);
 
         // Tooltip for the preload offline checkbox
         HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
@@ -1042,10 +1209,15 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
                          !instant && sel == TAPER_CUSTOM);
             return TRUE;
         }
+        if (id == IDC_GSET_CHUNK_BTN)
+        {
+            DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_CHUNK_RECALL_PLUGINS),
+                           hwnd, ChunkRecallPluginsDlgProc, 0);
+            return TRUE;
+        }
         if (id == IDOK)
         {
-            bool instant = (IsDlgButtonChecked(hwnd, IDC_GSET_INSTANT) == BST_CHECKED);
-            if (instant)
+            bool instant = (IsDlgButtonChecked(hwnd, IDC_GSET_INSTANT) == BST_CHECKED);            if (instant)
             {
                 g_defaultDuration = 0.0;
             }
@@ -1068,6 +1240,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_altClickDelete      = (IsDlgButtonChecked(hwnd, IDC_GSET_ALT_DELETE)       == BST_CHECKED);
             g_ctrlClickOverwrite  = (IsDlgButtonChecked(hwnd, IDC_GSET_CTRL_OVERWRITE)   == BST_CHECKED);
             g_preloadOffline      = (IsDlgButtonChecked(hwnd, IDC_GSET_PRELOAD_OFFLINE)   == BST_CHECKED);
+            g_skipUnchangedParams = (IsDlgButtonChecked(hwnd, IDC_GSET_SKIP_UNCHANGED)    == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);

@@ -1,4 +1,5 @@
 #include "TransitionEngine.h"
+#include "ChunkRecallList.h"
 #include "api.h"
 
 #include <cmath>
@@ -6,6 +7,8 @@
 #include <cstdio>
 #include <algorithm>
 #include <cassert>
+#include <string>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // Safes globals
@@ -16,6 +19,7 @@ std::vector<TrackSafeEntry> g_trackSafes;
 
 // Shared UI preferences (defined non-static in TransitionWnd.cpp)
 extern bool g_preloadOffline;
+extern bool g_skipUnchangedParams;
 
 int GetEffectiveSafeMask(const GUID& guid)
 {
@@ -69,6 +73,7 @@ void TransitionEngine::StopAndReset()
     m_volPanLerps.clear();
     m_paramLerps.clear();
     m_wetLerps.clear();
+    m_sendLerps.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -106,15 +111,34 @@ MediaTrack* TransitionEngine::FindTrack(const GUID& guid)
 }
 
 // ---------------------------------------------------------------------------
-// FindFX – check hint slot first; fall back to O(N) name+paramCount scan
+// FindFX – locate an FX slot on a track.
+// Priority:
+//   1. fxIdent match (precise plugin identity, ignores display name variants)
+//   2. hint slot name+paramCount match (fast path for unchanged chains)
+//   3. O(N) name+paramCount scan (fallback for old snapshots without fxIdent)
 // ---------------------------------------------------------------------------
 int TransitionEngine::FindFX(MediaTrack* tr,
-                              const char* name, int paramCount, int hintSlot)
+                              const char* name, int paramCount, int hintSlot,
+                              const char* fxIdent)
 {
     const int nfx = TrackFX_GetCount(tr);
     if (nfx <= 0) return -1;
 
-    // Fast path: hint slot still matches
+    // Ident-based scan (most precise — handles multiple versions of same plugin)
+    if (fxIdent && fxIdent[0])
+    {
+        for (int fx = 0; fx < nfx; fx++)
+        {
+            char ident[512] = {};
+            TrackFX_GetNamedConfigParm(tr, fx, "fx_ident", ident, (int)sizeof(ident));
+            if (strcmp(ident, fxIdent) == 0)
+                return fx;
+        }
+        // fxIdent present but not found — plugin not on track
+        return -1;
+    }
+
+    // Fast path: hint slot still matches (name+paramCount)
     if (hintSlot >= 0 && hintSlot < nfx)
     {
         char hname[256] = {};
@@ -123,7 +147,7 @@ int TransitionEngine::FindFX(MediaTrack* tr,
             return hintSlot;
     }
 
-    // Slow path: scan all FX
+    // Slow path: scan all FX by name+paramCount
     for (int fx = 0; fx < nfx; fx++)
     {
         char fname[256] = {};
@@ -132,6 +156,63 @@ int TransitionEngine::FindFX(MediaTrack* tr,
             return fx;
     }
     return -1;
+}
+
+// ---------------------------------------------------------------------------
+// EnforceFXOrder – reorder the live chain to match snapshot slot order.
+//
+// After add/remove operations, surviving and newly-added plugins may be
+// in the wrong order. This restores the captured order using
+// TrackFX_CopyToTrack with move=true (in-place swap within the same track).
+//
+// Parked-offline plugins (primed for other scenes) are skipped during the
+// search pass and naturally end up at the tail of the chain.
+// ---------------------------------------------------------------------------
+static void EnforceFXOrder(MediaTrack* tr,
+                           const std::vector<FXState>& targetFX)
+{
+    const int nSnap = (int)targetFX.size();
+    for (int i = 0; i < nSnap; ++i)
+    {
+        const FXState& want = targetFX[i];
+        // Check if it's already in the right slot
+        {
+            char cur[512] = {};
+            if (want.fxIdent[0])
+                TrackFX_GetNamedConfigParm(tr, i, "fx_ident", cur, (int)sizeof(cur));
+            else
+                TrackFX_GetFXName(tr, i, cur, (int)sizeof(cur));
+            const bool matches = want.fxIdent[0]
+                ? strcmp(cur, want.fxIdent) == 0
+                : (strcmp(cur, want.name) == 0 &&
+                   TrackFX_GetNumParams(tr, i) == want.paramCount);
+            if (matches) continue;
+        }
+        // Search from i+1 onward, skipping parked-offline slots
+        const int nFX = TrackFX_GetCount(tr);
+        for (int j = i + 1; j < nFX; ++j)
+        {
+            if (TrackFX_GetOffline(tr, j)) continue; // parked for another scene
+            char cand[512] = {};
+            bool hit = false;
+            if (want.fxIdent[0])
+            {
+                TrackFX_GetNamedConfigParm(tr, j, "fx_ident", cand, (int)sizeof(cand));
+                hit = strcmp(cand, want.fxIdent) == 0;
+            }
+            else
+            {
+                TrackFX_GetFXName(tr, j, cand, (int)sizeof(cand));
+                hit = strcmp(cand, want.name) == 0 &&
+                      TrackFX_GetNumParams(tr, j) == want.paramCount;
+            }
+            if (hit)
+            {
+                TrackFX_CopyToTrack(tr, j, tr, i, true /*move*/);
+                break;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +228,69 @@ int TransitionEngine::FindFX(MediaTrack* tr,
 void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                                     bool timed, std::vector<WetLerp>& wetLerps)
 {
-    // Helper: does this FX (by name+paramCount) appear in the snapshot?
-    auto inSnapshot = [&](const char* name, int nparams) -> const FXState* {
-        for (const auto& fxs : ts.fx)
-            if (strcmp(fxs.name, name) == 0 && fxs.paramCount == nparams)
-                return &fxs;
-        return nullptr;
+    // --- Opt C: build O(1) lookup caches from a single pass over live chain ---
+    struct LiveFXInfo {
+        std::string ident;
+        std::string name;
+        int         paramCount;
+    };
+    const int nLive = TrackFX_GetCount(tr);
+    std::vector<LiveFXInfo> liveCache(nLive);
+    std::unordered_map<std::string, int> liveSlotByIdent;
+    std::unordered_map<std::string, int> liveSlotByNameCount;
+    for (int i = 0; i < nLive; ++i)
+    {
+        char ident[512] = {}, name[256] = {};
+        TrackFX_GetNamedConfigParm(tr, i, "fx_ident", ident, (int)sizeof(ident));
+        TrackFX_GetFXName(tr, i, name, (int)sizeof(name));
+        int pc = TrackFX_GetNumParams(tr, i);
+        liveCache[i] = { ident, name, pc };
+        if (ident[0]) liveSlotByIdent[ident] = i;
+        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", name, pc);
+        liveSlotByNameCount[key] = i;
+    }
+    // Snapshot reverse maps (no API calls needed)
+    std::unordered_map<std::string, const FXState*> snapByIdent;
+    std::unordered_map<std::string, const FXState*> snapByNameCount;
+    for (const auto& fxs : ts.fx)
+    {
+        if (fxs.fxIdent[0]) snapByIdent[fxs.fxIdent] = &fxs;
+        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", fxs.name, fxs.paramCount);
+        snapByNameCount[key] = &fxs;
+    }
+
+    // Helper: does this live FX slot appear in the snapshot? (O(1) via maps)
+    auto inSnapshot = [&](int fxIdx) -> const FXState* {
+        if (fxIdx < 0 || fxIdx >= nLive) return nullptr;
+        const LiveFXInfo& li = liveCache[fxIdx];
+        if (li.ident[0])
+        {
+            auto it = snapByIdent.find(li.ident);
+            return (it != snapByIdent.end()) ? it->second : nullptr;
+        }
+        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", li.name.c_str(), li.paramCount);
+        auto it = snapByNameCount.find(key);
+        return (it != snapByNameCount.end()) ? it->second : nullptr;
+    };
+
+    // Helper: find live slot for a snapshot FX entry using the cached maps.
+    // Falls back through hint slot, ident map, then name+count map.
+    auto findFXCached = [&](const FXState& fxs) -> int {
+        if (fxs.fxIdent[0])
+        {
+            auto it = liveSlotByIdent.find(fxs.fxIdent);
+            return (it != liveSlotByIdent.end()) ? it->second : -1;
+        }
+        // Hint slot fast-path
+        if (fxs.slotIndex >= 0 && fxs.slotIndex < nLive)
+        {
+            const LiveFXInfo& li = liveCache[fxs.slotIndex];
+            if (li.name == fxs.name && li.paramCount == fxs.paramCount)
+                return fxs.slotIndex;
+        }
+        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", fxs.name, fxs.paramCount);
+        auto it = liveSlotByNameCount.find(key);
+        return (it != liveSlotByNameCount.end()) ? it->second : -1;
     };
 
     if (!timed)
@@ -160,11 +298,9 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         // ---- Instant path: remove extras, add missing, set params ---------
         // Remove in reverse order so indices remain valid; set offline first
         // to avoid a chain-reconstruction click on each delete.
-        for (int i = TrackFX_GetCount(tr) - 1; i >= 0; --i)
+        for (int i = nLive - 1; i >= 0; --i)
         {
-            char name[256] = {};
-            TrackFX_GetFXName(tr, i, name, sizeof(name));
-            if (!inSnapshot(name, TrackFX_GetNumParams(tr, i)))
+            if (!inSnapshot(i))
             {
                 // If already offline, it's a primed plugin for another scene
                 // — leave it parked, don't delete.
@@ -179,10 +315,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         }
         for (const auto& fxs : ts.fx)
         {
-            int slot = FindFX(tr, fxs.name, fxs.paramCount, fxs.slotIndex);
-            if (slot < 0)
+            int slot = findFXCached(fxs);
+            const bool isNewPlugin = (slot < 0);
+            if (isNewPlugin)
             {
-                slot = TrackFX_AddByName(tr, fxs.name, false, -1000);
+                const char* addName = fxs.fxIdent[0] ? fxs.fxIdent : fxs.name;
+                slot = TrackFX_AddByName(tr, addName, false, -1000);
                 if (slot < 0) continue;
                 if (g_preloadOffline)
                 {
@@ -207,28 +345,47 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             }
             // Set state on the live plugin (new or existing).
             TrackFX_SetEnabled(tr, slot, fxs.enabled);
-            for (int p = 0; p < (int)fxs.normVals.size(); ++p)
-                TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
-            // REAPER's :wet index is typically above paramCount and therefore not
-            // covered by the normVals loop — apply it explicitly.
+            if (!fxs.fxChunk.empty())
             {
+                // Chunk recall: SetNamedConfigParm("vst_chunk") MUST be called while the
+                // plugin is online. REAPER routes it directly to VST setChunk(), the same
+                // path as preset recall — thread-safe without any extra help from us.
+                // Do NOT wrap in an offline sandwich: SetOffline(true) causes REAPER to
+                // snapshot the plugin's current state; SetOffline(false) restores that
+                // snapshot, silently overwriting anything written while offline.
+                TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                int wi = TrackFX_GetParamFromIdent(tr, slot, ":wet");
+                if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
+            }
+            else
+            {
+                // Opt B: for existing (not newly added) plugins, skip params that
+                // already match the saved value to avoid redundant API calls.
+                for (int p = 0; p < (int)fxs.normVals.size(); ++p)
+                {
+                    if (!isNewPlugin && g_skipUnchangedParams)
+                    {
+                        double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                        if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                    }
+                    TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                }
+                // REAPER's :wet index is typically above paramCount and therefore not
+                // covered by the normVals loop — apply it explicitly.
                 int wi = TrackFX_GetParamFromIdent(tr, slot, ":wet");
                 if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
             }
             TrackFX_SetNamedConfigParm(tr, slot, "chain_bypass_delta", "0");
         }
+        EnforceFXOrder(tr, ts.fx);
         return;
     }
 
     // ---- Timed path -------------------------------------------------------
     // Step 1: for each FX currently on the track, decide fate
-    const int nLive = TrackFX_GetCount(tr);
     for (int i = 0; i < nLive; ++i)
     {
-        char name[256] = {};
-        TrackFX_GetFXName(tr, i, name, sizeof(name));
-        const int nparams = TrackFX_GetNumParams(tr, i);
-        const FXState* target = inSnapshot(name, nparams);
+        const FXState* target = inSnapshot(i);
 
         const bool liveOffline = TrackFX_GetOffline(tr, i);
 
@@ -254,16 +411,29 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
 
             TrackFX_SetEnabled(tr, i, target->enabled);
 
-            int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
-            // Zero wet before writing params so the plugin is silent during init
-            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
-            for (int p = 0; p < (int)target->normVals.size(); ++p)
-                TrackFX_SetParamNormalized(tr, i, p, target->normVals[p]);
-            // Re-enforce wet=0 (the normVals loop may have restored it)
-            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
-            // Fade in from silence
-            if (target->enabled && wetIdx >= 0)
-                wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
+            if (!target->fxChunk.empty())
+            {
+                // Plugin is now online (post-resume) — apply vst_chunk directly.
+                // See site-1 comment: must NOT be wrapped in an offline sandwich.
+                TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
+                int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
+                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
+                if (target->enabled && wetIdx >= 0)
+                    wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
+            }
+            else
+            {
+                int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
+                // Zero wet before writing params so the plugin is silent during init
+                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
+                for (int p = 0; p < (int)target->normVals.size(); ++p)
+                    TrackFX_SetParamNormalized(tr, i, p, target->normVals[p]);
+                // Re-enforce wet=0 (the normVals loop may have restored it)
+                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
+                // Fade in from silence
+                if (target->enabled && wetIdx >= 0)
+                    wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
+            }
         }
         else
         {
@@ -289,8 +459,14 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             }
             else
             {
-                // No change in enabled state: BuildLerpLists will add a
-                // normal ParamLerp from current wet → target.wetVal.
+                // No change in enabled state.
+                if (!target->fxChunk.empty())
+                {
+                    // Chunk plugin: apply vst_chunk directly on the online plugin.
+                    // Wet lerp handled normally by BuildLerpLists (current→target).
+                    TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
+                }
+                // BuildLerpLists will add a normal ParamLerp from current wet → target.wetVal.
             }
         }
     }
@@ -298,10 +474,11 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
     // Step 2: add FX missing from track
     for (const auto& fxs : ts.fx)
     {
-        int slot = FindFX(tr, fxs.name, fxs.paramCount, fxs.slotIndex);
+        int slot = findFXCached(fxs);
         if (slot >= 0) continue; // already on track, handled above
 
-        slot = TrackFX_AddByName(tr, fxs.name, false, -1000);
+        const char* addName = fxs.fxIdent[0] ? fxs.fxIdent : fxs.name;
+        slot = TrackFX_AddByName(tr, addName, false, -1000);
         if (slot < 0) continue; // plugin not installed
 
         // ---- Offline sandwich (empty) ----
@@ -323,28 +500,41 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         // All writes below are on a fully-live, post-resume plugin.
         TrackFX_SetEnabled(tr, slot, fxs.enabled);
 
-        // Resolve the wet-param index on the live plugin (correct after resume).
-        int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
+        if (!fxs.fxChunk.empty())
+        {
+            // Plugin is online post-resume — apply vst_chunk directly.
+            TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+            int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
+            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+            if (fxs.enabled && wetIdx >= 0)
+                wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
+        }
+        else
+        {
+            // Resolve the wet-param index on the live plugin (correct after resume).
+            int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
 
-        // Zero wet so the plugin is silent while we load params.
-        if (wetIdx >= 0)
-            TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+            // Zero wet so the plugin is silent while we load params.
+            if (wetIdx >= 0)
+                TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
 
-        // Write all saved params to the live plugin — they will stick.
-        for (int p = 0; p < (int)fxs.normVals.size(); ++p)
-            TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+            // Write all saved params to the live plugin — they will stick.
+            for (int p = 0; p < (int)fxs.normVals.size(); ++p)
+                TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
 
-        // Re-enforce wet=0: if wetIdx is within normVals range the loop above
-        // just restored it to the saved (non-zero) value — put it back to 0.
-        if (wetIdx >= 0)
-            TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+            // Re-enforce wet=0: if wetIdx is within normVals range the loop above
+            // just restored it to the saved (non-zero) value — put it back to 0.
+            if (wetIdx >= 0)
+                TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
 
-        // Fade wet in from 0 to the saved value.
-        // BuildLerpLists will see cur==tgt for every other param → no ParamLerps
-        // are added, so only the wet knob animates during the transition.
-        if (fxs.enabled && wetIdx >= 0)
-            wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
+            // Fade wet in from 0 to the saved value.
+            // BuildLerpLists will see cur==tgt for every other param → no ParamLerps
+            // are added, so only the wet knob animates during the transition.
+            if (fxs.enabled && wetIdx >= 0)
+                wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
+        }
     }
+    EnforceFXOrder(tr, ts.fx);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +616,144 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             for (int fx = 0; fx < nfxPost; ++fx)
                 TrackFX_SetNamedConfigParm(tr, fx, "chain_bypass_delta", "0");
         }
+
+        // Sends – routing changes guarded by recording check (same as TS_FXCHAIN)
+        if (effMask & TS_SENDS)
+        {
+            const bool canRoute = !(GetPlayState() & 4); // no routing changes while recording
+
+            // --- Build maps of current live sends ---
+            // Track sends: destGuid -> send index
+            std::map<GUID, int, GUIDLess> liveSends;
+            {
+                const int n = GetTrackNumSends(tr, 0);
+                for (int si = 0; si < n; si++)
+                {
+                    MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                    if (!dest) continue;
+                    GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                    if (pg) liveSends.emplace(*pg, si);
+                }
+            }
+            // HW sends: dstChan -> send index
+            std::map<int, int> liveHWSends;
+            {
+                const int n = GetTrackNumSends(tr, 1);
+                for (int si = 0; si < n; si++)
+                {
+                    int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                    if (pc) liveHWSends.emplace(*pc, si);
+                }
+            }
+
+            // --- Update or add sends from snapshot ---
+            for (const auto& ss : ts.sends)
+            {
+                if (ss.isHW)
+                {
+                    auto it2 = liveHWSends.find(ss.hwDstChan);
+                    if (it2 != liveHWSends.end())
+                    {
+                        // Exists: update level params
+                        int si = it2->second;
+                        double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
+                        GetSetTrackSendInfo(tr, 1, si, "D_VOL",  &v);
+                        GetSetTrackSendInfo(tr, 1, si, "D_PAN",  &p);
+                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE", &m);
+                    }
+                    else if (canRoute)
+                    {
+                        // Add new HW send
+                        int newIdx = CreateTrackSend(tr, nullptr);
+                        if (newIdx >= 0)
+                        {
+                            // Set channel and rebuild map entry
+                            int ch = ss.hwDstChan;
+                            GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
+                            double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
+                            GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",  &v);
+                            GetSetTrackSendInfo(tr, 1, newIdx, "D_PAN",  &p);
+                            GetSetTrackSendInfo(tr, 1, newIdx, "B_MUTE", &m);
+                        }
+                    }
+                }
+                else
+                {
+                    auto it2 = liveSends.find(ss.destGuid);
+                    if (it2 != liveSends.end())
+                    {
+                        // Exists: update level params
+                        int si = it2->second;
+                        double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
+                        GetSetTrackSendInfo(tr, 0, si, "D_VOL",      &v);
+                        GetSetTrackSendInfo(tr, 0, si, "D_PAN",      &p);
+                        GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
+                        GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
+                    }
+                    else if (canRoute)
+                    {
+                        // Resolve destination track from GUID
+                        auto destIt = tmap.find(ss.destGuid);
+                        if (destIt != tmap.end())
+                        {
+                            int newIdx = CreateTrackSend(tr, destIt->second);
+                            if (newIdx >= 0)
+                            {
+                                double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
+                                GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
+                                GetSetTrackSendInfo(tr, 0, newIdx, "D_PAN",      &p);
+                                GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
+                                GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Remove live sends absent from snapshot (routing only, not while recording) ---
+            if (canRoute)
+            {
+                // Track sends: build set of GUIDs in snapshot
+                std::vector<GUID> snapGuids;
+                std::vector<int>  snapHWChans;
+                for (const auto& ss : ts.sends)
+                {
+                    if (ss.isHW) snapHWChans.push_back(ss.hwDstChan);
+                    else         snapGuids.push_back(ss.destGuid);
+                }
+
+                // Remove track sends in reverse index order
+                {
+                    const int n = GetTrackNumSends(tr, 0);
+                    for (int si = n - 1; si >= 0; si--)
+                    {
+                        MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                        if (!dest) continue;
+                        GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                        if (!pg) continue;
+                        bool found = false;
+                        for (const auto& g : snapGuids)
+                            if (IsEqualGUID(g, *pg)) { found = true; break; }
+                        if (!found)
+                            RemoveTrackSend(tr, 0, si);
+                    }
+                }
+                // Remove HW sends in reverse index order
+                {
+                    const int n = GetTrackNumSends(tr, 1);
+                    for (int si = n - 1; si >= 0; si--)
+                    {
+                        int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                        if (!pc) continue;
+                        bool found = false;
+                        for (int ch : snapHWChans)
+                            if (ch == *pc) { found = true; break; }
+                        if (!found)
+                            RemoveTrackSend(tr, 1, si);
+                    }
+                }
+            }
+        }
     }
 
     // Track reordering – must happen after all per-track property updates
@@ -505,6 +833,7 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
 {
     m_paramLerps.clear();
     m_volPanLerps.clear();
+    m_sendLerps.clear();
 
     for (const auto& ts : snap->m_tracks)
     {
@@ -543,9 +872,46 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
         // FX param lerp entries (SyncFXChain has already synced the chain)
         if (effMask & TS_FXPARAMS)
         {
+            // Opt C: build O(1) live-slot lookup for this track
+            const int nLiveFX = TrackFX_GetCount(tr);
+            std::unordered_map<std::string, int> blSlotByIdent;
+            std::unordered_map<std::string, int> blSlotByNameCount;
+            for (int fi = 0; fi < nLiveFX; ++fi)
+            {
+                char ident[512] = {}, name[256] = {};
+                TrackFX_GetNamedConfigParm(tr, fi, "fx_ident", ident, (int)sizeof(ident));
+                TrackFX_GetFXName(tr, fi, name, (int)sizeof(name));
+                int pc = TrackFX_GetNumParams(tr, fi);
+                if (ident[0]) blSlotByIdent[ident] = fi;
+                char key[768]; snprintf(key, sizeof(key), "%s\x01%d", name, pc);
+                blSlotByNameCount[key] = fi;
+            }
+
             for (const auto& fxs : ts.fx)
             {
-                int slot = FindFX(tr, fxs.name, fxs.paramCount, fxs.slotIndex);
+                int slot = -1;
+                if (fxs.fxIdent[0])
+                {
+                    auto it = blSlotByIdent.find(fxs.fxIdent);
+                    if (it != blSlotByIdent.end()) slot = it->second;
+                }
+                else
+                {
+                    // Hint slot fast-path
+                    if (fxs.slotIndex >= 0 && fxs.slotIndex < nLiveFX)
+                    {
+                        char hname[256] = {};
+                        TrackFX_GetFXName(tr, fxs.slotIndex, hname, (int)sizeof(hname));
+                        if (strcmp(hname, fxs.name) == 0 && TrackFX_GetNumParams(tr, fxs.slotIndex) == fxs.paramCount)
+                            slot = fxs.slotIndex;
+                    }
+                    if (slot < 0)
+                    {
+                        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", fxs.name, fxs.paramCount);
+                        auto it = blSlotByNameCount.find(key);
+                        if (it != blSlotByNameCount.end()) slot = it->second;
+                    }
+                }
                 if (slot < 0) continue;
 
                 // Find the wet param index for this FX slot if SyncFXChain
@@ -574,6 +940,126 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                         double curWet = TrackFX_GetParamNormalized(tr, slot, wetIdx);
                         if (fabs(curWet - fxs.wetVal) > 1e-7)
                             m_paramLerps.push_back({tr, slot, wetIdx, curWet, fxs.wetVal});
+                    }
+                }
+            }
+        }
+
+        // Send lerp entries (vol/pan fade for each send present after routing reconcile)
+        if (effMask & TS_SENDS)
+        {
+            // Build live send maps after routing was already reconciled in the timed
+            // pre-pass (Recall() loop runs SyncSends equivalent via ApplyImmediate-style
+            // routing-only pass).  We read live state now as the authoritative source.
+            for (const auto& ss : ts.sends)
+            {
+                // Find the live send index
+                int liveIdx = -1;
+                if (ss.isHW)
+                {
+                    const int n = GetTrackNumSends(tr, 1);
+                    for (int si = 0; si < n; si++)
+                    {
+                        int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                        if (pc && *pc == ss.hwDstChan) { liveIdx = si; break; }
+                    }
+                }
+                else
+                {
+                    const int n = GetTrackNumSends(tr, 0);
+                    for (int si = 0; si < n; si++)
+                    {
+                        MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                        if (!dest) continue;
+                        GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                        if (pg && IsEqualGUID(*pg, ss.destGuid)) { liveIdx = si; break; }
+                    }
+                }
+                if (liveIdx < 0) continue; // send not present (routing guard blocked add)
+
+                int cat = ss.isHW ? 1 : 0;
+                double* pv = (double*)GetSetTrackSendInfo(tr, cat, liveIdx, "D_VOL", nullptr);
+                double* pp = (double*)GetSetTrackSendInfo(tr, cat, liveIdx, "D_PAN", nullptr);
+                double curVol = pv ? *pv : 1.0;
+                double curPan = pp ? *pp : 0.0;
+
+                const bool volMoves = fabs(ss.vol - curVol) >= 1e-9;
+                const bool panMoves = fabs(ss.pan - curPan) >= 1e-9;
+                if (volMoves || panMoves)
+                {
+                    SendLerp sl{};
+                    sl.tr           = tr;
+                    sl.sendIdx      = liveIdx;
+                    sl.destGuid     = ss.destGuid;
+                    sl.isHW         = ss.isHW;
+                    sl.hwDstChan    = ss.hwDstChan;
+                    sl.startVol     = curVol;
+                    sl.endVol       = ss.vol;
+                    sl.startPan     = curPan;
+                    sl.endPan       = ss.pan;
+                    sl.pendingRemove = false;
+                    m_sendLerps.push_back(sl);
+                }
+            }
+
+            // Also push fade-out lerps for live sends that are being removed
+            // (routing guard must have allowed the removal – if not recording).
+            // We compare live sends against snapshot to find orphaned ones.
+            if (!(GetPlayState() & 4))
+            {
+                // Track sends: find live sends not in snapshot → fade to 0
+                const int nTr = GetTrackNumSends(tr, 0);
+                for (int si = 0; si < nTr; si++)
+                {
+                    MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                    if (!dest) continue;
+                    GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                    if (!pg) continue;
+                    bool inSnap = false;
+                    for (const auto& ss : ts.sends)
+                        if (!ss.isHW && IsEqualGUID(ss.destGuid, *pg)) { inSnap = true; break; }
+                    if (!inSnap)
+                    {
+                        double* pv = (double*)GetSetTrackSendInfo(tr, 0, si, "D_VOL", nullptr);
+                        double* pp = (double*)GetSetTrackSendInfo(tr, 0, si, "D_PAN", nullptr);
+                        SendLerp sl{};
+                        sl.tr            = tr;
+                        sl.sendIdx       = si;
+                        sl.destGuid      = *pg;
+                        sl.isHW          = false;
+                        sl.hwDstChan     = 0;
+                        sl.startVol      = pv ? *pv : 1.0;
+                        sl.endVol        = 0.0;
+                        sl.startPan      = pp ? *pp : 0.0;
+                        sl.endPan        = pp ? *pp : 0.0;
+                        sl.pendingRemove = true;
+                        m_sendLerps.push_back(sl);
+                    }
+                }
+                // HW sends: same
+                const int nHW = GetTrackNumSends(tr, 1);
+                for (int si = 0; si < nHW; si++)
+                {
+                    int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                    if (!pc) continue;
+                    bool inSnap = false;
+                    for (const auto& ss : ts.sends)
+                        if (ss.isHW && ss.hwDstChan == *pc) { inSnap = true; break; }
+                    if (!inSnap)
+                    {
+                        double* pv = (double*)GetSetTrackSendInfo(tr, 1, si, "D_VOL", nullptr);
+                        double* pp = (double*)GetSetTrackSendInfo(tr, 1, si, "D_PAN", nullptr);
+                        SendLerp sl{};
+                        sl.tr            = tr;
+                        sl.sendIdx       = si;
+                        sl.hwDstChan     = *pc;
+                        sl.isHW          = true;
+                        sl.startVol      = pv ? *pv : 1.0;
+                        sl.endVol        = 0.0;
+                        sl.startPan      = pp ? *pp : 0.0;
+                        sl.endPan        = pp ? *pp : 0.0;
+                        sl.pendingRemove = true;
+                        m_sendLerps.push_back(sl);
                     }
                 }
             }
@@ -643,6 +1129,60 @@ void TransitionEngine::SnapToEnd()
     m_volPanLerps.clear();
     m_paramLerps.clear();
     m_wetLerps.clear();
+
+    // Finalize send lerps: write exact end values, then remove pending sends
+    // in descending index order per track to avoid index invalidation.
+    struct SendDelEntry { MediaTrack* tr; int cat; int idx; };
+    std::vector<SendDelEntry> sendsToRemove;
+
+    for (const auto& sl : m_sendLerps)
+    {
+        if (!ValidatePtr2(nullptr, sl.tr, "MediaTrack*")) continue;
+        int cat = sl.isHW ? 1 : 0;
+        // Revalidate index (sends can shift if prior removals happened this frame)
+        int liveIdx = sl.sendIdx;
+        if (sl.isHW)
+        {
+            const int n = GetTrackNumSends(sl.tr, 1);
+            liveIdx = -1;
+            for (int si = 0; si < n; si++)
+            {
+                int* pc = (int*)GetSetTrackSendInfo(sl.tr, 1, si, "I_DSTCHAN", nullptr);
+                if (pc && *pc == sl.hwDstChan) { liveIdx = si; break; }
+            }
+        }
+        else
+        {
+            const int n = GetTrackNumSends(sl.tr, 0);
+            liveIdx = -1;
+            for (int si = 0; si < n; si++)
+            {
+                MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(sl.tr, 0, si, "P_DESTTRACK", nullptr);
+                if (!dest) continue;
+                GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                if (pg && IsEqualGUID(*pg, sl.destGuid)) { liveIdx = si; break; }
+            }
+        }
+        if (liveIdx < 0) continue;
+
+        double ev = sl.endVol;
+        double ep = sl.endPan;
+        GetSetTrackSendInfo(sl.tr, cat, liveIdx, "D_VOL", &ev);
+        GetSetTrackSendInfo(sl.tr, cat, liveIdx, "D_PAN", &ep);
+        if (sl.pendingRemove && !(GetPlayState() & 4))
+            sendsToRemove.push_back({ sl.tr, cat, liveIdx });
+    }
+    // Remove in descending index order per track so indices stay valid
+    std::sort(sendsToRemove.begin(), sendsToRemove.end(),
+              [](const SendDelEntry& a, const SendDelEntry& b) {
+                  if (a.tr  != b.tr)  return a.tr  > b.tr;
+                  if (a.cat != b.cat) return a.cat > b.cat;
+                  return a.idx > b.idx;
+              });
+    for (const auto& sd : sendsToRemove)
+        RemoveTrackSend(sd.tr, sd.cat, sd.idx);
+
+    m_sendLerps.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +1276,82 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         // FX chain sync: add/remove plugins with wet-fade (timed=true)
         if (effMask & (TS_FXPARAMS | TS_FXCHAIN))
             SyncFXChain(tr, ts, true /*timed*/, m_wetLerps);
-    }
+
+        // Sends routing – apply at t=0 (same guard as TS_FXCHAIN)
+        // Level changes are handled by BuildLerpLists / SendLerp.
+        if ((effMask & TS_SENDS) && !ts.sends.empty())
+        {
+            const bool canRoute = !(GetPlayState() & 4);
+
+            // Build live send maps
+            std::map<GUID, int, GUIDLess> liveSends;
+            {
+                const int n = GetTrackNumSends(tr, 0);
+                for (int si = 0; si < n; si++)
+                {
+                    MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                    if (!dest) continue;
+                    GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                    if (pg) liveSends.emplace(*pg, si);
+                }
+            }
+            std::map<int, int> liveHWSends;
+            {
+                const int n = GetTrackNumSends(tr, 1);
+                for (int si = 0; si < n; si++)
+                {
+                    int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                    if (pc) liveHWSends.emplace(*pc, si);
+                }
+            }
+
+            // Add new sends (not yet live) with initial vol=0 so they fade in via SendLerp
+            if (canRoute)
+            {
+                for (const auto& ss : ts.sends)
+                {
+                    if (ss.isHW)
+                    {
+                        if (liveHWSends.find(ss.hwDstChan) == liveHWSends.end())
+                        {
+                            int newIdx = CreateTrackSend(tr, nullptr);
+                            if (newIdx >= 0)
+                            {
+                                int ch = ss.hwDstChan;  double v = 0.0;
+                                GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
+                                GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",     &v);
+                                bool m = ss.mute;
+                                GetSetTrackSendInfo(tr, 1, newIdx, "B_MUTE",    &m);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (liveSends.find(ss.destGuid) == liveSends.end())
+                        {
+                            auto destIt = tmap.find(ss.destGuid);
+                            if (destIt != tmap.end())
+                            {
+                                int newIdx = CreateTrackSend(tr, destIt->second);
+                                if (newIdx >= 0)
+                                {
+                                    double v = 0.0;  int sm = ss.sendMode;
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                                    bool m = ss.mute;
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Remove sends absent from snapshot (in reverse order; they'll fade out via SendLerp before removal)
+                // We just leave them in place here — BuildLerpLists will push pendingRemove SendLerps.
+                // Nothing to do now for the removal side.
+            }
+        }
+    } // end per-track timed loop
 
     // Track reordering – instant, happens before lerp timer starts
     if (mask & TS_TRACKORDER)
@@ -776,7 +1391,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // Build lerp lists for vol/pan/FX params
     BuildLerpLists(snap, mask, tmap);
 
-    if (m_paramLerps.empty() && m_volPanLerps.empty() && m_wetLerps.empty())
+    if (m_paramLerps.empty() && m_volPanLerps.empty() && m_wetLerps.empty() && m_sendLerps.empty())
     {
         snprintf(m_statusBuf, sizeof(m_statusBuf), "Done %s (no interpolatable params)", m_targetSceneName.c_str());
         if (onTransitionComplete) onTransitionComplete();
@@ -835,6 +1450,17 @@ void TransitionEngine::TimerCallback()
         if (wl.wetParamIdx >= 0)
             TrackFX_SetParamNormalized(wl.tr, wl.fxSlot, wl.wetParamIdx,
                                        lerp(wl.startWet, wl.endWet, t));
+    }
+
+    // Interpolate send vol/pan
+    for (const auto& sl : eng.m_sendLerps)
+    {
+        if (!ValidatePtr2(nullptr, sl.tr, "MediaTrack*")) continue;
+        int cat = sl.isHW ? 1 : 0;
+        double v = lerp(sl.startVol, sl.endVol, t);
+        double p = lerp(sl.startPan, sl.endPan, t);
+        GetSetTrackSendInfo(sl.tr, cat, sl.sendIdx, "D_VOL", &v);
+        GetSetTrackSendInfo(sl.tr, cat, sl.sendIdx, "D_PAN", &p);
     }
 
     if (t_raw >= 1.0)

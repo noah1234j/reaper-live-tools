@@ -55,3 +55,4 @@ void TransitionWnd_ResetSettings();
 // instant recall (offline sandwich) to prevent parameter snap during init.
 // Toggled via Global Settings. Saved per-project.
 extern bool g_preloadOffline;
+extern bool g_skipUnchangedParams;

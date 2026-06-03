@@ -20,7 +20,7 @@ static const int TS_PAN         = 0x002;
 static const int TS_MUTE        = 0x004;
 static const int TS_SOLO        = 0x008;
 static const int TS_FXPARAMS    = 0x010;  // per-param interpolation  (live-safe)
-static const int TS_SENDS       = 0x020;  // reserved – future
+static const int TS_SENDS       = 0x020;  // track-to-track sends + hardware outputs
 static const int TS_VIS         = 0x040;
 static const int TS_SELECTION   = 0x080;
 static const int TS_PHASE       = 0x100;
@@ -38,7 +38,7 @@ static const int TS_MIX    = (TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_FXPARAMS 
 static const int TS_LAYOUT = (TS_VIS | TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER);
 
 // Default mask used when capturing a new snapshot (everything useful, live-safe)
-static const int TS_CAPTURE_ALL = (TS_MIX | TS_FXCHAIN | TS_LAYOUT);
+static const int TS_CAPTURE_ALL = (TS_MIX | TS_FXCHAIN | TS_LAYOUT | TS_SENDS);
 
 // ---------------------------------------------------------------------------
 // Taper laws for timed transitions
@@ -53,20 +53,42 @@ enum TaperLaw
 };
 
 // ---------------------------------------------------------------------------
+// SendState – one send or hardware output captured per track
+// ---------------------------------------------------------------------------
+struct SendState
+{
+    bool   isHW      = false;  // true = hardware output (category 1)
+    GUID   destGuid  = {};     // destination track GUID (track sends only)
+    int    hwDstChan = 0;      // hardware send: I_DSTCHAN (identity key)
+    double vol       = 1.0;    // D_VOL
+    double pan       = 0.0;    // D_PAN
+    bool   mute      = false;  // B_MUTE
+    int    sendMode  = 0;      // I_SENDMODE (0=post-fader, 1=pre-fx, 3=pre-fader)
+};
+
+// ---------------------------------------------------------------------------
 // FXState – per-plugin state
 // ---------------------------------------------------------------------------
 struct FXState
 {
-    char   name[256]  = {};  // display name used as identity key (1/2)
+    char   name[256]  = {};  // display name (fallback identity for old snapshots)
+    char   fxIdent[512] = {}; // precise plugin identity e.g. "VST3:{GUID}:Name"
     int    slotIndex  = 0;   // captured slot index (fast-path hint)
-    int    paramCount = 0;   // identity key (2/2)
+    int    paramCount = 0;   // identity key (fallback, with name)
     bool   enabled    = true;// FX bypass state
 
-    // Normalized [0..1] parameter values; size == paramCount
+    // Normalized [0..1] parameter values; size == paramCount.
+    // Empty when fxChunk is set (chunk is the sole source of state).
     std::vector<double> normVals;
 
     // Wet/dry mix (REAPER per-FX wet control, accessed via ":wet" ident)
     double wetVal = 1.0;
+
+    // Full VST state blob (base64 vst_chunk). Non-empty for plugins in the
+    // Chunk Recall list (e.g. Waves VMR) where module-swapping changes param
+    // semantics. When non-empty, recall uses vst_chunk restore instead of
+    // per-param writes; normVals is always empty.
+    std::string fxChunk;
 };
 
 // ---------------------------------------------------------------------------
@@ -113,6 +135,9 @@ struct TrackState
 
     // Optional offline FX chain chunk (only populated when TS_FXCHAIN was set)
     std::string fxChainChunk;
+
+    // Sends (only populated when TS_SENDS was set at capture time)
+    std::vector<SendState> sends;
 };
 
 // ---------------------------------------------------------------------------

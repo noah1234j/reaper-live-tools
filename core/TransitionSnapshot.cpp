@@ -1,4 +1,5 @@
 #include "TransitionSnapshot.h"
+#include "ChunkRecallList.h"
 #include "LayersEngine.h"
 #include "api.h"
 
@@ -149,7 +150,7 @@ void TransitionSnapshot::Capture(int mask)
         if (mask & TS_TRACKORDER)
             ts.capturedIndex = i;
 
-        // FX params – live-safe path (no chunk ops)
+        // FX params – live-safe path (no chunk ops except for chunk-recall plugins)
         if (mask & TS_FXPARAMS)
         {
             const int nfx = TrackFX_GetCount(tr);
@@ -158,16 +159,37 @@ void TransitionSnapshot::Capture(int mask)
             {
                 FXState fs;
                 TrackFX_GetFXName(tr, fx, fs.name, (int)sizeof(fs.name));
+                TrackFX_GetNamedConfigParm(tr, fx, "fx_ident", fs.fxIdent, (int)sizeof(fs.fxIdent));
                 fs.slotIndex  = fx;
-                fs.paramCount = TrackFX_GetNumParams(tr, fx);
                 fs.enabled    = TrackFX_GetEnabled(tr, fx);
-                fs.normVals.resize(fs.paramCount);
-                for (int p = 0; p < fs.paramCount; p++)
-                    fs.normVals[p] = TrackFX_GetParamNormalized(tr, fx, p);
                 {
                     int wi = TrackFX_GetParamFromIdent(tr, fx, ":wet");
                     fs.wetVal = (wi >= 0) ? TrackFX_GetParamNormalized(tr, fx, wi) : 1.0;
                 }
+
+                if (IsChunkRecallPlugin(fs.name))
+                {
+                    // Capture full VST state blob instead of per-param values.
+                    // This is required for rack-style plugins (e.g. Waves VMR) where
+                    // module swaps change param semantics while count stays constant.
+                    // Use a large heap buffer – VMR chunks can be 50-200 KB.
+                    std::vector<char> chunkBuf(512 * 1024, '\0');
+                    if (TrackFX_GetNamedConfigParm(tr, fx, "vst_chunk",
+                                                   chunkBuf.data(), (int)chunkBuf.size()))
+                    {
+                        fs.fxChunk = chunkBuf.data();
+                    }
+                    // normVals stays empty; paramCount stays 0.
+                    // (chunk is the sole source of truth for these plugins)
+                }
+                else
+                {
+                    fs.paramCount = TrackFX_GetNumParams(tr, fx);
+                    fs.normVals.resize(fs.paramCount);
+                    for (int p = 0; p < fs.paramCount; p++)
+                        fs.normVals[p] = TrackFX_GetParamNormalized(tr, fx, p);
+                }
+
                 ts.fx.push_back(std::move(fs));
             }
         }
@@ -180,6 +202,47 @@ void TransitionSnapshot::Capture(int mask)
             {
                 ts.fxChainChunk = chunk;
                 FreeHeapPtr(chunk);
+            }
+        }
+
+        // Sends (track-to-track and hardware outputs) – reading is always safe
+        if (mask & TS_SENDS)
+        {
+            // Track-to-track sends (category 0)
+            const int nSends = GetTrackNumSends(tr, 0);
+            for (int si = 0; si < nSends; si++)
+            {
+                MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+                if (!dest) continue;
+                SendState ss;
+                ss.isHW = false;
+                GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                if (pg) ss.destGuid = *pg;
+                double* pv = (double*)GetSetTrackSendInfo(tr, 0, si, "D_VOL",      nullptr);
+                double* pp = (double*)GetSetTrackSendInfo(tr, 0, si, "D_PAN",      nullptr);
+                bool*   pm = (bool*)  GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     nullptr);
+                int*    ps = (int*)   GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", nullptr);
+                if (pv) ss.vol      = *pv;
+                if (pp) ss.pan      = *pp;
+                if (pm) ss.mute     = *pm;
+                if (ps) ss.sendMode = *ps;
+                ts.sends.push_back(ss);
+            }
+            // Hardware outputs (category 1)
+            const int nHW = GetTrackNumSends(tr, 1);
+            for (int si = 0; si < nHW; si++)
+            {
+                SendState ss;
+                ss.isHW = true;
+                int*    pc = (int*)   GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                double* pv = (double*)GetSetTrackSendInfo(tr, 1, si, "D_VOL",     nullptr);
+                double* pp = (double*)GetSetTrackSendInfo(tr, 1, si, "D_PAN",     nullptr);
+                bool*   pm = (bool*)  GetSetTrackSendInfo(tr, 1, si, "B_MUTE",    nullptr);
+                if (pc) ss.hwDstChan = *pc;
+                if (pv) ss.vol       = *pv;
+                if (pp) ss.pan       = *pp;
+                if (pm) ss.mute      = *pm;
+                ts.sends.push_back(ss);
             }
         }
 
@@ -207,6 +270,21 @@ void TransitionSnapshot::Capture(int mask)
                 cl.tracks.push_back(clt);
             }
             m_layers.push_back(cl);
+        }
+    }
+
+    // --- Debug notify -------------------------------------------------------
+    if (g_chunkRecallNotify)
+    {
+        std::string msg;
+        for (const auto& trk : m_tracks)
+            for (const auto& fx : trk.fx)
+                if (!fx.fxChunk.empty())
+                    msg += std::string("  ") + fx.name + "\n";
+        if (!msg.empty())
+        {
+            std::string full = "Scene saved with chunk recall for:\n" + msg;
+            MessageBoxA(GetMainHwnd(), full.c_str(), "Chunk Recall — Debug", MB_OK | MB_ICONINFORMATION);
         }
     }
 }
@@ -336,12 +414,25 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
             ctx->AddLine("FX %d %d %d \"%s\"",
                          fx.slotIndex, fx.paramCount, (int)fx.enabled,
                          safeFxName.c_str());
+            if (fx.fxIdent[0])
+                ctx->AddLine("FXIDENT %s", fx.fxIdent);
 
-            // Write normalized values in batches of 8
-            for (int p = 0; p < (int)fx.normVals.size(); p += 8)
+            if (!fx.fxChunk.empty())
             {
-                int pend = std::min(p + 8, (int)fx.normVals.size());
-                WriteParamLine(ctx, fx.normVals, p, pend);
+                // Chunk recall plugin: write full vst_chunk blob, skip P lines.
+                // Use pre-built string to avoid vsnprintf length limit on large blobs.
+                std::string chunkLine = "FXCHUNK ";
+                chunkLine += fx.fxChunk;
+                ctx->AddLine("%s", chunkLine.c_str());
+            }
+            else
+            {
+                // Write normalized values in batches of 8
+                for (int p = 0; p < (int)fx.normVals.size(); p += 8)
+                {
+                    int pend = std::min(p + 8, (int)fx.normVals.size());
+                    WriteParamLine(ctx, fx.normVals, p, pend);
+                }
             }
             ctx->AddLine("FXWET %.6f", fx.wetVal);
             ctx->AddLine("FXEND");
@@ -368,6 +459,22 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                 p = (*nl == '\n') ? nl + 1 : nl;
             }
             ctx->AddLine("FXCHAINEND");
+        }
+
+        // Sends: SEND {guid} vol pan mute sendMode  /  SEND_HW dstchan vol pan mute
+        for (const auto& ss : ts.sends)
+        {
+            if (ss.isHW)
+            {
+                ctx->AddLine("SEND_HW %d %.17g %.17g %d",
+                             ss.hwDstChan, ss.vol, ss.pan, (int)ss.mute);
+            }
+            else
+            {
+                std::string sg = GuidToString(ss.destGuid);
+                ctx->AddLine("SEND %s %.17g %.17g %d %d",
+                             sg.c_str(), ss.vol, ss.pan, (int)ss.mute, ss.sendMode);
+            }
         }
 
         ctx->AddLine("TRACKEND");
@@ -492,7 +599,7 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             // Per-snapshot transition settings (top-level line, before any TRACK)
             double dur = 2.0;  int tap = TAPER_SCURVE;  double ex = 2.0;
             sscanf(trimmed + 9, "%lf %d %lf", &dur, &tap, &ex);
-            ss->m_duration = dur  > 0.0 ? dur : 2.0;
+            ss->m_duration = dur >= 0.0 ? dur : 2.0;
             ss->m_taper    = tap;
             ss->m_taperExp = ex > 0.0 ? ex  : 2.0;
         }
@@ -593,6 +700,15 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                 p += consumed;
             }
         }
+        else if (strncmp(trimmed, "FXIDENT ", 8) == 0)
+        {
+            strncpy(curFX.fxIdent, trimmed + 8, (int)sizeof(curFX.fxIdent) - 1);
+            curFX.fxIdent[sizeof(curFX.fxIdent) - 1] = '\0';
+        }
+        else if (strncmp(trimmed, "FXCHUNK ", 8) == 0)
+        {
+            curFX.fxChunk = trimmed + 8;
+        }
         else if (strncmp(trimmed, "FXWET ", 6) == 0)
         {
             sscanf(trimmed + 6, "%lf", &curFX.wetVal);
@@ -605,6 +721,30 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         {
             inChunk = true;
             curTrack.fxChainChunk.clear();
+        }
+        else if (strncmp(trimmed, "SEND ", 5) == 0 && !isdigit((unsigned char)trimmed[5]) && trimmed[5] != '-')
+        {
+            // "SEND {guid} vol pan mute sendMode"
+            SendState ss;
+            ss.isHW = false;
+            char sguid[64] = "";
+            int mute = 0;
+            sscanf(trimmed + 5, "%63s %lf %lf %d %d",
+                   sguid, &ss.vol, &ss.pan, &mute, &ss.sendMode);
+            ss.mute     = (mute != 0);
+            ss.destGuid = StringToGuid(sguid);
+            curTrack.sends.push_back(ss);
+        }
+        else if (strncmp(trimmed, "SEND_HW ", 8) == 0)
+        {
+            // "SEND_HW dstchan vol pan mute"
+            SendState ss;
+            ss.isHW = true;
+            int mute = 0;
+            sscanf(trimmed + 8, "%d %lf %lf %d",
+                   &ss.hwDstChan, &ss.vol, &ss.pan, &mute);
+            ss.mute = (mute != 0);
+            curTrack.sends.push_back(ss);
         }
         else if (strcmp(trimmed, "TRACKEND") == 0)
         {

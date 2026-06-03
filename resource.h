@@ -171,6 +171,19 @@
 #define IDC_GSET_ALT_DELETE      2242   // "Alt+click to delete" checkbox in global settings
 #define IDC_GSET_CTRL_OVERWRITE  2243   // "Ctrl+click to overwrite" checkbox in global settings
 #define IDC_GSET_PRELOAD_OFFLINE 2245   // "Preload new plugins offline" checkbox
+#define IDC_GSET_SKIP_UNCHANGED  2246   // "Skip writing unchanged params on recall" checkbox
+#define IDC_GSET_CHUNK_BTN       2247   // "Chunk Recall Plugins..." button in global settings
+
+// ---- Chunk Recall Plugins dialog ------------------------------------------
+#define IDD_CHUNK_RECALL_PLUGINS 273
+#define IDC_CRP_LIST             2248   // ListBox of keywords
+#define IDC_CRP_ADD              2249   // "Add..." button
+#define IDC_CRP_REMOVE           2250   // "Remove" button
+#define IDC_CRP_NOTIFY           2252   // "Notify on save" debug checkbox
+
+// ---- Add Keyword dialog (text input prompt) --------------------------------
+#define IDD_ADD_KEYWORD          274
+#define IDC_AK_EDIT              2251   // edit control for keyword input
 
 // ---- Live Optimizer window ------------------------------------------------
 #define IDD_LIVE_OPTIMIZE        208

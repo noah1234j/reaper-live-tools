@@ -1,5 +1,52 @@
 # Changelog
 
+## [v0.0.12-beta] — 2026-06-04
+
+### New Features
+
+- **Chunk Recall Plugins**: A new mechanism for plugins whose per-parameter values are not a
+  reliable representation of state (e.g. Waves Virtual Mix Rack, where a module swap changes
+  the meaning of fixed parameter indices while the count stays constant). Plugins whose names
+  contain a built-in or user-defined keyword are now saved and restored using the full
+  `vst_chunk` blob via `TrackFX_GetNamedConfigParm("vst_chunk")` /
+  `TrackFX_SetNamedConfigParm("vst_chunk", ...)`, wrapped in a per-slot offline sandwich for
+  safety. The per-FX wet/dry value continues to be captured and lerped separately.
+  Built-in keywords: `Virtual Mix Rack`, `StudioRack`, `Scheps Omni`, `ML4000`.
+
+- **Chunk Recall Plugins settings dialog**: Accessible from Global Settings → Live Performance →
+  "Chunk Recall Plugins…". Lists all built-in keywords (read-only, marked `[built-in]`) and
+  user-defined keywords. Add or remove user keywords via the Add/Remove buttons. User keywords
+  are persisted per-project as `LTCHUNKPLUGIN <keyword>` lines in the settings block.
+
+---
+
+## [v0.0.8-beta] — 2026-06-02
+
+### Performance Improvements
+
+- **Faster scene recall on large projects (Opt C — always on)**: `SyncFXChain` and `BuildLerpLists`
+  now build O(1) lookup maps (by `fx_ident` and by name+paramCount) from a single upfront pass
+  over the live FX chain, replacing repeated `TrackFX_GetNamedConfigParm` / `TrackFX_GetFXName` /
+  `TrackFX_GetNumParams` calls that previously ran for every slot on every iteration. This
+  eliminates O(N²) API call patterns on tracks with large FX chains.
+
+- **Skip unchanged params on recall (Opt B — toggleable)**: A new "Skip writing unchanged params
+  on recall" option in Global Settings causes the instant-recall path to read each parameter's
+  current live value and skip the `TrackFX_SetParamNormalized` call if it already matches the
+  saved value (within 1e-7). This is most effective when recalling to a scene whose FX chain
+  state is close to the current live state. Newly-added plugins always write all params
+  regardless of this setting. Enable via Global Settings → Live Performance.
+
+---
+
+## [v0.0.7-beta] — 2026-06-02
+
+### New Features
+
+- **Send routing & level recall** (`TS_SENDS`): Scenes now capture and restore track-to-track sends and hardware output sends. On instant recall, sends are added/removed and levels (vol, pan, mute, send mode) are applied atomically. On timed/crossfade recall, new sends fade in from 0 and removed sends fade out to 0 before being deleted — all vol/pan changes lerp smoothly over the transition duration. Routing changes (add/remove) are recording-safe and blocked while REAPER is recording.
+
+---
+
 ## [v0.0.6-beta] — 2026-06-02
 
 ### Bug Fixes

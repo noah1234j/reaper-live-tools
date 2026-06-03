@@ -119,6 +119,20 @@ private:
         bool   disableOnComplete;// TrackFX_SetEnabled(false) when transition ends
     };
 
+    // Send vol/pan fade (track-to-track or hardware send)
+    struct SendLerp {
+        MediaTrack* tr;          // source track
+        int    sendIdx;          // live send index at lerp build time
+        GUID   destGuid;         // used to revalidate sendIdx for track sends
+        bool   isHW;             // true = hardware send (category 1)
+        int    hwDstChan;        // I_DSTCHAN for HW send revalidation
+        double startVol;
+        double endVol;
+        double startPan;
+        double endPan;
+        bool   pendingRemove;    // fade to 0 then RemoveTrackSend at t=1
+    };
+
     // -----------------------------------------------------------------------
     // GUID → MediaTrack* lookup map (built once per Recall to avoid O(n²))
     // GUIDLess and TrackGUIDMap are defined in TransitionSnapshot.h
@@ -147,9 +161,11 @@ private:
     // Static helpers
     // -----------------------------------------------------------------------
 
-    // Find the FX slot on a track matching name+paramCount; hintSlot first
+    // Find the FX slot on a track matching fxIdent (preferred) or name+paramCount;
+    // hintSlot checked first as a fast path
     static int FindFX(MediaTrack* tr,
-                      const char* name, int paramCount, int hintSlot);
+                      const char* name, int paramCount, int hintSlot,
+                      const char* fxIdent = "");
 
     // Resolve a GUID to a live MediaTrack*
     static MediaTrack* FindTrack(const GUID& guid);
@@ -175,6 +191,7 @@ private:
     std::vector<ParamLerp>   m_paramLerps;
     std::vector<VolPanLerp>  m_volPanLerps;
     std::vector<WetLerp>     m_wetLerps;
+    std::vector<SendLerp>    m_sendLerps;
 
     char   m_statusBuf[256]   = "Idle";
 };

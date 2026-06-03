@@ -72,6 +72,7 @@ add_library(reaper_transitions SHARED
   core/TransitionSnapshot.cpp
   core/TransitionEngine.cpp
   core/PluginSafetyEngine.cpp
+  core/ChunkRecallList.cpp
   # Scenes
   scenes/TransitionWnd.cpp
   scenes/SafesWnd.cpp
