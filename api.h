@@ -163,6 +163,9 @@
 // GUID ↔ string (MuteGroups)
 #define REAPERAPI_WANT_GuidToStr
 
+// Debug logging (PAFL)
+#define REAPERAPI_WANT_ShowConsoleMsg
+
 // Action enumeration (Surface/Zone Editor – action search dialog)
 #define REAPERAPI_WANT_kbd_enumerateActions   // iterate all actions in a section
 #define REAPERAPI_WANT_kbd_getTextFromCmd     // get display name from command id

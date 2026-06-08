@@ -1,5 +1,36 @@
 # Changelog
 
+## [v0.0.13-beta] — 2026-06-08
+
+### New Features
+
+- **Safes persistent save per project**: Safes configuration (global safe mask, per-track safe
+  entries, and the "Enable Per-Track Safes" toggle) is now saved and loaded with the REAPER
+  project file. State is written as `LTSAFEGLOBAL`, `LTSAFETRACKSEN`, and `LTSAFETRACK {guid} mask`
+  lines inside the project's extension block — the same pattern used by Layers, MuteGroups, and
+  DCA. Safes are now correctly reset when switching projects (no bleed-over). Any change to the
+  safes grid marks the project dirty so Ctrl+S captures the update.
+
+- **Safes: "All Tracks" checkbox**: A new "All Tracks" checkbox in the Global Safes groupbox sets
+  every per-track row to all parameters at once. Unchecking it clears all per-track safe entries.
+  The checkbox reflects the current aggregate state when the window is opened or refreshed.
+
+- **Safes UI layout improvement**: The Global Safes groupbox has been expanded from two cramped
+  rows of 7/5 into three evenly-spaced rows of 5, roughly doubling the horizontal space available
+  per checkbox label.
+
+### Bug Fixes
+
+- **PAFL: folder parent tracks now PAFL correctly**: Pressing Solo on a folder-parent / group bus
+  track now creates a PAFL send and mutes the program feed, the same as any regular track. Previously
+  the handler detected `I_FOLDERDEPTH > 0` and immediately returned early, so folder parents could
+  never be PAFL'd. `Run()` and the safety sweep now exempt folder parents that have an active
+  unmuted PAFL send, so their `I_SOLO=2` is preserved while the send is live (keeping surface LEDs
+  lit) while still clearing the spurious `I_SOLO` that REAPER auto-derives on non-PAFL'd parents
+  from child solos.
+
+---
+
 ## [v0.0.12-beta] — 2026-06-04
 
 ### New Features

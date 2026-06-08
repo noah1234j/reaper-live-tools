@@ -127,6 +127,7 @@ static void BeginLoadProjectState(bool isUndo,
     DcaWnd_ResetSettings();
     PaflWnd_ResetProjectState();
     MuteGroupsEngine::Get().ResetForProject();
+    SafesWnd_ResetForProject();
     if (!isUndo)
     {
         PaflWnd_OnProjectLoad();
@@ -202,6 +203,7 @@ static bool ProcessExtensionLine(const char* line,
     if (LayersEngine::Get().ProcessLine(line, ctx)) return true;
     if (LiveLockEngine::Get().ProcessLine(line)) return true;
     if (DcaWnd_ProcessSettingsLine(line)) return true;
+    if (SafesWnd_ProcessLine(line)) return true;
 
     return false;
 }
@@ -225,6 +227,7 @@ static void SaveExtensionConfig(ProjectStateContext* ctx,
     LayersEngine::Get().SaveConfig(ctx);
     LiveLockEngine::Get().SaveConfig(ctx);
     DcaWnd_SaveSettings(ctx);
+    SafesWnd_SaveConfig(ctx);
 }
 
 // ---------------------------------------------------------------------------

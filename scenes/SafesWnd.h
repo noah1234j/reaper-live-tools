@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 
+class ProjectStateContext;  // from REAPER SDK (reaper_plugin.h)
+
 // ---------------------------------------------------------------------------
 // SafesWnd – per-channel safes grid window
 //
@@ -18,4 +20,9 @@ void SafesWnd_Init(HINSTANCE hInstance);
 void SafesWnd_Cleanup();
 void SafesWnd_ShowHide();
 bool SafesWnd_IsVisible();
-void SafesWnd_Refresh();   // rebuild row list from current REAPER project
+void SafesWnd_Refresh();           // rebuild row list from current REAPER project
+
+// Project persistence (wired into projectconfig callbacks in reaper_transitions.cpp)
+void SafesWnd_ResetForProject();   // called from BeginLoadProjectState
+bool SafesWnd_ProcessLine(const char* line);          // called from ProcessExtensionLine
+void SafesWnd_SaveConfig(ProjectStateContext* ctx);   // called from SaveExtensionConfig

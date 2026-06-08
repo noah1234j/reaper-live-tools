@@ -228,7 +228,15 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (g_globalSafeMask & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (g_globalSafeMask & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (g_globalSafeMask & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS)       ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS) ? BST_CHECKED : BST_UNCHECKED);
+
+        // "All Tracks" checkbox – checked if every track row has all bits set
+        {
+            bool allSet = !g_rows.empty();
+            for (int i = 0; allSet && i < (int)g_rows.size(); ++i)
+                if ((GetRowMask(i) & k_allBits) != k_allBits) allSet = false;
+            CheckDlgButton(hDlg, IDC_GSAFE_ALL, allSet ? BST_CHECKED : BST_UNCHECKED);
+        }
 
         // Per-track enable toggle
         CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
@@ -246,35 +254,35 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         const int H = rcDlg.bottom;
         const int MARGIN = 5;
         const int BTN_H = 24, BTN_W = 70;
-        const int GRP_H = 40;   // Global Safes groupbox
+        const int GRP_H = 68;   // Global Safes groupbox (3 rows)
         const int CHK_H = 14;   // per-track enable checkbox row
 
         // Global Safes groupbox spans full width
         HWND hGrp = GetDlgItem(hDlg, IDC_GSAFES_GROUP);
         if (hGrp) SetWindowPos(hGrp, nullptr, MARGIN, MARGIN, W - MARGIN*2, GRP_H, SWP_NOZORDER);
 
-        // 7+4+1 param checkboxes spread evenly inside groupbox (2 rows)
-        // Row 0: Vol Pan Mute Solo Phase FX Vis
-        // Row 1: Name Color Height Order Layers
+        // 5+5+3 param checkboxes spread evenly inside groupbox (3 rows of 5)
+        // Row 0: Vol  Pan   Mutes  Solo   Phase
+        // Row 1: FX   Vis   Name   Color  Height
+        // Row 2: Order Layers All Tracks
         static const int k_gsIds[] = {
-            IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO,
-            IDC_GSAFE_PHASE, IDC_GSAFE_FX, IDC_GSAFE_VIS,
-            IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT, IDC_GSAFE_ORDER,
-            IDC_GSAFE_LAYERS
+            IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO, IDC_GSAFE_PHASE,
+            IDC_GSAFE_FX,  IDC_GSAFE_VIS, IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT,
+            IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_ALL
         };
-        static const int k_gsRow[] = { 0,0,0,0,0,0,0, 1,1,1,1,1 };
-        static const int k_gsCol[] = { 0,1,2,3,4,5,6, 0,1,2,3,4 };
+        static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1, 2,2,2 };
+        static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4, 0,1,2 };
         const int grpInner = W - MARGIN*2 - 14;
-        const int slot7 = grpInner / 7;
-        for (int i = 0; i < 12; ++i) {
+        const int slot5 = grpInner / 5;
+        for (int i = 0; i < 13; ++i) {
             HWND h = GetDlgItem(hDlg, k_gsIds[i]);
             if (!h) continue;
             int col = k_gsCol[i];
             int row = k_gsRow[i];
             SetWindowPos(h, nullptr,
-                MARGIN + 7 + col * slot7,
+                MARGIN + 7 + col * slot5,
                 MARGIN + 18 + row * 16,
-                slot7 - 2, CHK_H, SWP_NOZORDER);
+                slot5 - 2, CHK_H, SWP_NOZORDER);
         }
 
         // Per-track enable checkbox
@@ -308,7 +316,6 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         case IDC_CLEAR_SAFES:
             g_globalSafeMask = 0;
             g_trackSafes.clear();
-            // Uncheck all global safe param buttons
             CheckDlgButton(hDlg, IDC_GSAFE_VOL,    BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_PAN,    BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_MUTE,   BST_UNCHECKED);
@@ -321,26 +328,43 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, BST_UNCHECKED);
+            CheckDlgButton(hDlg, IDC_GSAFE_ALL,    BST_UNCHECKED);
             if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
+            MarkProjectDirty(nullptr);
             break;
 
         // Global safe per-parameter toggles
-        case IDC_GSAFE_VOL:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_VOL)    == BST_CHECKED) g_globalSafeMask |= TS_VOL;    else g_globalSafeMask &= ~TS_VOL;    break;
-        case IDC_GSAFE_PAN:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_PAN)    == BST_CHECKED) g_globalSafeMask |= TS_PAN;    else g_globalSafeMask &= ~TS_PAN;    break;
-        case IDC_GSAFE_MUTE:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_MUTE)   == BST_CHECKED) g_globalSafeMask |= TS_MUTE;   else g_globalSafeMask &= ~TS_MUTE;   break;
-        case IDC_GSAFE_SOLO:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_SOLO)   == BST_CHECKED) g_globalSafeMask |= TS_SOLO;   else g_globalSafeMask &= ~TS_SOLO;   break;
-        case IDC_GSAFE_PHASE:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_PHASE)  == BST_CHECKED) g_globalSafeMask |= TS_PHASE;  else g_globalSafeMask &= ~TS_PHASE;  break;
-        case IDC_GSAFE_FX:     if (IsDlgButtonChecked(hDlg, IDC_GSAFE_FX)     == BST_CHECKED) g_globalSafeMask |= (TS_FXPARAMS|TS_FXCHAIN); else g_globalSafeMask &= ~(TS_FXPARAMS|TS_FXCHAIN); break;
-        case IDC_GSAFE_VIS:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_VIS)    == BST_CHECKED) g_globalSafeMask |= TS_VIS;    else g_globalSafeMask &= ~TS_VIS;    break;
-        case IDC_GSAFE_NAME:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_NAME)   == BST_CHECKED) g_globalSafeMask |= TS_TRACKNAME;   else g_globalSafeMask &= ~TS_TRACKNAME;   break;
-        case IDC_GSAFE_COLOR:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_COLOR)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKCOLOR;  else g_globalSafeMask &= ~TS_TRACKCOLOR;  break;
-        case IDC_GSAFE_HEIGHT: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_HEIGHT) == BST_CHECKED) g_globalSafeMask |= TS_TRACKHEIGHT; else g_globalSafeMask &= ~TS_TRACKHEIGHT; break;
-        case IDC_GSAFE_ORDER:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ORDER)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKORDER;  else g_globalSafeMask &= ~TS_TRACKORDER;  break;
-        case IDC_GSAFE_LAYERS: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_LAYERS) == BST_CHECKED) g_globalSafeMask |= TS_LAYERS;      else g_globalSafeMask &= ~TS_LAYERS;      break;
+        case IDC_GSAFE_VOL:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_VOL)    == BST_CHECKED) g_globalSafeMask |= TS_VOL;    else g_globalSafeMask &= ~TS_VOL;    MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_PAN:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_PAN)    == BST_CHECKED) g_globalSafeMask |= TS_PAN;    else g_globalSafeMask &= ~TS_PAN;    MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_MUTE:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_MUTE)   == BST_CHECKED) g_globalSafeMask |= TS_MUTE;   else g_globalSafeMask &= ~TS_MUTE;   MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_SOLO:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_SOLO)   == BST_CHECKED) g_globalSafeMask |= TS_SOLO;   else g_globalSafeMask &= ~TS_SOLO;   MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_PHASE:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_PHASE)  == BST_CHECKED) g_globalSafeMask |= TS_PHASE;  else g_globalSafeMask &= ~TS_PHASE;  MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_FX:     if (IsDlgButtonChecked(hDlg, IDC_GSAFE_FX)     == BST_CHECKED) g_globalSafeMask |= (TS_FXPARAMS|TS_FXCHAIN); else g_globalSafeMask &= ~(TS_FXPARAMS|TS_FXCHAIN); MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_VIS:    if (IsDlgButtonChecked(hDlg, IDC_GSAFE_VIS)    == BST_CHECKED) g_globalSafeMask |= TS_VIS;    else g_globalSafeMask &= ~TS_VIS;    MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_NAME:   if (IsDlgButtonChecked(hDlg, IDC_GSAFE_NAME)   == BST_CHECKED) g_globalSafeMask |= TS_TRACKNAME;   else g_globalSafeMask &= ~TS_TRACKNAME;   MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_COLOR:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_COLOR)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKCOLOR;  else g_globalSafeMask &= ~TS_TRACKCOLOR;  MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_HEIGHT: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_HEIGHT) == BST_CHECKED) g_globalSafeMask |= TS_TRACKHEIGHT; else g_globalSafeMask &= ~TS_TRACKHEIGHT; MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_ORDER:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ORDER)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKORDER;  else g_globalSafeMask &= ~TS_TRACKORDER;  MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_LAYERS: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_LAYERS) == BST_CHECKED) g_globalSafeMask |= TS_LAYERS;      else g_globalSafeMask &= ~TS_LAYERS;      MarkProjectDirty(nullptr); break;
+
+        case IDC_GSAFE_ALL:
+            if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ALL) == BST_CHECKED)
+            {
+                for (int i = 0; i < (int)g_rows.size(); ++i)
+                    SetRowMask(i, k_allBits);
+            }
+            else
+            {
+                g_trackSafes.clear();
+            }
+            if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
+            MarkProjectDirty(nullptr);
+            break;
 
         case IDC_TRACK_SAFES_EN:
             g_trackSafesEnabled = (IsDlgButtonChecked(hDlg, IDC_TRACK_SAFES_EN) == BST_CHECKED);
             if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
+            MarkProjectDirty(nullptr);
             break;
         }
         break;
@@ -375,6 +399,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
                 RECT rcRow;
                 ListView_GetItemRect(g_hList, row, &rcRow, LVIR_BOUNDS);
                 InvalidateRect(g_hList, &rcRow, FALSE);
+                MarkProjectDirty(nullptr);
             }
         }
         else if (pnm->code == NM_CUSTOMDRAW)
@@ -477,4 +502,73 @@ void SafesWnd_Refresh()
     if (!g_hDlg) return;
     RebuildRows();
     if (g_hList) PopulateList();
+}
+
+// ---------------------------------------------------------------------------
+// GUID helpers (local – same pattern as TransitionSnapshot.cpp)
+// ---------------------------------------------------------------------------
+static std::string SafesGuidToString(const GUID& g)
+{
+    WCHAR wbuf[64];
+    StringFromGUID2(g, wbuf, 64);
+    char buf[64];
+    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
+    return buf;
+}
+
+static GUID SafesStringToGuid(const char* s)
+{
+    GUID g = {};
+    if (!s || !s[0]) return g;
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (wlen <= 0) return g;
+    std::vector<WCHAR> wbuf(wlen);
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf.data(), wlen);
+    CLSIDFromString(wbuf.data(), &g);
+    return g;
+}
+
+// ---------------------------------------------------------------------------
+// Project persistence
+// ---------------------------------------------------------------------------
+void SafesWnd_ResetForProject()
+{
+    g_globalSafeMask    = 0;
+    g_trackSafesEnabled = true;
+    g_trackSafes.clear();
+}
+
+bool SafesWnd_ProcessLine(const char* line)
+{
+    if (!line) return false;
+    while (*line == ' ' || *line == '\t') ++line;
+
+    int val = 0;
+    if (sscanf(line, "LTSAFEGLOBAL %d", &val) == 1)
+        { g_globalSafeMask = val; return true; }
+    if (sscanf(line, "LTSAFETRACKSEN %d", &val) == 1)
+        { g_trackSafesEnabled = (val != 0); return true; }
+
+    char sguid[80] = {};
+    if (sscanf(line, "LTSAFETRACK %79s %d", sguid, &val) == 2)
+    {
+        TrackSafeEntry e;
+        e.guid = SafesStringToGuid(sguid);
+        e.mask = val;
+        g_trackSafes.push_back(e);
+        return true;
+    }
+    return false;
+}
+
+void SafesWnd_SaveConfig(ProjectStateContext* ctx)
+{
+    ctx->AddLine("LTSAFEGLOBAL %d", g_globalSafeMask);
+    ctx->AddLine("LTSAFETRACKSEN %d", g_trackSafesEnabled ? 1 : 0);
+    for (const auto& e : g_trackSafes)
+    {
+        if (e.mask == 0) continue;
+        std::string sg = SafesGuidToString(e.guid);
+        ctx->AddLine("LTSAFETRACK %s %d", sg.c_str(), e.mask);
+    }
 }
