@@ -30,7 +30,6 @@
 static HINSTANCE s_hInst  = nullptr;
 static HWND      s_hwnd   = nullptr;
 static int       s_selLayer = 0;   // index of layer selected in list (0-based)
-static bool      s_suppressNameChange = false;  // guards EN_CHANGE during programmatic SetDlgItemText
 
 // Drag state – layer list
 static bool s_draggingLayer  = false;
@@ -67,14 +66,14 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 static void RefreshLayerList(HWND hwnd);
 static void RefreshTrackList(HWND hwnd);
 static void UpdateStatus(HWND hwnd);
-static void LoadLayerToUI(HWND hwnd, int idx);
-static void ApplyNameFromUI(HWND hwnd);
-static void ApplyMaxChFromUI(HWND hwnd);
 static int  GetTrackListSel(HWND hwnd);
 static void EndLayerDrag(HWND hwnd, bool apply);
 static void EndTrackDrag(HWND hwnd, bool apply);
 static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
+static void DeleteSelectedLayer(HWND hwnd);
+static void DeleteAllLayers(HWND hwnd);
+static void RemoveSelectedTrack(HWND hwnd);
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -161,22 +160,14 @@ static void RefreshLayerList(HWND hwnd)
         LVITEMA lvi = {};
         lvi.mask  = LVIF_TEXT;
         lvi.iItem = i;
-        char numBuf[12];
+        // Column 0 = name, with " *" suffix when this is the active layer
+        char nameBuf[70];
         if (i == active)
-            snprintf(numBuf, sizeof(numBuf), "%d*", i + 1);
+            snprintf(nameBuf, sizeof(nameBuf), "%s *", ld.name);
         else
-            snprintf(numBuf, sizeof(numBuf), "%d", i + 1);
-        lvi.pszText = numBuf;
+            strncpy(nameBuf, ld.name, sizeof(nameBuf) - 1);
+        lvi.pszText = nameBuf;
         ListView_InsertItem(hList, &lvi);
-
-        ListView_SetItemText(hList, i, 1, const_cast<char*>(ld.name));
-
-        char chBuf[16];
-        if (ld.maxChannels > 0)
-            snprintf(chBuf, sizeof(chBuf), "%d", ld.maxChannels);
-        else
-            strcpy(chBuf, "All");
-        ListView_SetItemText(hList, i, 2, chBuf);
 
         // Track count = non-spacer entries
         int realTracks = 0;
@@ -184,7 +175,7 @@ static void RefreshLayerList(HWND hwnd)
             if (!lt.isSpacer) realTracks++;
         char trBuf[16];
         snprintf(trBuf, sizeof(trBuf), "%d", realTracks);
-        ListView_SetItemText(hList, i, 3, trBuf);
+        ListView_SetItemText(hList, i, 1, trBuf);
     }
 
     int sel = (prevSel >= 0 && prevSel < count) ? prevSel : 0;
@@ -239,7 +230,8 @@ static void RefreshTrackList(HWND hwnd)
         }
         else
         {
-            int limit = ld.maxChannels > 0 ? ld.maxChannels : (int)ld.tracks.size();
+            const LayersSettings& cfg = LayersEngine::Get().GetSettings();
+            int limit = cfg.globalMaxChannels > 0 ? cfg.globalMaxChannels : (int)ld.tracks.size();
             char dispName[160];
             if (i < limit)
                 snprintf(dispName, sizeof(dispName), "%s", lt.name);
@@ -258,36 +250,86 @@ static void RefreshTrackList(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
-// LoadLayerToUI – populate name + maxch controls from selected layer
+// Delete selected layer(s) – called from context menu + Del key
 // ---------------------------------------------------------------------------
-static void LoadLayerToUI(HWND hwnd, int idx)
+static void DeleteSelectedLayer(HWND hwnd)
 {
+    HWND hList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
+    if (!hList) return;
     int n = LayersEngine::Get().GetLayerCount();
-    if (idx < 0 || idx >= n) return;
-    const LayerDef& ld = LayersEngine::Get().GetLayer(idx);
+    if (n == 0) return;
 
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_NAME_EDIT),   TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_MAXCH_EDIT),  TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN),  TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_ADD_TRACK),   TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_REM_TRACK),   TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_CAPTURE),     TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_CLEAR_LAYER), TRUE);
-    EnableWindow(GetDlgItem(hwnd, IDC_LYR_ACTIVATE),    TRUE);
+    // Collect all selected indices
+    std::vector<int> sel;
+    int i = -1;
+    while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) >= 0)
+        sel.push_back(i);
+    if (sel.empty()) return;
 
-    s_suppressNameChange = true;
-    SetDlgItemText(hwnd, IDC_LYR_NAME_EDIT, ld.name);
-    s_suppressNameChange = false;
-    SetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, ld.maxChannels, FALSE);
+    char msg[128];
+    if (sel.size() == 1)
+    {
+        const LayerDef& ld = LayersEngine::Get().GetLayer(sel[0]);
+        snprintf(msg, sizeof(msg), "Delete layer \"%.60s\"?", ld.name);
+    }
+    else
+        snprintf(msg, sizeof(msg), "Delete %d selected layers?", (int)sel.size());
+    if (MessageBoxA(hwnd, msg, "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
 
-    char title[80];
-    snprintf(title, sizeof(title), "Layer %d Properties", idx + 1);
-    SetDlgItemText(hwnd, IDC_LYR_PROP_GROUP, title);
+    // Delete from highest index downward to preserve lower indices
+    for (int j = (int)sel.size() - 1; j >= 0; j--)
+        LayersEngine::Get().RemoveLayer(sel[j]);
+
+    s_selLayer = (s_selLayer > 0) ? s_selLayer - 1 : 0;
+    int remaining = LayersEngine::Get().GetLayerCount();
+    if (s_selLayer >= remaining) s_selLayer = remaining > 0 ? remaining - 1 : 0;
+    RefreshLayerList(hwnd);
+    RefreshTrackList(hwnd);
+    UpdateStatus(hwnd);
+}
+
+// Delete ALL layers
+static void DeleteAllLayers(HWND hwnd)
+{
+    if (LayersEngine::Get().GetLayerCount() == 0) return;
+    if (MessageBoxA(hwnd, "Delete ALL layers?", "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+    while (LayersEngine::Get().GetLayerCount() > 0)
+        LayersEngine::Get().RemoveLayer(0);
+    s_selLayer = 0;
+    RefreshLayerList(hwnd);
+    RefreshTrackList(hwnd);
+    UpdateStatus(hwnd);
 }
 
 // ---------------------------------------------------------------------------
-// UpdateStatus
+// Remove selected track(s) from the current layer
 // ---------------------------------------------------------------------------
+static void RemoveSelectedTrack(HWND hwnd)
+{
+    int n = LayersEngine::Get().GetLayerCount();
+    if (s_selLayer < 0 || s_selLayer >= n) return;
+    LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+
+    HWND hList = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
+    if (!hList) return;
+
+    std::vector<int> sel;
+    int i = -1;
+    while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) >= 0)
+        sel.push_back(i);
+    if (sel.empty()) return;
+
+    // Erase from highest index downward
+    for (int j = (int)sel.size() - 1; j >= 0; j--)
+    {
+        int idx = sel[j];
+        if (idx >= 0 && idx < (int)ld.tracks.size())
+            ld.tracks.erase(ld.tracks.begin() + idx);
+    }
+    LayersEngine::Get().SaveExtState();
+    RefreshTrackList(hwnd);
+    RefreshLayerList(hwnd);
+}
 static void UpdateStatus(HWND hwnd)
 {
     int active = LayersEngine::Get().GetActiveLayer();
@@ -299,35 +341,6 @@ static void UpdateStatus(HWND hwnd)
     else
         strcpy(buf, "No layer active (all tracks shown)");
     SetDlgItemText(hwnd, IDC_LYR_STATUS, buf);
-}
-
-// ---------------------------------------------------------------------------
-// Apply name / max-ch from UI to engine
-// ---------------------------------------------------------------------------
-static void ApplyNameFromUI(HWND hwnd)
-{
-    int n = LayersEngine::Get().GetLayerCount();
-    if (s_selLayer < 0 || s_selLayer >= n) return;
-    char buf[64] = {};
-    GetDlgItemText(hwnd, IDC_LYR_NAME_EDIT, buf, sizeof(buf));
-    if (!buf[0]) return;
-    strncpy(LayersEngine::Get().GetLayer(s_selLayer).name, buf, 63);
-    LayersEngine::Get().UpdateLayerActionDesc(s_selLayer);
-    LayersEngine::Get().SaveExtState();
-    RefreshLayerList(hwnd);
-}
-
-static void ApplyMaxChFromUI(HWND hwnd)
-{
-    int n = LayersEngine::Get().GetLayerCount();
-    if (s_selLayer < 0 || s_selLayer >= n) return;
-    BOOL ok = FALSE;
-    int val = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
-    if (!ok || val < 0) val = 0;
-    LayersEngine::Get().GetLayer(s_selLayer).maxChannels = val;
-    LayersEngine::Get().SaveExtState();
-    RefreshLayerList(hwnd);
-    RefreshTrackList(hwnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +381,6 @@ static void EndLayerDrag(HWND hwnd, bool apply)
         s_selLayer = s_dragLayerDst;
         RefreshLayerList(hwnd);
         RefreshTrackList(hwnd);
-        LoadLayerToUI(hwnd, s_selLayer);
     }
 
     s_draggingLayer = false;
@@ -413,6 +425,9 @@ static void EndTrackDrag(HWND hwnd, bool apply)
                 for (int i = from; i > to; i--) ld.tracks[i] = ld.tracks[i - 1];
             ld.tracks[to] = temp;
             LayersEngine::Get().SaveExtState();
+            // If this is the currently active layer, physically reorder in REAPER
+            if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
+                LayersEngine::Get().PhysicallyReorderLayer(s_selLayer);
         }
         RefreshTrackList(hwnd);
         RefreshLayerList(hwnd);
@@ -436,6 +451,17 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         CheckDlgButton(hwnd, IDC_LYR_SET_HIDETCP,  cfg.hideTcpToo          ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,  cfg.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,  cfg.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
+        // Set up max channels spin
+        {
+            HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
+            HWND hEdit = GetDlgItem(hwnd, IDC_LYR_MAXCH_EDIT);
+            if (hSpin && hEdit)
+            {
+                SendMessage(hSpin, UDM_SETRANGE, 0, MAKELONG(512, 0));
+                SendMessage(hSpin, UDM_SETBUDDY, (WPARAM)hEdit, 0);
+            }
+        }
+        SetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, cfg.globalMaxChannels, FALSE);
         return TRUE;
     }
 
@@ -449,6 +475,9 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             cfg.hideTcpToo          = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_HIDETCP)  == BST_CHECKED);
             cfg.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)  == BST_CHECKED);
             cfg.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)  == BST_CHECKED);
+            BOOL ok = FALSE;
+            int val = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
+            cfg.globalMaxChannels   = (ok && val >= 0) ? val : 0;
             LayersEngine::Get().SetSettings(cfg);
             EndDialog(hwnd, IDOK);
             return TRUE;
@@ -556,6 +585,21 @@ static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wPara
             EndLayerDrag(dlg, false);
         }
         break;
+    case WM_KEYDOWN:
+        if (wParam == VK_DELETE)
+        {
+            DeleteSelectedLayer(dlg);
+            return 0;
+        }
+        if (wParam == VK_F2)
+        {
+            HWND hLayerList = GetDlgItem(dlg, IDC_LYR_LAYER_LIST);
+            int sel = ListView_GetNextItem(hLayerList, -1, LVNI_SELECTED);
+            if (sel >= 0)
+                ListView_EditLabel(hLayerList, sel);
+            return 0;
+        }
+        break;
     }
     return CallWindowProc(s_origLayerListProc, hList, msg, wParam, lParam);
 }
@@ -654,6 +698,13 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
             EndTrackDrag(dlg, false);
         }
         break;
+    case WM_KEYDOWN:
+        if (wParam == VK_DELETE)
+        {
+            RemoveSelectedTrack(dlg);
+            return 0;
+        }
+        break;
     }
     return CallWindowProc(s_origTrackListProc, hList, msg, wParam, lParam);
 }
@@ -681,7 +732,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             HWND hList = CreateWindowExA(0, "SysListView32", "",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER |
-                LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+                LVS_REPORT | LVS_SHOWSELALWAYS | LVS_EDITLABELS,
                 r.left, r.top, r.right - r.left, r.bottom - r.top,
                 hwnd, (HMENU)(INT_PTR)IDC_LYR_LAYER_LIST, s_hInst, nullptr);
 
@@ -692,14 +743,10 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
                 LVCOLUMNA col = {};
                 col.mask = LVCF_TEXT | LVCF_WIDTH;
-                col.cx = 28;  col.pszText = const_cast<char*>("#");
+                col.cx = 166; col.pszText = const_cast<char*>("Name");
                 ListView_InsertColumn(hList, 0, &col);
-                col.cx = 110; col.pszText = const_cast<char*>("Name");
+                col.cx = 40;  col.pszText = const_cast<char*>("Trks");
                 ListView_InsertColumn(hList, 1, &col);
-                col.cx = 40;  col.pszText = const_cast<char*>("Max Ch");
-                ListView_InsertColumn(hList, 2, &col);
-                col.cx = 36;  col.pszText = const_cast<char*>("Trks");
-                ListView_InsertColumn(hList, 3, &col);
                 s_origLayerListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)LayerListSubclassProc);
             }
@@ -715,7 +762,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             HWND hList = CreateWindowExA(0, "SysListView32", "",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER |
-                LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
+                LVS_REPORT | LVS_SHOWSELALWAYS,
                 r.left, r.top, r.right - r.left, r.bottom - r.top,
                 hwnd, (HMENU)(INT_PTR)IDC_LYR_TRACK_LIST, s_hInst, nullptr);
 
@@ -736,22 +783,13 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         }
 
         // ---- Max channels spin -------------------------------------------
-        {
-            HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
-            HWND hEdit = GetDlgItem(hwnd, IDC_LYR_MAXCH_EDIT);
-            if (hSpin && hEdit)
-            {
-                SendMessage(hSpin, UDM_SETRANGE, 0, MAKELONG(256, 0));
-                SendMessage(hSpin, UDM_SETBUDDY, (WPARAM)hEdit, 0);
-            }
-        }
+        // (spin is now in the Settings dialog; nothing to set up here)
 
         // ---- Populate -------------------------------------------------------
         LayersEngine::Get().RefreshAllTrackNames();
         s_selLayer = 0;
         RefreshLayerList(hwnd);
         RefreshTrackList(hwnd);
-        LoadLayerToUI(hwnd, s_selLayer);
         UpdateStatus(hwnd);
 
         return TRUE;
@@ -761,62 +799,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     case WM_COMMAND:
     {
         int id = LOWORD(wParam);
-        int note = HIWORD(wParam);
-        (void)note;
 
         switch (id)
         {
-        // --- Bottom bar ---------------------------------------------------
-        case IDC_LYR_ACTIVATE:
-            if (LayersEngine::Get().GetLayerCount() > 0 &&
-                s_selLayer >= 0 && s_selLayer < LayersEngine::Get().GetLayerCount())
-            {
-                ApplyNameFromUI(hwnd);
-                ApplyMaxChFromUI(hwnd);
-                LayersEngine::Get().ActivateLayer(s_selLayer);
-                RefreshLayerList(hwnd);
-                UpdateStatus(hwnd);
-            }
-            break;
-
-        case IDC_LYR_PREV:
-            LayersEngine::Get().PrevLayer();
-        {
-            int active = LayersEngine::Get().GetActiveLayer();
-            if (active >= 0)
-            {
-                s_selLayer = active;
-                HWND hList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
-                ListView_SetItemState(hList, s_selLayer,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(hList, s_selLayer, FALSE);
-                RefreshTrackList(hwnd);
-                LoadLayerToUI(hwnd, s_selLayer);
-            }
-        }
-            RefreshLayerList(hwnd);
-            UpdateStatus(hwnd);
-            break;
-
-        case IDC_LYR_NEXT:
-            LayersEngine::Get().NextLayer();
-        {
-            int active = LayersEngine::Get().GetActiveLayer();
-            if (active >= 0)
-            {
-                s_selLayer = active;
-                HWND hList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
-                ListView_SetItemState(hList, s_selLayer,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(hList, s_selLayer, FALSE);
-                RefreshTrackList(hwnd);
-                LoadLayerToUI(hwnd, s_selLayer);
-            }
-        }
-            RefreshLayerList(hwnd);
-            UpdateStatus(hwnd);
-            break;
-
         case IDC_LYR_DEACTIVATE:
             LayersEngine::Get().Deactivate();
             RefreshLayerList(hwnd);
@@ -828,171 +813,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                       MAKEINTRESOURCE(IDD_LAYERS_SETTINGS),
                       hwnd,
                       SettingsDlgProc);
+            RefreshTrackList(hwnd);   // global max channels may have changed
             UpdateStatus(hwnd);
             break;
-
-        // --- Layer list management ----------------------------------------
-        case IDC_LYR_ADD_LAYER:
-        {
-            int idx = LayersEngine::Get().AddLayer(nullptr);
-            s_selLayer = idx;
-            RefreshLayerList(hwnd);
-            RefreshTrackList(hwnd);
-            LoadLayerToUI(hwnd, s_selLayer);
-            UpdateStatus(hwnd);
-            // Focus name field for immediate rename
-            SetFocus(GetDlgItem(hwnd, IDC_LYR_NAME_EDIT));
-            break;
-        }
-
-        case IDC_LYR_ADD_SPACER:
-        {
-            int n = LayersEngine::Get().GetLayerCount();
-            if (s_selLayer < 0 || s_selLayer >= n) break;
-            LayersEngine::Get().AddSpacerTrack(s_selLayer);
-            RefreshTrackList(hwnd);
-            RefreshLayerList(hwnd);
-            // Select the new spacer row in the track list
-            {
-                LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-                int newIdx = (int)ld.tracks.size() - 1;
-                HWND hTrkList = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
-                ListView_SetItemState(hTrkList, newIdx,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                ListView_EnsureVisible(hTrkList, newIdx, FALSE);
-            }
-            break;
-        }
-
-        case IDC_LYR_DELETE_LAYER:
-        {
-            int n = LayersEngine::Get().GetLayerCount();
-            if (s_selLayer < 0 || s_selLayer >= n) break;
-            const LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Delete layer \"%.60s\"?", ld.name);
-            if (MessageBoxA(hwnd, msg, "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
-            LayersEngine::Get().RemoveLayer(s_selLayer);
-            s_selLayer = (s_selLayer > 0) ? s_selLayer - 1 : 0;
-            RefreshLayerList(hwnd);
-            RefreshTrackList(hwnd);
-            LoadLayerToUI(hwnd, s_selLayer);
-            UpdateStatus(hwnd);
-            break;
-        }
-
-        // --- Layer properties (name saves live via EN_CHANGE) ---------------
-        case IDC_LYR_NAME_EDIT:
-            if (note == EN_CHANGE && !s_suppressNameChange)
-                ApplyNameFromUI(hwnd);
-            break;
-
-        // --- Track management --------------------------------------------
-        case IDC_LYR_ADD_TRACK:
-        {
-            int n = LayersEngine::Get().GetLayerCount();
-            if (s_selLayer < 0 || s_selLayer >= n) break;
-            LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-            int added = 0;
-            int numSel = CountSelectedTracks(0);
-            for (int i = 0; i < numSel; i++)
-            {
-                MediaTrack* tr = GetSelectedTrack(0, i);
-                if (!tr) continue;
-                GUID* tg = GetTrackGUID(tr);
-                if (!tg) continue;
-
-                // Avoid duplicates (skip spacer entries in the scan)
-                bool dup = false;
-                for (const auto& lt : ld.tracks)
-                    if (!lt.isSpacer && memcmp(&lt.guid, tg, sizeof(GUID)) == 0) { dup = true; break; }
-                if (dup) continue;
-
-                LayerTrack lt;
-                lt.guid = *tg;
-                char buf[128] = {};
-                GetTrackName(tr, buf, (int)sizeof(buf));
-                strncpy(lt.name, buf, sizeof(lt.name) - 1);
-                ld.tracks.push_back(lt);
-                added++;
-            }
-            if (added)
-            {
-                LayersEngine::Get().SaveExtState();
-                RefreshTrackList(hwnd);
-                RefreshLayerList(hwnd);
-
-                char status[64];
-                snprintf(status, sizeof(status), "Added %d track(s)", added);
-                SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
-            }
-            break;
-        }
-
-        case IDC_LYR_REM_TRACK:
-        {
-            int sel = GetTrackListSel(hwnd);
-            int n   = LayersEngine::Get().GetLayerCount();
-            if (sel < 0 || s_selLayer < 0 || s_selLayer >= n) break;
-            LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-            if (sel >= (int)ld.tracks.size()) break;
-            ld.tracks.erase(ld.tracks.begin() + sel);
-            LayersEngine::Get().SaveExtState();
-            RefreshTrackList(hwnd);
-            RefreshLayerList(hwnd);
-            break;
-        }
-
-        case IDC_LYR_CAPTURE:
-        {
-            int n = LayersEngine::Get().GetLayerCount();
-            if (s_selLayer < 0 || s_selLayer >= n) break;
-            LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-            ld.tracks.clear();
-
-            int numTracks = CountTracks(0);
-            for (int t = 0; t < numTracks; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                if (!tr) continue;
-                bool vis = true;
-                bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
-                if (pv) vis = *pv;
-                if (!vis) continue;
-
-                GUID* tg = GetTrackGUID(tr);
-                if (!tg) continue;
-
-                LayerTrack lt;
-                lt.guid = *tg;
-                char buf[128] = {};
-                GetTrackName(tr, buf, (int)sizeof(buf));
-                strncpy(lt.name, buf, sizeof(lt.name) - 1);
-                ld.tracks.push_back(lt);
-            }
-            LayersEngine::Get().SaveExtState();
-            RefreshTrackList(hwnd);
-            RefreshLayerList(hwnd);
-            {
-                char status[64];
-                snprintf(status, sizeof(status), "Captured %d tracks", (int)ld.tracks.size());
-                SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
-            }
-            break;
-        }
-
-        case IDC_LYR_CLEAR_LAYER:
-        {
-            int n = LayersEngine::Get().GetLayerCount();
-            if (s_selLayer < 0 || s_selLayer >= n) break;
-            if (MessageBoxA(hwnd, "Clear all tracks from this layer?",
-                "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
-            LayersEngine::Get().GetLayer(s_selLayer).tracks.clear();
-            LayersEngine::Get().SaveExtState();
-            RefreshTrackList(hwnd);
-            RefreshLayerList(hwnd);
-            break;
-        }
 
         case IDCANCEL:
             ShowWindow(hwnd, SW_HIDE);
@@ -1006,15 +829,23 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     {
         // Context menu IDs
         enum {
-            CTX_LYR_ACTIVATE   = 3001,
-            CTX_LYR_MOVE_UP    = 3002,
-            CTX_LYR_MOVE_DOWN  = 3003,
-            CTX_LYR_DELETE     = 3004,
+            CTX_LYR_ACTIVATE     = 3001,
+            CTX_LYR_DELETE       = 3004,
+            CTX_LYR_ADD_LAYER    = 3005,
+            CTX_LYR_CAPTURE      = 3006,
+            CTX_LYR_CLEAR        = 3007,
+            CTX_LYR_RENAME       = 3008,
+            CTX_LYR_ADD_FROM_MCP = 3009,
             CTX_TRK_MOVE_UP    = 3010,
             CTX_TRK_MOVE_DOWN  = 3011,
             CTX_TRK_SPACER_BEF = 3012,
             CTX_TRK_SPACER_AFT = 3013,
             CTX_TRK_REMOVE     = 3014,
+            CTX_TRK_CAPTURE    = 3015,
+            CTX_TRK_CLEAR      = 3016,
+            CTX_TRK_ADD_SEL    = 3017,
+            CTX_LYR_DELETE_ALL = 3018,
+            CTX_TRK_DELETE_ALL = 3019,
         };
 
         HWND hCtrl = (HWND)wParam;
@@ -1043,7 +874,6 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
                 s_selLayer = item;
                 RefreshTrackList(hwnd);
-                LoadLayerToUI(hwnd, s_selLayer);
             }
 
             int n = LayersEngine::Get().GetLayerCount();
@@ -1051,13 +881,22 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_ACTIVATE, "Activate\tDbl-click");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuA(hMenu, MF_STRING | (item <= 0 ? MF_GRAYED : 0),
-                CTX_LYR_MOVE_UP, "Move Up");
-            AppendMenuA(hMenu, MF_STRING | (item < 0 || item >= n - 1 ? MF_GRAYED : 0),
-                CTX_LYR_MOVE_DOWN, "Move Down");
+            AppendMenuA(hMenu, MF_STRING,
+                CTX_LYR_ADD_LAYER, "Add Layer");
+            AppendMenuA(hMenu, MF_STRING,
+                CTX_LYR_ADD_FROM_MCP, "Add Layer (Current MCP Visibility)");
+            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
+                CTX_LYR_RENAME, "Rename\tF2");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_LYR_DELETE, "Delete");
+                CTX_LYR_CAPTURE, "Capture Visible Tracks");
+            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
+                CTX_LYR_CLEAR, "Clear Tracks");
+            AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
+                CTX_LYR_DELETE, "Delete Layer\tDel");
+            AppendMenuA(hMenu, MF_STRING | (n == 0 ? MF_GRAYED : 0),
+                CTX_LYR_DELETE_ALL, "Delete All Layers");
 
             int cmd = (int)TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                 ptC.x, ptC.y, hwnd, nullptr);
@@ -1068,46 +907,127 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             case CTX_LYR_ACTIVATE:
                 if (item >= 0 && item < n)
                 {
-                    ApplyNameFromUI(hwnd);
-                    ApplyMaxChFromUI(hwnd);
                     LayersEngine::Get().ActivateLayer(item);
                     RefreshLayerList(hwnd);
                     UpdateStatus(hwnd);
                 }
                 break;
-            case CTX_LYR_MOVE_UP:
-                if (item > 0)
-                {
-                    LayersEngine::Get().MoveLayer(item, item - 1);
-                    s_selLayer = item - 1;
-                    RefreshLayerList(hwnd);
-                    LoadLayerToUI(hwnd, s_selLayer);
-                }
-                break;
-            case CTX_LYR_MOVE_DOWN:
-                if (item >= 0 && item < n - 1)
-                {
-                    LayersEngine::Get().MoveLayer(item, item + 1);
-                    s_selLayer = item + 1;
-                    RefreshLayerList(hwnd);
-                    LoadLayerToUI(hwnd, s_selLayer);
-                }
-                break;
-            case CTX_LYR_DELETE:
+            case CTX_LYR_ADD_LAYER:
             {
-                if (item < 0 || item >= n) break;
-                const LayerDef& ld = LayersEngine::Get().GetLayer(item);
-                char msg[128];
-                snprintf(msg, sizeof(msg), "Delete layer \"%.60s\"?", ld.name);
-                if (MessageBoxA(hwnd, msg, "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
-                LayersEngine::Get().RemoveLayer(item);
-                s_selLayer = (item > 0) ? item - 1 : 0;
+                int idx = LayersEngine::Get().AddLayer(nullptr);
+                s_selLayer = idx;
+                HWND hLayerList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
                 RefreshLayerList(hwnd);
                 RefreshTrackList(hwnd);
-                LoadLayerToUI(hwnd, s_selLayer);
                 UpdateStatus(hwnd);
+                // Start inline rename immediately
+                ListView_SetItemState(hLayerList, idx,
+                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EditLabel(hLayerList, idx);
                 break;
             }
+            case CTX_LYR_RENAME:
+            {
+                if (item >= 0)
+                {
+                    HWND hLayerList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
+                    ListView_EditLabel(hLayerList, item);
+                }
+                break;
+            }
+            case CTX_LYR_ADD_FROM_MCP:
+            {
+                int idx = LayersEngine::Get().AddLayer(nullptr);
+                s_selLayer = idx;
+                LayerDef& newLd = LayersEngine::Get().GetLayer(idx);
+                int numTracks = CountTracks(0);
+                for (int t = 0; t < numTracks; t++)
+                {
+                    MediaTrack* tr = GetTrack(0, t);
+                    if (!tr) continue;
+                    bool vis = false;
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    if (pv) vis = *pv;
+                    int spacerVal = 0;
+                    int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+                    if (sp) spacerVal = *sp;
+                    if (!vis) continue;
+                    GUID* tg = GetTrackGUID(tr);
+                    if (!tg) continue;
+                    if (spacerVal > 0)
+                    {
+                        LayerTrack spacerLt = {};
+                        spacerLt.isSpacer = true;
+                        strncpy(spacerLt.name, "--- Spacer ---", sizeof(spacerLt.name) - 1);
+                        newLd.tracks.push_back(spacerLt);
+                    }
+                    LayerTrack lt = {};
+                    lt.guid = *tg;
+                    char buf[128] = {};
+                    GetTrackName(tr, buf, (int)sizeof(buf));
+                    strncpy(lt.name, buf, sizeof(lt.name) - 1);
+                    newLd.tracks.push_back(lt);
+                }
+                LayersEngine::Get().SaveExtState();
+                HWND hLL = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
+                RefreshLayerList(hwnd);
+                RefreshTrackList(hwnd);
+                UpdateStatus(hwnd);
+                ListView_SetItemState(hLL, idx,
+                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EditLabel(hLL, idx);
+                break;
+            }
+            case CTX_LYR_CAPTURE:
+            {
+                if (item < 0 || item >= n) break;
+                LayerDef& ld = LayersEngine::Get().GetLayer(item);
+                ld.tracks.clear();
+                int numTracks = CountTracks(0);
+                for (int t = 0; t < numTracks; t++)
+                {
+                    MediaTrack* tr = GetTrack(0, t);
+                    if (!tr) continue;
+                    bool vis = true;
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    if (pv) vis = *pv;
+                    if (!vis) continue;
+                    GUID* tg = GetTrackGUID(tr);
+                    if (!tg) continue;
+                    LayerTrack lt = {};
+                    lt.guid = *tg;
+                    char buf[128] = {};
+                    GetTrackName(tr, buf, (int)sizeof(buf));
+                    strncpy(lt.name, buf, sizeof(lt.name) - 1);
+                    ld.tracks.push_back(lt);
+                }
+                LayersEngine::Get().SaveExtState();
+                RefreshTrackList(hwnd);
+                RefreshLayerList(hwnd);
+                {
+                    char status[64];
+                    snprintf(status, sizeof(status), "Captured %d tracks", (int)ld.tracks.size());
+                    SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
+                }
+                break;
+            }
+            case CTX_LYR_CLEAR:
+            {
+                if (item < 0 || item >= n) break;
+                if (MessageBoxA(hwnd, "Clear all tracks from this layer?",
+                    "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
+                LayersEngine::Get().GetLayer(item).tracks.clear();
+                LayersEngine::Get().SaveExtState();
+                RefreshTrackList(hwnd);
+                RefreshLayerList(hwnd);
+                break;
+            }
+            case CTX_LYR_DELETE:
+                DeleteSelectedLayer(hwnd);
+                break;
+            case CTX_LYR_DELETE_ALL:
+                DeleteAllLayers(hwnd);
+                break;
             }
         }
         else if (hCtrl == hTrackList)
@@ -1132,6 +1052,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             }
 
             HMENU hMenu = CreatePopupMenu();
+            AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
+                CTX_TRK_ADD_SEL, "Add Selected Tracks");
+            AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (item <= 0 ? MF_GRAYED : 0),
                 CTX_TRK_MOVE_UP, "Move Up");
             AppendMenuA(hMenu, MF_STRING | (item < 0 || item >= numTracks - 1 ? MF_GRAYED : 0),
@@ -1143,7 +1066,14 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 CTX_TRK_SPACER_AFT, "Add Spacer After");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_TRK_REMOVE, "Remove");
+                CTX_TRK_REMOVE, "Remove\tDel");
+            AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
+                CTX_TRK_CAPTURE, "Capture Visible Tracks");
+            AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 || numTracks == 0 ? MF_GRAYED : 0),
+                CTX_TRK_DELETE_ALL, "Delete All Tracks");
+            AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
+                CTX_TRK_CLEAR, "Clear All Tracks");
 
             int cmd = (int)TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
                 ptC.x, ptC.y, hwnd, nullptr);
@@ -1177,7 +1107,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             case CTX_TRK_SPACER_BEF:
                 if (item >= 0 && item <= (int)ld.tracks.size())
                 {
-                    LayerTrack sp;
+                    LayerTrack sp = {};
                     sp.isSpacer = true;
                     ld.tracks.insert(ld.tracks.begin() + item, sp);
                     LayersEngine::Get().SaveExtState();
@@ -1191,7 +1121,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 if (item >= 0)
                 {
                     int insertAt = item + 1;
-                    LayerTrack sp;
+                    LayerTrack sp = {};
                     sp.isSpacer = true;
                     ld.tracks.insert(ld.tracks.begin() + insertAt, sp);
                     LayersEngine::Get().SaveExtState();
@@ -1209,6 +1139,100 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     RefreshTrackList(hwnd);
                     RefreshLayerList(hwnd);
                 }
+                break;
+            case CTX_TRK_DELETE_ALL:
+                if (!ld.tracks.empty())
+                {
+                    if (MessageBoxA(hwnd, "Delete ALL tracks from this layer?",
+                        "Layers", MB_YESNO | MB_ICONQUESTION) == IDYES)
+                    {
+                        ld.tracks.clear();
+                        LayersEngine::Get().SaveExtState();
+                        RefreshTrackList(hwnd);
+                        RefreshLayerList(hwnd);
+                    }
+                }
+                break;
+            case CTX_TRK_ADD_SEL:
+            {
+                int added = 0;
+                int numSel = CountSelectedTracks(0);
+                for (int i = 0; i < numSel; i++)
+                {
+                    MediaTrack* tr = GetSelectedTrack(0, i);
+                    if (!tr) continue;
+                    GUID* tg = GetTrackGUID(tr);
+                    if (!tg) continue;
+                    bool dup = false;
+                    for (const auto& lt : ld.tracks)
+                        if (!lt.isSpacer && memcmp(&lt.guid, tg, sizeof(GUID)) == 0) { dup = true; break; }
+                    if (dup) continue;
+                    LayerTrack lt = {};
+                    lt.guid = *tg;
+                    char buf[128] = {};
+                    GetTrackName(tr, buf, (int)sizeof(buf));
+                    strncpy(lt.name, buf, sizeof(lt.name) - 1);
+                    ld.tracks.push_back(lt);
+                    added++;
+                }
+                if (added)
+                {
+                    LayersEngine::Get().SaveExtState();
+                    RefreshTrackList(hwnd);
+                    RefreshLayerList(hwnd);
+                    char status[64];
+                    snprintf(status, sizeof(status), "Added %d track(s)", added);
+                    SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
+                }
+                break;
+            }
+            case CTX_TRK_CAPTURE:
+            {
+                ld.tracks.clear();
+                int numTracks = CountTracks(0);
+                for (int t = 0; t < numTracks; t++)
+                {
+                    MediaTrack* tr = GetTrack(0, t);
+                    if (!tr) continue;
+                    bool vis = true;
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    if (pv) vis = *pv;
+                    if (!vis) continue;
+                    GUID* tg = GetTrackGUID(tr);
+                    if (!tg) continue;
+                    // Capture any native REAPER spacer above this track
+                    int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+                    if (sp && *sp > 0)
+                    {
+                        LayerTrack spacerLt = {};
+                        spacerLt.isSpacer = true;
+                        strncpy(spacerLt.name, "--- Spacer ---", sizeof(spacerLt.name) - 1);
+                        ld.tracks.push_back(spacerLt);
+                    }
+                    LayerTrack lt = {};
+                    lt.guid = *tg;
+                    char buf[128] = {};
+                    GetTrackName(tr, buf, (int)sizeof(buf));
+                    strncpy(lt.name, buf, sizeof(lt.name) - 1);
+                    ld.tracks.push_back(lt);
+                }
+                LayersEngine::Get().SaveExtState();
+                RefreshTrackList(hwnd);
+                RefreshLayerList(hwnd);
+                {
+                    char status[64];
+                    snprintf(status, sizeof(status), "Captured %d tracks", (int)ld.tracks.size());
+                    SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
+                }
+                break;
+            }
+            case CTX_TRK_CLEAR:
+                if (MessageBoxA(hwnd, "Clear all tracks from this layer?",
+                    "Layers", MB_YESNO | MB_ICONQUESTION) != IDYES) break;
+                ld.tracks.clear();
+                LayersEngine::Get().SaveExtState();
+                RefreshTrackList(hwnd);
+                RefreshLayerList(hwnd);
                 break;
             }
         }
@@ -1230,7 +1254,6 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     s_selLayer = nlv->iItem;
                     RefreshTrackList(hwnd);
-                    LoadLayerToUI(hwnd, s_selLayer);
                 }
             }
             else if (hdr->code == NM_DBLCLK)
@@ -1239,12 +1262,34 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 if (nia->iItem >= 0 && nia->iItem < LayersEngine::Get().GetLayerCount())
                 {
                     s_selLayer = nia->iItem;
-                    ApplyNameFromUI(hwnd);
-                    ApplyMaxChFromUI(hwnd);
                     LayersEngine::Get().ActivateLayer(s_selLayer);
                     RefreshLayerList(hwnd);
                     UpdateStatus(hwnd);
                 }
+            }
+            else if (hdr->code == LVN_ENDLABELEDIT)
+            {
+                NMLVDISPINFOA* di = (NMLVDISPINFOA*)lParam;
+                // pszText == nullptr means user cancelled
+                if (di->item.pszText && di->item.pszText[0] != '\0')
+                {
+                    int idx = di->item.iItem;
+                    int n   = LayersEngine::Get().GetLayerCount();
+                    if (idx >= 0 && idx < n)
+                    {
+                        LayerDef& ld = LayersEngine::Get().GetLayer(idx);
+                        strncpy(ld.name, di->item.pszText, sizeof(ld.name) - 1);
+                        ld.name[sizeof(ld.name) - 1] = '\0';
+                        LayersEngine::Get().SaveExtState();
+                        LayersEngine::Get().UpdateLayerActionDesc(idx);
+                        // Returning TRUE tells ListView to accept the edit
+                        SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
+                        RefreshLayerList(hwnd);
+                        return TRUE;
+                    }
+                }
+                SetWindowLongPtr(hwnd, DWLP_MSGRESULT, FALSE);
+                return TRUE;
             }
         }
 

@@ -45,8 +45,5 @@ void PaflWnd_ShowHide();
 // Returns 1 if visible, 0 if hidden / not yet created
 int  PaflWnd_IsVisible();
 
-// Called by the plugin timer so PAFL can poll solo intercept
+// Called by the plugin timer
 void PaflWnd_TimerTick();
-
-// Toggle a specific track's PAFL solo (also called externally if needed)
-void PaflToggleTrack(MediaTrack* tr);

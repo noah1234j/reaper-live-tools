@@ -1,5 +1,57 @@
 # Changelog
 
+## [v0.0.14-beta] — 2026-06-09
+
+### New Features
+
+- **PAFL: full rewrite (poll-based, solo bus-backed)**: PAFL now uses REAPER's native
+  dedicated solo bus (`soloip` bit 16) instead of manual track manipulation. On activate, all
+  six solo-preference checkboxes are saved and set (`soloip |= 1|2|16|32|64`); on deactivate
+  they are restored. A persistent post-fader *program source* send is kept live at all times —
+  unmuted when nothing is PAFL'd, muted the moment any track is soloed. PAFL sends are created
+  and removed each poll cycle (~30fps) rather than on button press, so the state always matches
+  REAPER's actual solo state.
+
+- **PAFL: program source track**: A configurable "Program source" track can be assigned in the
+  PAFL window. It receives a permanent post-fader send to the PAFL bus, making the bus carry
+  full-mix audio by default and switching to the soloed track(s) when PAFL is active.
+
+- **PAFL: bus and program source excluded from PAFL scan**: The PAFL bus track and the program
+  source track are both excluded from the solo poll, so accidentally soloing either one does not
+  corrupt the routing or mute the program feed.
+
+- **Scenes: per-project window state persistence**: The Scenes window now saves its
+  dock/float/position/size per project (`LTSCENESWND` line in the extension block). Loading a
+  project restores exactly the window state that was saved — open and floating, open and docked,
+  or closed.
+
+- **Layers: global max channels**: A new "Global Max Ch" setting caps MCP-visibility channel
+  count across all layers, independent of the per-layer max. Persisted as `globalmaxch=` inside
+  the `<LTLAYERS>` project block.
+
+- **Layers: recall-by-index actions**: 20 REAPER actions registered for recalling layers by
+  position (`LT_RECALL_LAYER_01` … `LT_RECALL_LAYER_20`, shown as "Live Tools: Layers - Recall
+  Layer N" in the Actions list). Tied to the layer's index in the list rather than its name, so
+  renaming or reordering layers does not break action bindings or controller mappings. Each
+  action also reports a toggle state (lit when that layer is active).
+
+### Bug Fixes
+
+- **Scenes: layer recall with empty scene now clears layers**: Scene recall previously skipped
+  `ReplaceAllLayers` when the captured layer list was empty, so a scene saved with no layers
+  active would leave the current layer set unchanged. Now an empty layer list is applied
+  literally (all layers cleared).
+
+- **PAFL: nometers direction corrected**: The "show metering on unsoloed tracks" bits
+  (`nometers |= 1|4096`) were previously being cleared instead of set, hiding meters when PAFL
+  was activated. Direction is now correct.
+
+- **PAFL: all five solo checkboxes now toggled**: Previously only `soloip` bit 16 ("Solo via
+  dedicated solo bus") was set on activate; all five relevant bits (1|2|16|32|64 = 115) are now
+  set, matching the recommended solo bus configuration.
+
+---
+
 ## [v0.0.13-beta] — 2026-06-08
 
 ### New Features

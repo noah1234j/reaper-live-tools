@@ -100,6 +100,13 @@ static char              g_saveCmdStr[kSceneActionCount][32];
 static char              g_recallDesc[kSceneActionCount][64];
 static char              g_saveDesc[kSceneActionCount][64];
 
+// Per-layer recall actions by index (slots 1-20, stored 0-based)
+static const int kLayerActionCount = 20;
+static int               g_cmdRecallLayer[kLayerActionCount] = {};
+static gaccel_register_t g_recallLayerAccel[kLayerActionCount] = {};
+static char              g_recallLayerCmdStr[kLayerActionCount][32];
+static char              g_recallLayerDesc[kLayerActionCount][64];
+
 static project_config_extension_t g_projectconfig =
 {
     ProcessExtensionLine,
@@ -133,6 +140,9 @@ static void BeginLoadProjectState(bool isUndo,
         PaflWnd_OnProjectLoad();
         TalkbackWnd_OnProjectLoad();
         DcaWnd_OnProjectLoad();
+        // TransitionWnd_OnProjectLoad() is NOT called here because LTSCENESWND is
+        // parsed later in ProcessExtensionLine; it is called from
+        // TransitionWnd_ProcessSettingsLine() after the line is fully parsed.
     }
 }
 
@@ -262,6 +272,11 @@ static bool RunCommand(int cmd, int /*flag*/)
         if (cmd == g_cmdRecallScene[i]) { TransitionWnd_RecallScene(i);    return true; }
         if (cmd == g_cmdSaveScene[i])   { TransitionWnd_OverwriteScene(i); return true; }
     }
+    // Per-layer recall by index
+    for (int i = 0; i < kLayerActionCount; i++)
+    {
+        if (cmd == g_cmdRecallLayer[i]) { LayersEngine::Get().ActivateLayer(i); return true; }
+    }
     return false;
 }
 
@@ -280,6 +295,12 @@ static int ToggleAction(int cmd)
     if (cmd == g_cmdShowDca)             return DcaWnd_IsVisible()             ? 1 : 0;
     if (cmd == g_cmdShowSurfaceEditor)   return SurfaceEditorWnd_IsVisible()   ? 1 : 0;
     if (cmd == g_cmdSurfaceDiag)           return SurfaceMonitorWnd_IsVisible()   ? 1 : 0;
+    // Per-layer recall toggle state
+    for (int i = 0; i < kLayerActionCount; i++)
+    {
+        if (cmd == g_cmdRecallLayer[i])
+            return (LayersEngine::Get().GetActiveLayer() == i) ? 1 : 0;
+    }
     return -1;
 }
 
@@ -305,6 +326,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         MuteGroupsWnd_Cleanup();
         LayersWnd_Cleanup();
         LayersEngine_Cleanup();
+        plugin_register("-timer", (void*)LayersEngine::TimerCallback);  // track-order sync
         DcaWnd_Cleanup();
         SurfaceEditorWnd_Cleanup();
         SurfaceMonitorWnd_Cleanup();
@@ -320,6 +342,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         {
             if (g_cmdRecallScene[i]) plugin_register("-gaccel", &g_recallAccel[i]);
             if (g_cmdSaveScene[i])   plugin_register("-gaccel", &g_saveAccel[i]);
+        }
+        // Unregister per-layer recall actions
+        for (int i = 0; i < kLayerActionCount; i++)
+        {
+            if (g_cmdRecallLayer[i]) plugin_register("-gaccel", &g_recallLayerAccel[i]);
         }
         return 0;
     }
@@ -491,6 +518,20 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("gaccel", &g_dcaAccel);
     }
 
+    // ---- Register per-layer recall actions (slots 1-20, by index) --------
+    for (int i = 0; i < kLayerActionCount; i++)
+    {
+        snprintf(g_recallLayerCmdStr[i], sizeof(g_recallLayerCmdStr[i]), "LT_RECALL_LAYER_%02d", i + 1);
+        snprintf(g_recallLayerDesc[i],   sizeof(g_recallLayerDesc[i]),   "Live Tools: Layers - Recall Layer %d", i + 1);
+
+        g_cmdRecallLayer[i] = plugin_register("command_id", (void*)g_recallLayerCmdStr[i]);
+
+        memset(&g_recallLayerAccel[i], 0, sizeof(gaccel_register_t));
+        g_recallLayerAccel[i].desc      = g_recallLayerDesc[i];
+        g_recallLayerAccel[i].accel.cmd = (WORD)g_cmdRecallLayer[i];
+        plugin_register("gaccel", &g_recallLayerAccel[i]);
+    }
+
     // ---- Register per-scene recall / save actions (slots 1-30) -----------
     for (int i = 0; i < kSceneActionCount; i++)
     {
@@ -527,6 +568,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     MuteGroupsWnd_Init(hInstance);
     LayersEngine_Init();
     LayersWnd_Init(hInstance);
+    plugin_register("timer", (void*)LayersEngine::TimerCallback);  // track-order sync
     DcaWnd_Init(hInstance);
 
     // ---- Register Surface & Zone Editor command --------------------------

@@ -32,6 +32,12 @@ static bool g_syncingEditor = false;
 // Guard: when true, WM_DESTROY skips overwriting the dock-state pref (used by ToggleDocking)
 static bool g_suppressDockStateSave = false;
 
+// Per-project window state (loaded from LTSCENESWND line, applied in TransitionWnd_OnProjectLoad)
+static bool s_hasSavedWndState = false;
+static bool s_savedWndVisible  = false;
+static bool s_savedWndDocked   = false;
+static int  s_savedWndX = 0, s_savedWndY = 0, s_savedWndW = 0, s_savedWndH = 0;
+
 // UI timer ID
 static const UINT UI_TIMER_ID = 1;
 
@@ -266,6 +272,49 @@ void TransitionWnd_OverwriteScene(int index)
 }
 
 // ---------------------------------------------------------------------------
+// Per-project window state restore  (called from BeginLoadProjectState)
+// ---------------------------------------------------------------------------
+void TransitionWnd_OnProjectLoad()
+{
+    if (!s_hasSavedWndState) return;  // blank / pre-v0.0.14 project – leave as-is
+
+    if (s_savedWndVisible)
+    {
+        bool wndOpen = (g_wnd && IsWindow(g_wnd));
+        if (!wndOpen)
+        {
+            // Update the global dock preference so ShowHide creates the window correctly.
+            SetExtState("reaper_transitions", "scenes_docked",
+                        s_savedWndDocked ? "1" : "0", true);
+            TransitionWnd_ShowHide();
+        }
+        else
+        {
+            // Window already exists – correct dock state if it doesn't match.
+            bool isFloat = false;
+            bool curDocked = (DockIsChildOfDock(g_wnd, &isFloat) >= 0);
+            if (curDocked != s_savedWndDocked)
+                ToggleDocking();
+        }
+        // Restore floating position/size (no-op when docked – docker manages geometry).
+        if (!s_savedWndDocked && g_wnd && IsWindow(g_wnd) && s_savedWndW > 0 && s_savedWndH > 0)
+            SetWindowPos(g_wnd, nullptr, s_savedWndX, s_savedWndY,
+                         s_savedWndW, s_savedWndH, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    else
+    {
+        // Project saved with window closed – hide it if it's currently floating and visible.
+        if (g_wnd && IsWindow(g_wnd))
+        {
+            bool isFloat = false;
+            bool curDocked = (DockIsChildOfDock(g_wnd, &isFloat) >= 0);
+            if (!curDocked && IsWindowVisible(g_wnd))
+                ShowWindow(g_wnd, SW_HIDE);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cue list persistence (called from reaper_transitions.cpp project-state hooks)
 // ---------------------------------------------------------------------------
 void TransitionWnd_ResetCueList()
@@ -321,6 +370,7 @@ void TransitionWnd_ResetSettings()
     g_chunkRecallKeywords = GetChunkRecallDefaults();  // restore defaults on project reset
     g_chunkRecallNotify   = false;
     s_chunkPluginsLoadedFromProject = false;  // allow project list to replace defaults
+    s_hasSavedWndState = false;               // no per-project window state for this load
 }
 
 bool TransitionWnd_ProcessSettingsLine(const char* line)
@@ -379,6 +429,20 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_chunkRecallNotify = (val != 0);
         return true;
     }
+    if (strncmp(line, "LTSCENESWND ", 12) == 0)
+    {
+        int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
+        sscanf(line + 12, "%d %d %d %d %d %d", &docked, &visible, &x, &y, &w, &h);
+        s_savedWndDocked  = (docked  != 0);
+        s_savedWndVisible = (visible != 0);
+        s_savedWndX = x; s_savedWndY = y;
+        s_savedWndW = (w > 0) ? w : 500;
+        s_savedWndH = (h > 0) ? h : 400;
+        s_hasSavedWndState = true;
+        // Project lines are all available now — restore window state immediately.
+        TransitionWnd_OnProjectLoad();
+        return true;
+    }
     return false;
 }
 
@@ -395,6 +459,39 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
     for (const auto& kw : g_chunkRecallKeywords)
         ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
+
+    // Per-project window state – snapshot dock/float/rect so reloading the project
+    // restores exactly what the user had open.
+    {
+        bool wndVisible = (TransitionWnd_IsVisible() != 0);
+        bool wndDocked  = false;
+        int  wx = 0, wy = 0, ww = 500, wh = 400;
+        if (g_wnd && IsWindow(g_wnd))
+        {
+            bool isFloat = false;
+            wndDocked = (DockIsChildOfDock(g_wnd, &isFloat) >= 0);
+            if (!wndDocked)
+            {
+                RECT r = {};
+                GetWindowRect(g_wnd, &r);
+                wx = r.left; wy = r.top;
+                ww = r.right  - r.left;
+                wh = r.bottom - r.top;
+            }
+        }
+        else if (s_hasSavedWndState)
+        {
+            // Window is currently closed – re-emit last loaded values so the rect
+            // is preserved even though visible=0.
+            wndVisible = false;
+            wndDocked  = s_savedWndDocked;
+            wx = s_savedWndX; wy = s_savedWndY;
+            ww = s_savedWndW; wh = s_savedWndH;
+        }
+        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d",
+                     wndDocked ? 1 : 0, wndVisible ? 1 : 0,
+                     wx, wy, ww, wh);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -595,34 +692,27 @@ static void RestoreLayerState(const TransitionSnapshot* snap)
     if (!snap) return;
     if (g_globalSafeMask & TS_LAYERS) return;
 
-    if (!snap->m_layers.empty())
+    // Always replace the full layer set – even if the scene was stored with 0 layers
+    // (that means: clear all layers on recall).
+    std::vector<LayerDef> newLayers;
+    for (const auto& cl : snap->m_layers)
     {
-        // Build a vector<LayerDef> from the captured CapturedLayer data
-        std::vector<LayerDef> newLayers;
-        for (const auto& cl : snap->m_layers)
+        LayerDef ld;
+        strncpy(ld.name, cl.name.c_str(), sizeof(ld.name) - 1);
+        ld.name[sizeof(ld.name) - 1] = '\0';
+        ld.maxChannels = cl.maxChannels;
+        for (const auto& clt : cl.tracks)
         {
-            LayerDef ld;
-            strncpy(ld.name, cl.name.c_str(), sizeof(ld.name) - 1);
-            ld.name[sizeof(ld.name) - 1] = '\0';
-            ld.maxChannels = cl.maxChannels;
-            for (const auto& clt : cl.tracks)
-            {
-                LayerTrack lt;
-                lt.guid     = clt.guid;
-                lt.isSpacer = clt.isSpacer;
-                lt.name[0]  = '\0';
-                ld.tracks.push_back(lt);
-            }
-            newLayers.push_back(ld);
+            LayerTrack lt;
+            lt.guid     = clt.guid;
+            lt.isSpacer = clt.isSpacer;
+            lt.name[0]  = '\0';
+            ld.tracks.push_back(lt);
         }
-        LayersEngine::Get().ReplaceAllLayers(newLayers, snap->m_layerIdx);
-        LayersEngine::Get().RefreshAllTrackNames();
+        newLayers.push_back(ld);
     }
-    else if (snap->m_layerIdx >= 0)
-    {
-        // Backward compat (old snapshots with only an index, no full layer data)
-        LayersEngine::Get().ActivateLayer(snap->m_layerIdx);
-    }
+    LayersEngine::Get().ReplaceAllLayers(newLayers, snap->m_layerIdx);
+    LayersEngine::Get().RefreshAllTrackNames();
 }
 
 // ---------------------------------------------------------------------------

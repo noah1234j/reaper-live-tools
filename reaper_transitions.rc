@@ -210,10 +210,9 @@ END
 // ---------------------------------------------------------------------------
 // IDD_SAFES  -  Per-channel safes grid  (430 x 252 DU)
 //
-//  Top:    "Global Safes" groupbox with three rows of checkboxes
-//           Row 1: Vol  Pan   Mutes  Solo   Phase
-//           Row 2: FX   Vis   Name   Color  Height
-//           Row 3: All Tracks Order Layers
+//  Top:    "Global Safes" groupbox with two rows of checkboxes
+//           Row 1: Vol Pan Mutes Solo Phase FX Vis
+//           Row 2: Name Color Height Order
 //  Middle: per-track safes ListView (built dynamically)
 //  Bottom: Enable Per-Track toggle + Refresh / Clear All buttons
 // ---------------------------------------------------------------------------
@@ -223,34 +222,31 @@ STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Live Tools - Safes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    // ---- Global Safes groupbox (three rows) ------------------------------
-    GROUPBOX        "Global Safes", IDC_GSAFES_GROUP, 5, 4, 420, 68
+    // ---- Global Safes groupbox (two rows) --------------------------------
+    GROUPBOX        "Global Safes", IDC_GSAFES_GROUP, 5, 4, 420, 52
 
-    // Row 1 – mix params (5 slots across, ~81 DU each)
-    CONTROL "Vol",   IDC_GSAFE_VOL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 79, 10
-    CONTROL "Pan",   IDC_GSAFE_PAN,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  93, 18, 79, 10
-    CONTROL "Mutes", IDC_GSAFE_MUTE,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 174, 18, 79, 10
-    CONTROL "Solo",  IDC_GSAFE_SOLO,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 255, 18, 79, 10
-    CONTROL "Phase", IDC_GSAFE_PHASE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 336, 18, 79, 10
+    // Row 1 – mix params
+    CONTROL "Vol",   IDC_GSAFE_VOL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 46, 10
+    CONTROL "Pan",   IDC_GSAFE_PAN,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  72, 18, 46, 10
+    CONTROL "Mutes", IDC_GSAFE_MUTE,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 132, 18, 48, 10
+    CONTROL "Solo",  IDC_GSAFE_SOLO,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 192, 18, 46, 10
+    CONTROL "Phase", IDC_GSAFE_PHASE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 252, 18, 48, 10
+    CONTROL "FX",    IDC_GSAFE_FX,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 312, 18, 40, 10
+    CONTROL "Vis",   IDC_GSAFE_VIS,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366, 18, 40, 10
 
-    // Row 2 – fx/vis/layout params
-    CONTROL "FX",     IDC_GSAFE_FX,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 34, 79, 10
-    CONTROL "Vis",    IDC_GSAFE_VIS,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  93, 34, 79, 10
-    CONTROL "Name",   IDC_GSAFE_NAME,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 174, 34, 79, 10
-    CONTROL "Color",  IDC_GSAFE_COLOR,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 255, 34, 79, 10
-    CONTROL "Height", IDC_GSAFE_HEIGHT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 336, 34, 79, 10
-
-    // Row 3 – All Tracks shortcut first, then remaining layout params
-    CONTROL "All Tracks", IDC_GSAFE_ALL,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 50, 79, 10
-    CONTROL "Order",      IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  93, 50, 79, 10
-    CONTROL "Layers",     IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 174, 50, 79, 10
+    // Row 2 – layout params
+    CONTROL "Name",   IDC_GSAFE_NAME,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 34, 48, 10
+    CONTROL "Color",  IDC_GSAFE_COLOR,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  72, 34, 48, 10
+    CONTROL "Height", IDC_GSAFE_HEIGHT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 132, 34, 52, 10
+    CONTROL "Order",  IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 196, 34, 48, 10
+    CONTROL "Layers", IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 256, 34, 48, 10
 
     // ---- Per-track safes -------------------------------------------------
     CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",
-            BS_AUTOCHECKBOX | WS_TABSTOP, 5, 78, 130, 10
+            BS_AUTOCHECKBOX | WS_TABSTOP, 5, 62, 130, 10
 
     // ListView placeholder – replaced dynamically in WM_INITDIALOG
-    LTEXT           "", IDC_SAFESLIST, 5, 94, 420, 128
+    LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 148
 
     // ---- Bottom buttons --------------------------------------------------
     PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 230, 56, 14
@@ -312,34 +308,19 @@ BEGIN
     // ListView placeholder – replaced dynamically in WM_INITDIALOG
     LTEXT           "", IDC_LYR_LAYER_LIST, 5, 13, 212, 292
 
-    // Layer list management buttons
-    PUSHBUTTON      "Add Layer",  IDC_LYR_ADD_LAYER,    5,  308, 56, 13
-    PUSHBUTTON      "Delete",     IDC_LYR_DELETE_LAYER, 64, 308, 40, 13
+    // Layer list management button (Delete moved to right-click context menu)
+    PUSHBUTTON      "Add Layer",  IDC_LYR_ADD_LAYER, 5, 308, 100, 13
 
     // ---- Right: Layer properties ----------------------------------------
     GROUPBOX        "Layer Properties", IDC_LYR_PROP_GROUP, 221, 3, 260, 327
 
-    LTEXT           "Name:",    IDC_STATIC,       227, 18, 26, 8, SS_CENTERIMAGE
-    EDITTEXT        IDC_LYR_NAME_EDIT,            255, 16, 219, 12, ES_AUTOHSCROLL
-
-    LTEXT           "Max Ch:",  IDC_STATIC,       227, 34, 28, 8, SS_CENTERIMAGE
-    EDITTEXT        IDC_LYR_MAXCH_EDIT,           257, 32, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
-    CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
-                    UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-                    293, 32, 12, 12
-    LTEXT           "(0 = all channels)", IDC_STATIC, 308, 34, 80, 8, SS_CENTERIMAGE
-
-    LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 50, 249, 8
+    LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 14, 249, 8
 
     // ListView placeholder for track list – replaced dynamically
-    LTEXT           "", IDC_LYR_TRACK_LIST, 226, 60, 249, 222
+    LTEXT           "", IDC_LYR_TRACK_LIST, 226, 25, 249, 287
 
-    // Track action buttons
-    PUSHBUTTON      "Add Sel",   IDC_LYR_ADD_TRACK,   226, 286, 46, 13
-    PUSHBUTTON      "Remove",    IDC_LYR_REM_TRACK,   275, 286, 46, 13
-    PUSHBUTTON      "Add Spacer",IDC_LYR_ADD_SPACER,  324, 286, 60, 13
-    PUSHBUTTON      "Capture",   IDC_LYR_CAPTURE,     387, 286, 46, 13
-    PUSHBUTTON      "Clear",     IDC_LYR_CLEAR_LAYER, 436, 286, 38, 13
+    // Track action buttons (Remove / Add Spacer / Capture / Clear moved to right-click context menu)
+    PUSHBUTTON      "Add Sel",   IDC_LYR_ADD_TRACK, 226, 316, 100, 13
 
     // ---- Bottom bar ------------------------------------------------------
     PUSHBUTTON      "Activate",    IDC_LYR_ACTIVATE,     5,  341, 56, 13
@@ -354,26 +335,32 @@ END
 // IDD_LAYERS_SETTINGS  -  Layers settings dialog  (250 x 115 DU)
 // ---------------------------------------------------------------------------
 
-IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 115
+IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 135
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 78
+    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 98
     CONTROL         "Apply MCP (mixer) visibility",         IDC_LYR_SET_MCPVIS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 175, 10
     CONTROL         "Also hide TCP (track control panel)",  IDC_LYR_SET_HIDETCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 30, 180, 10
     CONTROL         "Reorder tracks to match layer order",  IDC_LYR_SET_REORDER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 42, 185, 10
     CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 54, 200, 10
+    LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 69, 105, 8, SS_CENTERIMAGE
+    EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 67, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
+                    UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
+                    156, 67, 12, 12
+    LTEXT           "(0 = all)", IDC_STATIC, 171, 69, 50, 8, SS_CENTERIMAGE
 
-    DEFPUSHBUTTON   "OK",     IDOK,     140, 96, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 196, 96, 50, 14
+    DEFPUSHBUTTON   "OK",     IDOK,     140, 116, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 196, 116, 50, 14
 END
 
 // ---------------------------------------------------------------------------
-// IDD_PAFL  -  PAFL Monitor window  (265 x 122 DU)
+// IDD_PAFL  -  PAFL Monitor window  (265 x 110 DU)
 // ---------------------------------------------------------------------------
 
-IDD_PAFL DIALOGEX 0, 0, 265, 122
+IDD_PAFL DIALOGEX 0, 0, 265, 110
 STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Live Tools - PAFL Monitor"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -391,9 +378,8 @@ BEGIN
     LTEXT           "", IDC_PAFL_STATUS, 5, 58, 255, 10, SS_CENTERIMAGE
 
     CONTROL         "Active on project startup", IDC_PAFL_AUTOSETUP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 74, 165, 10
-    CONTROL         "Debug logging (see REAPER console)", IDC_PAFL_DEBUGLOG, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 5, 86, 200, 10
 
-    CONTROL         "Active", IDC_PAFL_ACTIVE, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 5, 100, 255, 14
+    CONTROL         "Active", IDC_PAFL_ACTIVE, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 5, 88, 255, 14
 END
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ struct LayersSettings
     bool hideTcpToo          = false;
     bool reorderTracks       = false;
     bool restoreOnDeactivate = true;
+    int  globalMaxChannels   = 0;   // 0 = unlimited; applies to all layers
 
     void Load();
     void Save() const;
@@ -79,6 +80,13 @@ public:
     bool HandleLayerCommand(int cmdId);  // returns true if handled
     void UpdateLayerActionDesc(int idx); // refresh desc after a rename
 
+    // --- Active-layer helpers ---
+    void ReapplyActive();                     // re-run DoApplyLayer on the active layer
+    void PhysicallyReorderLayer(int idx);     // immediately reorder REAPER tracks to match layer order
+
+    // --- Timer (registered with plugin_register("timer",...)) ---
+    static void TimerCallback();
+
     // --- Settings ---
     LayersSettings&       GetSettings()       { return m_settings; }
     const LayersSettings& GetSettings() const { return m_settings; }
@@ -107,6 +115,7 @@ private:
 
     void DoApplyLayer(int idx);
     void RestoreAllVisible();
+    void SyncLayerOrderFromReaper(int idx);  // update layer order to match REAPER track positions
 
     // Action registration helpers
     void RegisterLayerAction(int idx);
@@ -115,8 +124,10 @@ private:
     void UnregisterAllActions();
 
     std::vector<LayerDef>            m_layers;
-    int                              m_activeLayer = -1;
-    int                              m_nextUid     = 1;
+    int                              m_activeLayer    = -1;
+    int                              m_nextUid        = 1;
+    int                              m_lastStateCount = -1;  // for timer-based sync
+    int                              m_suppressCooldown = 0; // ticks to skip after apply
     LayersSettings                   m_settings;
 
     // Stable storage for REAPER action pointers

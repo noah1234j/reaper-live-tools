@@ -41,6 +41,10 @@ void LayersSettings::Load()
 
     const char* rd = GetExtState(k_Sec, "lyr_restore");
     restoreOnDeactivate = (rd[0] == '\0') ? true : (rd[0] != '0');
+
+    const char* gm = GetExtState(k_Sec, "lyr_globalMaxCh");
+    globalMaxChannels   = (gm && gm[0]) ? atoi(gm) : 0;
+    if (globalMaxChannels < 0) globalMaxChannels = 0;
 }
 
 void LayersSettings::Save() const
@@ -112,137 +116,126 @@ bool LayersEngine::StrToGuid(const char* s, GUID& out)
 void LayersEngine::DoApplyLayer(int idx)
 {
     if (idx < 0 || idx >= (int)m_layers.size()) return;
+    m_suppressCooldown = 10;  // ~300ms: prevent sync-back while REAPER processes the changes
     const LayerDef&       layer = m_layers[idx];
     const LayersSettings& cfg   = m_settings;
 
-    if (!cfg.applyMcpVisibility) return;
-
-    int numTracks = CountTracks(0);
-
     // Determine slot limit (spacers count as slots)
     int limit = (int)layer.tracks.size();
-    if (layer.maxChannels > 0 && layer.maxChannels < limit)
-        limit = layer.maxChannels;
+    if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
+        limit = cfg.globalMaxChannels;
 
-    for (int t = 0; t < numTracks; t++)
+    if (cfg.applyMcpVisibility)
     {
-        MediaTrack* track = GetTrack(0, t);
-        if (!track) continue;
+        int numTracks = CountTracks(0);
 
-        GUID* tg = GetTrackGUID(track);
-        if (!tg) continue;
-
-        // Check membership in active range
-        bool inLayer = false;
-        for (int li = 0; li < limit; li++)
+        for (int t = 0; t < numTracks; t++)
         {
-            if (layer.tracks[li].isSpacer) continue;  // spacer has no GUID
-            if (memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+            MediaTrack* track = GetTrack(0, t);
+            if (!track) continue;
+
+            GUID* tg = GetTrackGUID(track);
+            if (!tg) continue;
+
+            // Check membership in active range
+            bool inLayer = false;
+            for (int li = 0; li < limit; li++)
             {
-                inLayer = true;
-                break;
-            }
-        }
-
-        bool showMixer = inLayer;
-        GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMixer);
-
-        if (cfg.hideTcpToo)
-        {
-            bool showTcp = inLayer;
-            GetSetMediaTrackInfo(track, "B_SHOWINTCP", &showTcp);
-        }
-    }
-
-    // Optional: reorder tracks to match layer ordering
-    if (cfg.reorderTracks && limit > 0)
-    {
-        for (int li = 0; li < limit; li++)
-        {
-            int curPos = -1;
-            int now = CountTracks(0);
-            for (int t = 0; t < now; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                GUID* tg = GetTrackGUID(tr);
-                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                if (layer.tracks[li].isSpacer) continue;  // spacer has no GUID
+                if (memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
                 {
-                    curPos = t;
+                    inLayer = true;
                     break;
                 }
             }
-            if (curPos < 0 || curPos == li) continue;
-            MediaTrack* tr = GetTrack(0, curPos);
-            SetOnlyTrackSelected(tr);
-            ReorderSelectedTracks(li, 0);
+
+            bool showMixer = inLayer;
+            GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMixer);
+
+            if (cfg.hideTcpToo)
+            {
+                bool showTcp = inLayer;
+                GetSetMediaTrackInfo(track, "B_SHOWINTCP", &showTcp);
+            }
+        }
+
+        // Optional: reorder tracks to match layer ordering
+        if (cfg.reorderTracks && limit > 0)
+        {
+            for (int li = 0; li < limit; li++)
+            {
+                int curPos = -1;
+                int now = CountTracks(0);
+                for (int t = 0; t < now; t++)
+                {
+                    MediaTrack* tr = GetTrack(0, t);
+                    GUID* tg = GetTrackGUID(tr);
+                    if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                    {
+                        curPos = t;
+                        break;
+                    }
+                }
+                if (curPos < 0 || curPos == li) continue;
+                MediaTrack* tr = GetTrack(0, curPos);
+                SetOnlyTrackSelected(tr);
+                ReorderSelectedTracks(li, 0);
+            }
         }
     }
 
-    // ---- Set REAPER visual spacers -----------------------------------------
-    // Drive spacers through REAPER's own built-in actions so the MCP redraws
-    // reliably. Command 42670 removes all track spacers; command 42665 inserts
-    // one spacer-unit above the currently-selected track.
+    // ---- Set REAPER visual spacers via built-in actions --------------------
+    // Action 42665 = "Track: Insert visual spacer before tracks"
+    // We select each target track and fire the action so REAPER handles the
+    // I_SPACER write AND the visual repaint itself.
     {
-        auto findTrack = [&](const GUID& guid) -> MediaTrack*
-        {
-            int n = CountTracks(0);
-            for (int t = 0; t < n; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                if (!tr) continue;
-                GUID* tg = GetTrackGUID(tr);
-                if (tg && memcmp(tg, &guid, sizeof(GUID)) == 0)
-                    return tr;
-            }
-            return nullptr;
-        };
+        int numAllTracks = CountTracks(0);
 
-        // Save current selection so we can restore it afterwards.
-        std::vector<MediaTrack*> prevSel;
-        {
-            int nSel = CountSelectedTracks(0);
-            for (int i = 0; i < nSel; i++)
-                prevSel.push_back(GetSelectedTrack(0, i));
-        }
-
-        // Select all tracks, then remove every spacer in the project.
-        int cur = CountTracks(0);
-        for (int t = 0; t < cur; t++)
+        // Clear all existing spacers with I_SPACER=0.  No repaint needed yet;
+        // the action calls below will trigger a full refresh at the end.
+        int zeroVal = 0;
+        for (int t = 0; t < numAllTracks; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
-            if (tr) SetMediaTrackInfo_Value(tr, "I_SELECTED", 1.0);
+            if (!tr) continue;
+            int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+            if (sp && *sp > 0)
+                GetSetMediaTrackInfo(tr, "I_SPACER", &zeroVal);
         }
-        Main_OnCommand(42670, 0);  // Track: Remove track spacers
 
-        // For each real track in the layer, count spacer entries that
-        // immediately precede it and insert that many spacer-units above it.
+        // For each real track that immediately follows a spacer entry in the
+        // layer, select it and fire the "insert spacer before" action (42665).
         for (int li = 0; li < limit; li++)
         {
             if (layer.tracks[li].isSpacer) continue;
 
-            int spacerCount = 0;
+            bool hasPrecedingSpacers = false;
             for (int k = li - 1; k >= 0; k--)
             {
-                if (layer.tracks[k].isSpacer) spacerCount++;
+                if (layer.tracks[k].isSpacer) { hasPrecedingSpacers = true; break; }
                 else break;
             }
-            if (spacerCount == 0) continue;
+            if (!hasPrecedingSpacers) continue;
 
-            MediaTrack* tr = findTrack(layer.tracks[li].guid);
-            if (!tr) continue;
-
-            SetOnlyTrackSelected(tr);
-            for (int s = 0; s < spacerCount; s++)
-                Main_OnCommand(42665, 0);  // Track: Insert visual spacer before tracks
+            for (int t = 0; t < numAllTracks; t++)
+            {
+                MediaTrack* tr = GetTrack(0, t);
+                if (!tr) continue;
+                GUID* tg = GetTrackGUID(tr);
+                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                {
+                    SetOnlyTrackSelected(tr);
+                    Main_OnCommand(42665, 0);  // Insert visual spacer before tracks
+                    break;
+                }
+            }
         }
 
-        // Restore original selection.
-        for (int t = 0; t < cur; t++)
+        // Restore no-selection state.
+        for (int t = 0; t < numAllTracks; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
-            if (!tr) continue;
-            bool was = std::find(prevSel.begin(), prevSel.end(), tr) != prevSel.end();
-            SetMediaTrackInfo_Value(tr, "I_SELECTED", was ? 1.0 : 0.0);
+            if (tr) { bool sel = false; GetSetMediaTrackInfo(tr, "I_SELECTED", &sel); }
         }
     }
 
@@ -264,6 +257,18 @@ void LayersEngine::Deactivate()
     m_activeLayer = -1;
     if (m_settings.restoreOnDeactivate)
         RestoreAllVisible();
+    else
+    {
+        // Always clear spacers even if track visibility is not restored
+        int numTracks = CountTracks(0);
+        int zeroVal = 0;
+        for (int t = 0; t < numTracks; t++)
+        {
+            MediaTrack* track = GetTrack(0, t);
+            if (track) GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
+        }
+        TrackList_AdjustWindows(false);
+    }
     MarkProjectDirty(nullptr);  // active layer saved per-project via SaveConfig
 }
 
@@ -288,6 +293,7 @@ void LayersEngine::PrevLayer()
 void LayersEngine::RestoreAllVisible()
 {
     int numTracks = CountTracks(0);
+    int zeroVal = 0;
     for (int t = 0; t < numTracks; t++)
     {
         MediaTrack* track = GetTrack(0, t);
@@ -296,9 +302,8 @@ void LayersEngine::RestoreAllVisible()
         GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &show);
         if (m_settings.hideTcpToo)
             GetSetMediaTrackInfo(track, "B_SHOWINTCP", &show);
-        SetMediaTrackInfo_Value(track, "I_SELECTED", 1.0);
+        GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
     }
-    Main_OnCommand(42670, 0);  // Track: Remove track spacers
     TrackList_AdjustWindows(false);
     UpdateArrange();
 }
@@ -340,6 +345,171 @@ void LayersEngine::SetSettings(const LayersSettings& s)
     // Re-apply if active
     if (m_activeLayer >= 0)
         DoApplyLayer(m_activeLayer);
+}
+
+// ---------------------------------------------------------------------------
+// ReapplyActive / PhysicallyReorderLayer
+// ---------------------------------------------------------------------------
+void LayersEngine::ReapplyActive()
+{
+    if (m_activeLayer >= 0 && m_activeLayer < (int)m_layers.size())
+        DoApplyLayer(m_activeLayer);
+}
+
+void LayersEngine::PhysicallyReorderLayer(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    const LayerDef& layer = m_layers[idx];
+
+    int limit = (int)layer.tracks.size();
+    if (m_settings.globalMaxChannels > 0 && m_settings.globalMaxChannels < limit)
+        limit = m_settings.globalMaxChannels;
+
+    if (limit <= 0) return;
+
+    // Save current selection
+    std::vector<MediaTrack*> prevSel;
+    {
+        int nSel = CountSelectedTracks(0);
+        for (int i = 0; i < nSel; i++)
+            prevSel.push_back(GetSelectedTrack(0, i));
+    }
+
+    for (int li = 0; li < limit; li++)
+    {
+        if (layer.tracks[li].isSpacer) continue;
+        int now = CountTracks(0);
+        int curPos = -1;
+        for (int t = 0; t < now; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            GUID* tg = GetTrackGUID(tr);
+            if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+            {
+                curPos = t;
+                break;
+            }
+        }
+        if (curPos < 0 || curPos == li) continue;
+        MediaTrack* tr = GetTrack(0, curPos);
+        SetOnlyTrackSelected(tr);
+        ReorderSelectedTracks(li, 0);
+    }
+
+    // Restore selection
+    int cur = CountTracks(0);
+    for (int t = 0; t < cur; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+        bool was = std::find(prevSel.begin(), prevSel.end(), tr) != prevSel.end();
+        SetMediaTrackInfo_Value(tr, "I_SELECTED", was ? 1.0 : 0.0);
+    }
+    TrackList_AdjustWindows(false);
+    UpdateArrange();
+    m_suppressCooldown = 10;
+}
+
+// ---------------------------------------------------------------------------
+// SyncLayerOrderFromReaper  –  update the layer's track list to match the
+// current REAPER track positions (called from the timer when the project
+// state changes while a layer is active).
+// ---------------------------------------------------------------------------
+void LayersEngine::SyncLayerOrderFromReaper(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    LayerDef& ld = m_layers[idx];
+
+    // Gather the non-spacer slot indices and their current REAPER positions
+    std::vector<int>  nonSpacerSlots;   // indices into ld.tracks
+    for (int li = 0; li < (int)ld.tracks.size(); li++)
+        if (!ld.tracks[li].isSpacer) nonSpacerSlots.push_back(li);
+
+    if (nonSpacerSlots.size() < 2) return;  // nothing to sort
+
+    int numTracks = CountTracks(0);
+    std::vector<std::pair<int, int>> slotAndPos;   // (slotIdx, reaperPos)
+    slotAndPos.reserve(nonSpacerSlots.size());
+
+    for (int slot : nonSpacerSlots)
+    {
+        int rpos = -1;
+        for (int t = 0; t < numTracks; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            if (!tr) continue;
+            GUID* tg = GetTrackGUID(tr);
+            if (tg && memcmp(tg, &ld.tracks[slot].guid, sizeof(GUID)) == 0)
+            {
+                rpos = t;
+                break;
+            }
+        }
+        slotAndPos.push_back({slot, rpos});
+    }
+
+    // Check whether sorting is needed
+    bool needsSort = false;
+    for (int i = 1; i < (int)slotAndPos.size(); i++)
+    {
+        if (slotAndPos[i - 1].second >= 0 && slotAndPos[i].second >= 0 &&
+            slotAndPos[i - 1].second > slotAndPos[i].second)
+        {
+            needsSort = true;
+            break;
+        }
+    }
+    if (!needsSort) return;
+
+    // Sort by REAPER position; tracks not found in project go to end
+    std::stable_sort(slotAndPos.begin(), slotAndPos.end(),
+        [](const std::pair<int,int>& a, const std::pair<int,int>& b)
+        {
+            if (a.second < 0) return false;
+            if (b.second < 0) return true;
+            return a.second < b.second;
+        });
+
+    // Extract LayerTrack objects in new order
+    std::vector<LayerTrack> sorted;
+    sorted.reserve(nonSpacerSlots.size());
+    for (auto& sp : slotAndPos)
+        sorted.push_back(ld.tracks[sp.first]);
+
+    // Re-fill the non-spacer slots in ld.tracks with the sorted order
+    int si = 0;
+    for (int li = 0; li < (int)ld.tracks.size(); li++)
+        if (!ld.tracks[li].isSpacer)
+            ld.tracks[li] = sorted[si++];
+
+    SaveExtState();
+}
+
+// ---------------------------------------------------------------------------
+// TimerCallback  –  registered with plugin_register("timer", ...)
+// Polls REAPER's project-state counter and syncs the active layer's track
+// ordering when the user reorders tracks in the mixer / TCP.
+// ---------------------------------------------------------------------------
+void LayersEngine::TimerCallback()
+{
+    LayersEngine& eng = Get();
+    int active = eng.m_activeLayer;
+    if (active < 0 || active >= (int)eng.m_layers.size()) return;
+
+    if (eng.m_suppressCooldown > 0)
+    {
+        --eng.m_suppressCooldown;
+        return;
+    }
+
+    int stateCount = GetProjectStateChangeCount(nullptr);
+    if (stateCount == eng.m_lastStateCount) return;
+    eng.m_lastStateCount = stateCount;
+
+    // Sync track order, refresh names (catches renames too), and update window
+    eng.SyncLayerOrderFromReaper(active);
+    eng.RefreshAllTrackNames();
+    LayersWnd_Refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -621,6 +791,9 @@ void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int 
     // Activate the requested layer (also calls DoApplyLayer)
     if (activeIdx >= 0 && activeIdx < (int)m_layers.size())
         ActivateLayer(activeIdx);
+
+    // Refresh the layers window to show the new state
+    LayersWnd_Refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -750,12 +923,13 @@ void LayersEngine::ResetForProject()
 //   >
 void LayersEngine::SaveConfig(ProjectStateContext* ctx)
 {
-    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d",
+    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d",
                  m_nextUid, m_activeLayer,
                  m_settings.applyMcpVisibility  ? 1 : 0,
                  m_settings.hideTcpToo          ? 1 : 0,
                  m_settings.reorderTracks       ? 1 : 0,
-                 m_settings.restoreOnDeactivate ? 1 : 0);
+                 m_settings.restoreOnDeactivate ? 1 : 0,
+                 m_settings.globalMaxChannels);
 
     for (const auto& ld : m_layers)
     {
@@ -790,15 +964,16 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
 {
     if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
 
-    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1;
-    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d",
-           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore);
+    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0;
+    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d",
+           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch);
 
     m_nextUid = (nextuid >= 1) ? nextuid : 1;
     m_settings.applyMcpVisibility  = (mcpvis  != 0);
     m_settings.hideTcpToo          = (hidetcp != 0);
     m_settings.reorderTracks       = (reorder != 0);
     m_settings.restoreOnDeactivate = (restore != 0);
+    m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
     m_layers.clear();
 
     char subline[4096];

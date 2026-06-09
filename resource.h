@@ -145,7 +145,7 @@
 #define IDC_GSAFE_HEIGHT         2219
 #define IDC_GSAFE_ORDER          2220
 #define IDC_GSAFE_LAYERS         2221
-#define IDC_GSAFE_ALL            2224   // "All Tracks" – sets all per-track rows to k_allBits
+#define IDC_GSAFE_ALL            2222
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 #define IDC_DOCK_BTN             2145   // (unused, reserved)
@@ -244,7 +244,6 @@
 #define IDC_PAFL_BUSTRACK        2409   // PAFL bus track combobox
 #define IDC_PAFL_NEWBUS          2410   // New PAFL bus button
 #define IDC_PAFL_ACTIVE          2411   // PAFL active toggle (push-like checkbox)
-#define IDC_PAFL_DEBUGLOG        2412   // Debug logging toggle
 
 // ---- Layers window -------------------------------------------------------
 #define IDD_LAYERS               216

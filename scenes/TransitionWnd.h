@@ -50,6 +50,7 @@ void TransitionWnd_ResetCueList();
 void TransitionWnd_SaveSettings(ProjectStateContext* ctx);
 bool TransitionWnd_ProcessSettingsLine(const char* line);
 void TransitionWnd_ResetSettings();
+void TransitionWnd_OnProjectLoad();   // restore window state after project load
 
 // Preload flag: when true, newly-added plugins are briefly taken offline during
 // instant recall (offline sandwich) to prevent parameter snap during init.

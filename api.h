@@ -16,6 +16,7 @@
 #define REAPERAPI_WANT_GetSetMediaTrackInfo        // GUID, D_VOL, D_PAN, B_MUTE, B_PHASE, ...
 #define REAPERAPI_WANT_GetSetMediaTrackInfo_String // P_NAME
 #define REAPERAPI_WANT_GetTrackName                // alternate name lookup
+#define REAPERAPI_WANT_get_config_var              // live pointer to reaper.ini config vars
 
 // FX chain parameter access (live-safe, no chunk ops)
 #define REAPERAPI_WANT_TrackFX_GetCount
@@ -162,9 +163,6 @@
 
 // GUID ↔ string (MuteGroups)
 #define REAPERAPI_WANT_GuidToStr
-
-// Debug logging (PAFL)
-#define REAPERAPI_WANT_ShowConsoleMsg
 
 // Action enumeration (Surface/Zone Editor – action search dialog)
 #define REAPERAPI_WANT_kbd_enumerateActions   // iterate all actions in a section
