@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.0.15-beta] — 2026-06-10
+
+### New Features
+
+- **Scenes: inline rename on New**: The "Name" text field has been removed. Clicking **New** auto-generates a name (`Scene N`) and immediately drops into an inline rename on the list row. Press Enter to accept or Escape to keep the auto-name.
+
+- **PAFL: active state no longer persists across sessions**: PAFL now starts inactive every time REAPER opens. The user must explicitly click "Active" to enable it. On project switch, PAFL deactivates automatically and re-enables via "Active on project startup" if that setting is on.
+
+- **Layers: spacer changes apply immediately to active layer**: Adding a spacer via the track context menu ("Add Spacer Before/After") now instantly re-applies the layer if it is currently active, so the spacer appears in REAPER without needing to re-activate.
+
+- **Layers: folder open/closed state captured and restored**: `I_FOLDERCOMPACT` (folder expand/collapse state) is now captured when using "Capture Visible Tracks" or "Add Layer (Current MCP Visibility)" and is restored when the layer is activated. Stored as `GUID:fc=N` in the project file; existing projects default to open (`fc=0`).
+
+- **Layers: Trigger MCP Select setting**: New checkbox in Layers Settings — *"Trigger MCP select (refresh control surface channels)"*. When enabled, activating a layer briefly selects then deselects the first visible MCP track so hardware control surfaces re-scan their channel strip assignments.
+
+### Changes
+
+- **Layers: removed duplicate "Delete All Tracks" from track context menu**: "Delete All Tracks" and "Clear All Tracks" were identical. "Delete All Tracks" has been removed; "Clear All Tracks" remains.
+
+- **Temporarily disabled**: Layouts, Surface & Zone Editor, Surface Monitor, and Control Surface (CSI) have been removed from the Extensions menu and action list while under development. All code is intact and re-enabling is a one-line uncomment per feature.
+
+---
+
 ## [v0.0.14-beta] — 2026-06-09
 
 ### New Features

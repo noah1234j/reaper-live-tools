@@ -39,10 +39,6 @@ BEGIN
     PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
     PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
 
-    // ---- Snapshot name editor --------------------------------------------
-    LTEXT           "Name:",  IDC_STATIC,     158, 22, 22,  8
-    EDITTEXT        IDC_SNAPNAME,             182, 20, 73, 12, ES_AUTOHSCROLL
-
     // ---- Progress bar placeholder – replaced dynamically -----------------
     LTEXT           "", IDC_PROGRESS,          158, 37, 97,  8
 
@@ -314,10 +310,13 @@ BEGIN
     // ---- Right: Layer properties ----------------------------------------
     GROUPBOX        "Layer Properties", IDC_LYR_PROP_GROUP, 221, 3, 260, 327
 
-    LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 14, 249, 8
+    LTEXT           "Name:",    IDC_STATIC,       227, 18, 26, 8, SS_CENTERIMAGE
+    EDITTEXT        IDC_LYR_NAME_EDIT,            255, 16, 219, 12, ES_AUTOHSCROLL
+
+    LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 32, 249, 8
 
     // ListView placeholder for track list – replaced dynamically
-    LTEXT           "", IDC_LYR_TRACK_LIST, 226, 25, 249, 287
+    LTEXT           "", IDC_LYR_TRACK_LIST, 226, 44, 249, 268
 
     // Track action buttons (Remove / Add Spacer / Capture / Clear moved to right-click context menu)
     PUSHBUTTON      "Add Sel",   IDC_LYR_ADD_TRACK, 226, 316, 100, 13
@@ -335,25 +334,26 @@ END
 // IDD_LAYERS_SETTINGS  -  Layers settings dialog  (250 x 115 DU)
 // ---------------------------------------------------------------------------
 
-IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 135
+IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 150
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 98
+    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 113
     CONTROL         "Apply MCP (mixer) visibility",         IDC_LYR_SET_MCPVIS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 175, 10
     CONTROL         "Also hide TCP (track control panel)",  IDC_LYR_SET_HIDETCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 30, 180, 10
     CONTROL         "Reorder tracks to match layer order",  IDC_LYR_SET_REORDER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 42, 185, 10
     CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 54, 200, 10
-    LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 69, 105, 8, SS_CENTERIMAGE
-    EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 67, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "Trigger MCP select (refresh control surface channels)", IDC_LYR_SET_TRIGGERMCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 66, 225, 10
+    LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 84, 105, 8, SS_CENTERIMAGE
+    EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 82, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
     CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
                     UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-                    156, 67, 12, 12
-    LTEXT           "(0 = all)", IDC_STATIC, 171, 69, 50, 8, SS_CENTERIMAGE
+                    156, 82, 12, 12
+    LTEXT           "(0 = all)", IDC_STATIC, 171, 84, 50, 8, SS_CENTERIMAGE
 
-    DEFPUSHBUTTON   "OK",     IDOK,     140, 116, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 196, 116, 50, 14
+    DEFPUSHBUTTON   "OK",     IDOK,     140, 131, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 196, 131, 50, 14
 END
 
 // ---------------------------------------------------------------------------

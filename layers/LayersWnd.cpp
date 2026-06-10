@@ -451,6 +451,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         CheckDlgButton(hwnd, IDC_LYR_SET_HIDETCP,  cfg.hideTcpToo          ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,  cfg.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,  cfg.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_LYR_SET_TRIGGERMCP, cfg.triggerMcpSelect  ? BST_CHECKED : BST_UNCHECKED);
         // Set up max channels spin
         {
             HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
@@ -475,6 +476,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             cfg.hideTcpToo          = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_HIDETCP)  == BST_CHECKED);
             cfg.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)  == BST_CHECKED);
             cfg.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)  == BST_CHECKED);
+            cfg.triggerMcpSelect    = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TRIGGERMCP) == BST_CHECKED);
             BOOL ok = FALSE;
             int val = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
             cfg.globalMaxChannels   = (ok && val >= 0) ? val : 0;
@@ -963,6 +965,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
+                    if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
                     GetTrackName(tr, buf, (int)sizeof(buf));
                     strncpy(lt.name, buf, sizeof(lt.name) - 1);
@@ -1070,8 +1074,6 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
                 CTX_TRK_CAPTURE, "Capture Visible Tracks");
-            AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 || numTracks == 0 ? MF_GRAYED : 0),
-                CTX_TRK_DELETE_ALL, "Delete All Tracks");
             AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
                 CTX_TRK_CLEAR, "Clear All Tracks");
 
@@ -1115,6 +1117,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     RefreshLayerList(hwnd);
                     ListView_SetItemState(hTrackList, item,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
+                        LayersEngine::Get().ReapplyActive();
                 }
                 break;
             case CTX_TRK_SPACER_AFT:
@@ -1129,6 +1133,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     RefreshLayerList(hwnd);
                     ListView_SetItemState(hTrackList, insertAt,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
+                        LayersEngine::Get().ReapplyActive();
                 }
                 break;
             case CTX_TRK_REMOVE:
@@ -1211,6 +1217,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
+                    if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
                     GetTrackName(tr, buf, (int)sizeof(buf));
                     strncpy(lt.name, buf, sizeof(lt.name) - 1);

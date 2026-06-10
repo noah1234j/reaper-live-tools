@@ -279,8 +279,6 @@ static void DoClearSends()
 static void LoadSettings()
 {
     const char* v;
-    v = GetExtState(k_appSection, "intercept");
-    s_intercept = (!v || !v[0]) ? false : (atoi(v) != 0);
     v = GetExtState(k_appSection, "sendtype");
     s_sendType  = (v && v[0]) ? atoi(v) : 3;
     v = GetExtState(k_appSection, "autosetup");
@@ -290,8 +288,6 @@ static void LoadSettings()
 static void SaveSettings()
 {
     char buf[16];
-    snprintf(buf, sizeof(buf), "%d", s_intercept ? 1 : 0);
-    SetExtState(k_appSection, "intercept", buf, true);
     snprintf(buf, sizeof(buf), "%d", s_sendType);
     SetExtState(k_appSection, "sendtype", buf, true);
     snprintf(buf, sizeof(buf), "%d", s_autoSetup ? 1 : 0);
@@ -661,9 +657,8 @@ void PaflWnd_Init(HINSTANCE hInstance)
     s_pNoMeters = (int*)get_config_var("nometers", &sz);
     if (sz != 4 && sz != 8) s_pNoMeters = nullptr; // accept 4-byte int or 8-byte value (little-endian safe)
 
-    // If we were active last session, re-enable solo bus immediately
-    if (s_intercept && s_pSoloIp)
-        EnableSoloBus();
+    // s_intercept is never persisted; user must explicitly activate each session
+    // (or enable "Active on project startup" to auto-activate with projects).
 
     plugin_register("timer",      (void*)PaflWnd_TimerTick);
     plugin_register("csurf_inst", &s_paflMonitor);
@@ -709,6 +704,14 @@ void PaflWnd_OnProjectLoad()
 
 void PaflWnd_ResetProjectState()
 {
+    // Deactivate PAFL when switching projects; autoSetup will re-enable if configured.
+    if (s_intercept)
+    {
+        RestoreSoloBus();
+        s_intercept = false;
+        if (s_hwnd && IsWindow(s_hwnd))
+            CheckDlgButton(s_hwnd, IDC_PAFL_ACTIVE, BST_UNCHECKED);
+    }
     s_busGuidStr.clear();
     s_srcGuidStr.clear();
     s_pendingAutoSetupTicks = 0;

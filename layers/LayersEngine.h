@@ -13,6 +13,7 @@ struct LayerTrack
     GUID guid;
     char name[128];   // cached display name
     bool isSpacer;    // true = visual spacer slot, no real track
+    int  folderCompact; // I_FOLDERCOMPACT value (0=open, 1=compact, 2=closed)
 };
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,7 @@ struct LayersSettings
     bool reorderTracks       = false;
     bool restoreOnDeactivate = true;
     int  globalMaxChannels   = 0;   // 0 = unlimited; applies to all layers
+    bool triggerMcpSelect    = false; // briefly select/deselect first MCP track to refresh surfaces
 
     void Load();
     void Save() const;

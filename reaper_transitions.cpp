@@ -379,11 +379,12 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
                                        (void*)"LT_SHOW_LAYOUTS");
     if (!g_cmdShowLayouts) return 0;
 
-    static gaccel_register_t g_layoutAccel;
-    memset(&g_layoutAccel, 0, sizeof(g_layoutAccel));
-    g_layoutAccel.desc      = "Live Tools: Layouts - Show/Hide";
-    g_layoutAccel.accel.cmd = (WORD)g_cmdShowLayouts;
-    plugin_register("gaccel", &g_layoutAccel);
+    // TEMPORARILY DISABLED – Layouts hidden from actions list and menu
+    // static gaccel_register_t g_layoutAccel;
+    // memset(&g_layoutAccel, 0, sizeof(g_layoutAccel));
+    // g_layoutAccel.desc      = "Live Tools: Layouts - Show/Hide";
+    // g_layoutAccel.accel.cmd = (WORD)g_cmdShowLayouts;
+    // plugin_register("gaccel", &g_layoutAccel);
 
     // ---- Register callbacks ------------------------------------------------
     plugin_register("hookcommand",    (void*)RunCommand);
@@ -405,20 +406,22 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     g_cmdShowCSurf = plugin_register("command_id", (void*)"LT_CSURF_SETTINGS");
     if (!g_cmdShowCSurf) return 0;
 
-    static gaccel_register_t g_csurfAccel;
-    memset(&g_csurfAccel, 0, sizeof(g_csurfAccel));
-    g_csurfAccel.desc      = "Live Tools: Control Surface Settings";
-    g_csurfAccel.accel.cmd = (WORD)g_cmdShowCSurf;
-    plugin_register("gaccel", &g_csurfAccel);
+    // TEMPORARILY DISABLED – CSurf settings action hidden
+    // static gaccel_register_t g_csurfAccel;
+    // memset(&g_csurfAccel, 0, sizeof(g_csurfAccel));
+    // g_csurfAccel.desc      = "Live Tools: Control Surface Settings";
+    // g_csurfAccel.accel.cmd = (WORD)g_cmdShowCSurf;
+    // plugin_register("gaccel", &g_csurfAccel);
 
     // ---- Register Surface Diagnostics command ----------------------------
     g_cmdSurfaceDiag = plugin_register("command_id", (void*)"LT_SURFACE_DIAG");
     if (g_cmdSurfaceDiag)
     {
-        memset(&g_surfaceDiagAccel, 0, sizeof(g_surfaceDiagAccel));
-        g_surfaceDiagAccel.desc      = "Live Tools: Surface Monitor - Show/Hide";
-        g_surfaceDiagAccel.accel.cmd = (WORD)g_cmdSurfaceDiag;
-        plugin_register("gaccel", &g_surfaceDiagAccel);
+        // TEMPORARILY DISABLED – Surface Monitor action hidden
+        // memset(&g_surfaceDiagAccel, 0, sizeof(g_surfaceDiagAccel));
+        // g_surfaceDiagAccel.desc      = "Live Tools: Surface Monitor - Show/Hide";
+        // g_surfaceDiagAccel.accel.cmd = (WORD)g_cmdSurfaceDiag;
+        // plugin_register("gaccel", &g_surfaceDiagAccel);
     }
 
     // ---- Register Live Monitor command ------------------------------------
@@ -575,15 +578,17 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     g_cmdShowSurfaceEditor = plugin_register("command_id", (void*)"LT_SURFACE_EDITOR");
     if (g_cmdShowSurfaceEditor)
     {
-        memset(&g_surfaceEditorAccel, 0, sizeof(g_surfaceEditorAccel));
-        g_surfaceEditorAccel.desc      = "Live Tools: Surface & Zone Editor - Show/Hide";
-        g_surfaceEditorAccel.accel.cmd = (WORD)g_cmdShowSurfaceEditor;
-        plugin_register("gaccel", &g_surfaceEditorAccel);
+        // TEMPORARILY DISABLED – Surface & Zone Editor action hidden
+        // memset(&g_surfaceEditorAccel, 0, sizeof(g_surfaceEditorAccel));
+        // g_surfaceEditorAccel.desc      = "Live Tools: Surface & Zone Editor - Show/Hide";
+        // g_surfaceEditorAccel.accel.cmd = (WORD)g_cmdShowSurfaceEditor;
+        // plugin_register("gaccel", &g_surfaceEditorAccel);
     }
 
     SurfaceEditorWnd_Init(hInstance);
     SurfaceMonitorWnd_Init(hInstance);
-    rec->Register("csurf", &csurf_integrator_reg);
+    // TEMPORARILY DISABLED – Control Surface (CSI) not registered
+    // rec->Register("csurf", &csurf_integrator_reg);
 
     return 1; // success
 }
@@ -604,44 +609,42 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
 
     if (flag == 0)
     {
-        // Build: add "Live Tools" submenu containing Scenes + Layouts
+        // Build: add "Live Tools" submenu
+        // TEMPORARILY DISABLED items: Layouts, Surface & Zone Editor, Surface Monitor
         HMENU hSub = CreatePopupMenu();
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowHide,    "Scenes...");
-        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLayouts, "Layouts...");
+        // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLayouts, "Layouts...");  // TEMPORARILY DISABLED
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMonitor, "Live Monitor...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMeterBridge, "Meter Bridge...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLiveLock,    "Live Lock...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMuteGroups,  "Mute Groups...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLayers,      "Layers...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowDca,         "DCA Groups...");
-        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowSurfaceEditor, "Surface & Zone Editor...");
+        // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowSurfaceEditor, "Surface & Zone Editor...");  // TEMPORARILY DISABLED
         AppendMenuA(hSub,  MF_SEPARATOR, 0, nullptr);
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowPafl,    "PAFL Monitor...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowTalkback,    "Talkback...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdLiveOpt,     "Live Optimizer...");
-        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdSurfaceDiag, "Surface Monitor...");
+        // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdSurfaceDiag, "Surface Monitor...");  // TEMPORARILY DISABLED
         AppendMenuA(hMenu, MF_POPUP,  (UINT_PTR)hSub,             "Live Tools");
         s_hLiveToolsMenu = hSub;
     }
     else if (flag == 1 && s_hLiveToolsMenu)
     {
         // Update check states
-        // Menu positions: 0=Scenes, 1=Layouts, 2=Monitor,
-        //                  3=MeterBridge, 4=LiveLock, 5=MuteGroups,
-        //                  6=Layers, 7=DCA, 8=SurfaceEditor, 9=separator,
-        //                  10=PAFL, 11=Talkback, 12=Optimizer, 13=SurfaceMonitor
+        // Menu positions (Layouts, SurfaceEditor, SurfaceMonitor currently disabled):
+        // 0=Scenes, 1=Monitor, 2=MeterBridge, 3=LiveLock, 4=MuteGroups,
+        // 5=Layers, 6=DCA, 7=separator, 8=PAFL, 9=Talkback, 10=Optimizer
         CheckMenuItem(s_hLiveToolsMenu,  0, MF_BYPOSITION | (TransitionWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  1, MF_BYPOSITION | (LayoutsWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  2, MF_BYPOSITION | (MonitorWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  3, MF_BYPOSITION | (MeterBridgeWnd_IsVisible()    ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  4, MF_BYPOSITION | (LiveLockWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  5, MF_BYPOSITION | (MuteGroupsWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  6, MF_BYPOSITION | (LayersWnd_IsVisible()         ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  7, MF_BYPOSITION | (DcaWnd_IsVisible()            ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (SurfaceEditorWnd_IsVisible()  ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu, 10, MF_BYPOSITION | (PaflWnd_IsVisible()           ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu, 11, MF_BYPOSITION | (TalkbackWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu, 12, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu, 13, MF_BYPOSITION | (SurfaceMonitorWnd_IsVisible() ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  1, MF_BYPOSITION | (MonitorWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  2, MF_BYPOSITION | (MeterBridgeWnd_IsVisible()    ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  3, MF_BYPOSITION | (LiveLockWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  4, MF_BYPOSITION | (MuteGroupsWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  5, MF_BYPOSITION | (LayersWnd_IsVisible()         ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  6, MF_BYPOSITION | (DcaWnd_IsVisible()            ? MF_CHECKED : MF_UNCHECKED));
+        // pos 7 = separator
+        CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (PaflWnd_IsVisible()           ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  9, MF_BYPOSITION | (TalkbackWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu, 10, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
     }
 }

@@ -57,7 +57,6 @@
 #define IDC_INSTANT              2131   // "Instant" checkbox (in settings popup)
 #define IDC_TAPER                2132   // taper law combobox (in settings popup)
 #define IDC_TAPER_CUSTOM         2133   // custom taper exponent edit (in settings popup)
-#define IDC_SNAPNAME             2134   // snapshot name edit
 #define IDC_SNAPNOTES            2135   // snapshot notes multiline edit (in settings popup)
 #define IDC_COPY_SNAP            2136   // copy snapshot button (context menu only)
 #define IDC_PASTE_SNAP           2137   // paste snapshot button (context menu only)
@@ -273,6 +272,7 @@
 #define IDC_LYR_SET_HIDETCP      2825
 #define IDC_LYR_SET_REORDER      2826
 #define IDC_LYR_SET_RESTORE      2827
+#define IDC_LYR_SET_TRIGGERMCP   2828
 
 // ---- Button Map window ---------------------------------------------------
 #define IDD_BTN_MAP              218

@@ -521,9 +521,7 @@ static void LoadEditorFromSnapshot(HWND hwnd, const TransitionSnapshot* snap)
 {
     g_syncingEditor = true;
 
-    // Only IDC_SNAPNAME lives in the main dialog now; transition settings
-    // and notes are in the per-scene Settings context-menu popup.
-    SetDlgItemText(hwnd, IDC_SNAPNAME,  snap ? snap->m_name.c_str()  : "");
+    // Transition settings and notes are in the per-scene Settings popup.
     SetDlgItemText(hwnd, IDC_SNAPNOTES, snap ? snap->m_notes.c_str() : "");
 
     g_syncingEditor = false;
@@ -642,16 +640,9 @@ static void RefreshListView(HWND hwnd)
 // ---------------------------------------------------------------------------
 static void DoSave(HWND hwnd)
 {
+    // Always auto-generate an incremented name; user renames inline via the list.
     char name[256] = {};
-    GetDlgItemText(hwnd, IDC_SNAPNAME, name, sizeof(name));
-    // If the field is empty, OR contains an existing snapshot's name (meaning
-    // the user didn't retype it), auto-generate a new incremented name.
-    bool nameIsNew = (name[0] != '\0');
-    if (nameIsNew) {
-        for (auto& s : g_snapshots)
-            if (s->m_name == name) { nameIsNew = false; break; }
-    }
-    if (!nameIsNew) {
+    {
         int maxN = (int)g_snapshots.size();
         for (auto& s : g_snapshots) {
             int n = 0;
@@ -681,6 +672,9 @@ static void DoSave(HWND hwnd)
     LoadEditorFromSnapshot(hwnd, g_snapshots[newIdx].get());
 
     Undo_OnStateChangeEx("Save Scene", -1, -1);
+
+    // Immediately drop into inline rename so the user can name the new scene.
+    ListView_EditLabel(hList, newIdx);
 }
 
 // ---------------------------------------------------------------------------
@@ -2378,20 +2372,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         int evt = HIWORD(wParam);
 
         // ---- Snapshot editor live-update handlers -----------------------
-        if (id == IDC_SNAPNAME && evt == EN_CHANGE && !g_syncingEditor)
-        {
-            int idx = GetSelectedListIndex(hwnd);
-            if (idx >= 0 && idx < (int)g_snapshots.size())
-            {
-                char buf[256] = {};
-                GetDlgItemText(hwnd, IDC_SNAPNAME, buf, sizeof(buf));
-                g_snapshots[idx]->m_name = buf;
-                // Update name column inline (no full refresh)
-                ListView_SetItemText(GetDlgItem(hwnd, IDC_LIST), idx, 1, buf);
-            }
-            return TRUE;
-        }
-
         if (id == IDC_SNAPNOTES && evt == EN_CHANGE && !g_syncingEditor)
         {
             int idx = GetSelectedListIndex(hwnd);
@@ -2561,9 +2541,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     di->item.iItem < (int)g_snapshots.size())
                 {
                     g_snapshots[di->item.iItem]->m_name = di->item.pszText;
-                    g_syncingEditor = true;
-                    SetDlgItemText(hwnd, IDC_SNAPNAME, di->item.pszText);
-                    g_syncingEditor = false;
                     SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
                     RefreshListView(hwnd);
                 }

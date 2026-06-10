@@ -157,6 +157,21 @@ void LayersEngine::DoApplyLayer(int idx)
                 bool showTcp = inLayer;
                 GetSetMediaTrackInfo(track, "B_SHOWINTCP", &showTcp);
             }
+
+            // Restore folder open/closed state for tracks in the layer
+            if (inLayer)
+            {
+                for (int li = 0; li < limit; li++)
+                {
+                    if (layer.tracks[li].isSpacer) continue;
+                    if (memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                    {
+                        int fc = layer.tracks[li].folderCompact;
+                        GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
+                        break;
+                    }
+                }
+            }
         }
 
         // Optional: reorder tracks to match layer ordering
@@ -236,6 +251,36 @@ void LayersEngine::DoApplyLayer(int idx)
         {
             MediaTrack* tr = GetTrack(0, t);
             if (tr) { bool sel = false; GetSetMediaTrackInfo(tr, "I_SELECTED", &sel); }
+        }
+    }
+
+    // Briefly select then deselect the first visible MCP track to nudge
+    // control surfaces into refreshing their channel strip assignments.
+    if (cfg.triggerMcpSelect)
+    {
+        int numAllTracks = CountTracks(0);
+        MediaTrack* firstTr = nullptr;
+        for (int li = 0; li < limit && !firstTr; li++)
+        {
+            if (layer.tracks[li].isSpacer) continue;
+            for (int t = 0; t < numAllTracks; t++)
+            {
+                MediaTrack* tr = GetTrack(0, t);
+                if (!tr) continue;
+                GUID* tg = GetTrackGUID(tr);
+                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                {
+                    firstTr = tr;
+                    break;
+                }
+            }
+        }
+        if (firstTr)
+        {
+            SetOnlyTrackSelected(firstTr);
+            // Deselect immediately so we don't leave an unintended selection.
+            bool sel = false;
+            GetSetMediaTrackInfo(firstTr, "I_SELECTED", &sel);
         }
     }
 
@@ -923,19 +968,20 @@ void LayersEngine::ResetForProject()
 //   >
 void LayersEngine::SaveConfig(ProjectStateContext* ctx)
 {
-    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d",
+    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d",
                  m_nextUid, m_activeLayer,
                  m_settings.applyMcpVisibility  ? 1 : 0,
                  m_settings.hideTcpToo          ? 1 : 0,
                  m_settings.reorderTracks       ? 1 : 0,
                  m_settings.restoreOnDeactivate ? 1 : 0,
-                 m_settings.globalMaxChannels);
+                 m_settings.globalMaxChannels,
+                 m_settings.triggerMcpSelect    ? 1 : 0);
 
     for (const auto& ld : m_layers)
     {
-        // Build pipe-separated track list
+        // Build pipe-separated track list; each entry is GUID:fc=N or SPACER
         std::string trackData;
-        trackData.reserve(ld.tracks.size() * 42);
+        trackData.reserve(ld.tracks.size() * 48);
         for (const auto& lt : ld.tracks)
         {
             if (!trackData.empty()) trackData += "|";
@@ -946,6 +992,12 @@ void LayersEngine::SaveConfig(ProjectStateContext* ctx)
                 char gs[40];
                 GuidToStr(lt.guid, gs);
                 trackData += gs;
+                if (lt.folderCompact != 0)
+                {
+                    char fc[8];
+                    snprintf(fc, sizeof(fc), ":fc=%d", lt.folderCompact);
+                    trackData += fc;
+                }
             }
         }
 
@@ -964,9 +1016,9 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
 {
     if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
 
-    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0;
-    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d",
-           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch);
+    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0, trigmcpsel = 0;
+    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d",
+           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel);
 
     m_nextUid = (nextuid >= 1) ? nextuid : 1;
     m_settings.applyMcpVisibility  = (mcpvis  != 0);
@@ -974,6 +1026,7 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     m_settings.reorderTracks       = (reorder != 0);
     m_settings.restoreOnDeactivate = (restore != 0);
     m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
+    m_settings.triggerMcpSelect    = (trigmcpsel != 0);
     m_layers.clear();
 
     char subline[4096];
@@ -1031,11 +1084,30 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
                     }
                     else if (p[0])
                     {
+                        // Token format: GUID or GUID:fc=N
+                        char guidBuf[40] = {};
+                        int  fc = 0;
+                        const char* colon = strchr(p, ':');
+                        if (colon)
+                        {
+                            size_t glen = (size_t)(colon - p);
+                            if (glen < sizeof(guidBuf))
+                            {
+                                memcpy(guidBuf, p, glen);
+                                guidBuf[glen] = '\0';
+                            }
+                            sscanf(colon, ":fc=%d", &fc);
+                        }
+                        else
+                        {
+                            strncpy(guidBuf, p, sizeof(guidBuf) - 1);
+                        }
                         GUID g = {};
-                        if (StrToGuid(p, g))
+                        if (StrToGuid(guidBuf, g))
                         {
                             LayerTrack lt = {};
                             lt.guid = g;
+                            lt.folderCompact = fc;
                             ld.tracks.push_back(lt);
                         }
                     }
