@@ -120,6 +120,21 @@ void LayersEngine::DoApplyLayer(int idx)
     const LayerDef&       layer = m_layers[idx];
     const LayersSettings& cfg   = m_settings;
 
+    // Snapshot the current track selection so we can restore it unchanged.
+    // Internal calls to SetOnlyTrackSelected (reorder + spacer actions) must
+    // not affect what the user had selected.
+    std::vector<MediaTrack*> savedSelection;
+    {
+        int n = CountTracks(0);
+        for (int t = 0; t < n; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            if (!tr) continue;
+            int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SELECTED", nullptr);
+            if (ps && *ps) savedSelection.push_back(tr);
+        }
+    }
+
     PreventUIRefresh(1);
 
     // Determine slot limit (spacers count as slots)
@@ -202,36 +217,6 @@ void LayersEngine::DoApplyLayer(int idx)
         }
     }
 
-    // Briefly select then deselect the first visible MCP track to nudge
-    // control surfaces into refreshing their channel strip assignments.
-    if (cfg.triggerMcpSelect)
-    {
-        int numAllTracks = CountTracks(0);
-        MediaTrack* firstTr = nullptr;
-        for (int li = 0; li < limit && !firstTr; li++)
-        {
-            if (layer.tracks[li].isSpacer) continue;
-            for (int t = 0; t < numAllTracks; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                if (!tr) continue;
-                GUID* tg = GetTrackGUID(tr);
-                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                {
-                    firstTr = tr;
-                    break;
-                }
-            }
-        }
-        if (firstTr)
-        {
-            SetOnlyTrackSelected(firstTr);
-            // Deselect immediately so we don't leave an unintended selection.
-            bool sel = false;
-            GetSetMediaTrackInfo(firstTr, "I_SELECTED", &sel);
-        }
-    }
-
     // End the UI-refresh suppression before firing REAPER actions.
     // Main_OnCommand needs UI refresh active to correctly write I_SPACER.
     PreventUIRefresh(-1);
@@ -283,11 +268,18 @@ void LayersEngine::DoApplyLayer(int idx)
             }
         }
 
-        // Restore no-selection state.
-        for (int t = 0; t < numAllTracks; t++)
+        // Restore selection — undo any SetOnlyTrackSelected calls made above.
         {
-            MediaTrack* tr = GetTrack(0, t);
-            if (tr) { bool sel = false; GetSetMediaTrackInfo(tr, "I_SELECTED", &sel); }
+            int n = CountTracks(0);
+            for (int t = 0; t < n; t++)
+            {
+                MediaTrack* tr = GetTrack(0, t);
+                if (!tr) continue;
+                bool wasSel = std::find(savedSelection.begin(), savedSelection.end(), tr)
+                              != savedSelection.end();
+                int sel = wasSel ? 1 : 0;
+                GetSetMediaTrackInfo(tr, "I_SELECTED", &sel);
+            }
         }
     }
 
@@ -471,69 +463,126 @@ void LayersEngine::SyncLayerOrderFromReaper(int idx)
     if (idx < 0 || idx >= (int)m_layers.size()) return;
     LayerDef& ld = m_layers[idx];
 
+    int numTracks = CountTracks(0);
+    bool changed = false;
+
+    // ---- Part 1: sync track order ------------------------------------------
     // Gather the non-spacer slot indices and their current REAPER positions
-    std::vector<int>  nonSpacerSlots;   // indices into ld.tracks
+    std::vector<int>  nonSpacerSlots;
     for (int li = 0; li < (int)ld.tracks.size(); li++)
         if (!ld.tracks[li].isSpacer) nonSpacerSlots.push_back(li);
 
-    if (nonSpacerSlots.size() < 2) return;  // nothing to sort
-
-    int numTracks = CountTracks(0);
-    std::vector<std::pair<int, int>> slotAndPos;   // (slotIdx, reaperPos)
-    slotAndPos.reserve(nonSpacerSlots.size());
-
-    for (int slot : nonSpacerSlots)
+    if (nonSpacerSlots.size() >= 2)
     {
+        std::vector<std::pair<int, int>> slotAndPos;   // (slotIdx, reaperPos)
+        slotAndPos.reserve(nonSpacerSlots.size());
+        for (int slot : nonSpacerSlots)
+        {
+            int rpos = -1;
+            for (int t = 0; t < numTracks; t++)
+            {
+                MediaTrack* tr = GetTrack(0, t);
+                if (!tr) continue;
+                GUID* tg = GetTrackGUID(tr);
+                if (tg && memcmp(tg, &ld.tracks[slot].guid, sizeof(GUID)) == 0)
+                { rpos = t; break; }
+            }
+            slotAndPos.push_back({slot, rpos});
+        }
+
+        bool needsSort = false;
+        for (int i = 1; i < (int)slotAndPos.size(); i++)
+        {
+            if (slotAndPos[i - 1].second >= 0 && slotAndPos[i].second >= 0 &&
+                slotAndPos[i - 1].second > slotAndPos[i].second)
+            { needsSort = true; break; }
+        }
+
+        if (needsSort)
+        {
+            std::stable_sort(slotAndPos.begin(), slotAndPos.end(),
+                [](const std::pair<int,int>& a, const std::pair<int,int>& b)
+                {
+                    if (a.second < 0) return false;
+                    if (b.second < 0) return true;
+                    return a.second < b.second;
+                });
+
+            std::vector<LayerTrack> sorted;
+            sorted.reserve(nonSpacerSlots.size());
+            for (auto& sp : slotAndPos)
+                sorted.push_back(ld.tracks[sp.first]);
+
+            int si = 0;
+            for (int li = 0; li < (int)ld.tracks.size(); li++)
+                if (!ld.tracks[li].isSpacer)
+                    ld.tracks[li] = sorted[si++];
+            changed = true;
+        }
+    }
+
+    // ---- Part 2: sync I_SPACER state from REAPER into layer spacer slots ---
+    // Build per-track REAPER position → I_SPACER value map
+    std::vector<int> spacerAtPos(numTracks, 0);
+    for (int t = 0; t < numTracks; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+        int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+        spacerAtPos[t] = sp ? *sp : 0;
+    }
+
+    // Rebuild the track list, deriving spacer entries from REAPER's I_SPACER.
+    // A spacer slot is placed before a real track whenever REAPER reports
+    // I_SPACER > 0 on that track's position.
+    std::vector<LayerTrack> rebuilt;
+    rebuilt.reserve(ld.tracks.size());
+    for (int li = 0; li < (int)ld.tracks.size(); li++)
+    {
+        if (ld.tracks[li].isSpacer) continue;  // will be re-derived below
+
+        // Find REAPER position of this real track
         int rpos = -1;
         for (int t = 0; t < numTracks; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
             if (!tr) continue;
             GUID* tg = GetTrackGUID(tr);
-            if (tg && memcmp(tg, &ld.tracks[slot].guid, sizeof(GUID)) == 0)
-            {
-                rpos = t;
-                break;
-            }
+            if (tg && memcmp(tg, &ld.tracks[li].guid, sizeof(GUID)) == 0)
+            { rpos = t; break; }
         }
-        slotAndPos.push_back({slot, rpos});
+
+        // If REAPER has a spacer on this track's position, inject one before it
+        if (rpos >= 0 && spacerAtPos[rpos] > 0)
+        {
+            LayerTrack sp;
+            sp.isSpacer = true;
+            strncpy(sp.name, "--- Spacer ---", sizeof(sp.name) - 1);
+            rebuilt.push_back(sp);
+        }
+
+        rebuilt.push_back(ld.tracks[li]);
     }
 
-    // Check whether sorting is needed
-    bool needsSort = false;
-    for (int i = 1; i < (int)slotAndPos.size(); i++)
+    // Compare with current track list (ignoring existing spacers)
+    // to see if spacer positions actually changed
+    std::vector<LayerTrack> currentNonSpacer;
+    for (auto& lt : ld.tracks) if (!lt.isSpacer) currentNonSpacer.push_back(lt);
+    std::vector<LayerTrack> rebuiltNonSpacer;
+    for (auto& lt : rebuilt)   if (!lt.isSpacer) rebuiltNonSpacer.push_back(lt);
+
+    // Count spacers in each to detect change
+    int oldSpacerCount = 0, newSpacerCount = 0;
+    for (auto& lt : ld.tracks) if (lt.isSpacer) oldSpacerCount++;
+    for (auto& lt : rebuilt)   if (lt.isSpacer) newSpacerCount++;
+
+    if (oldSpacerCount != newSpacerCount || rebuilt.size() != ld.tracks.size())
     {
-        if (slotAndPos[i - 1].second >= 0 && slotAndPos[i].second >= 0 &&
-            slotAndPos[i - 1].second > slotAndPos[i].second)
-        {
-            needsSort = true;
-            break;
-        }
+        ld.tracks = rebuilt;
+        changed = true;
     }
-    if (!needsSort) return;
 
-    // Sort by REAPER position; tracks not found in project go to end
-    std::stable_sort(slotAndPos.begin(), slotAndPos.end(),
-        [](const std::pair<int,int>& a, const std::pair<int,int>& b)
-        {
-            if (a.second < 0) return false;
-            if (b.second < 0) return true;
-            return a.second < b.second;
-        });
-
-    // Extract LayerTrack objects in new order
-    std::vector<LayerTrack> sorted;
-    sorted.reserve(nonSpacerSlots.size());
-    for (auto& sp : slotAndPos)
-        sorted.push_back(ld.tracks[sp.first]);
-
-    // Re-fill the non-spacer slots in ld.tracks with the sorted order
-    int si = 0;
-    for (int li = 0; li < (int)ld.tracks.size(); li++)
-        if (!ld.tracks[li].isSpacer)
-            ld.tracks[li] = sorted[si++];
-
-    SaveExtState();
+    if (changed) SaveExtState();
 }
 
 // ---------------------------------------------------------------------------
