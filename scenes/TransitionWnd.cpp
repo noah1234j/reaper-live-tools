@@ -832,16 +832,53 @@ static void DoRecall(HWND hwnd, int listIndex)
 
     if (g_durationDebug && freq.QuadPart > 0)
     {
-        double msRecall = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        const auto& t = TransitionEngine::Get().lastTimings;
         double msLayers = (double)(t3.QuadPart - t2.QuadPart) * 1000.0 / (double)freq.QuadPart;
         double msTotal  = (double)(t3.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
-        char buf[512];
-        snprintf(buf, sizeof(buf),
-            "[Live Tools] Scene recall timing for \"%s\":\n"
-            "  Engine recall:       %.2f ms\n"
-            "  RestoreLayerState:   %.2f ms\n"
-            "  Total:               %.2f ms\n",
-            snap->m_name.c_str(), msRecall, msLayers, msTotal);
+
+        char buf[1024];
+        if (t.instantPath)
+        {
+            snprintf(buf, sizeof(buf),
+                "[Live Tools] Scene recall timing: \"%s\"  [INSTANT]\n"
+                "  BuildTrackMap:     %6.2f ms  (%d tracks)\n"
+                "  ApplyImmediate:    %6.2f ms\n"
+                "  Engine total:      %6.2f ms\n"
+                "  RestoreLayerState: %6.2f ms\n"
+                "  ── TOTAL ──        %6.2f ms\n",
+                snap->m_name.c_str(),
+                t.buildTrackMap,  t.tracksMatched,
+                t.discreteParams,
+                t.total,
+                msLayers,
+                msTotal);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf),
+                "[Live Tools] Scene recall timing: \"%s\"  [%.2fs timed]\n"
+                "  SnapToEnd:         %6.2f ms\n"
+                "  BuildTrackMap:     %6.2f ms  (%d matched, %d skipped)\n"
+                "  DiscreteParams:    %6.2f ms  (mute/solo/vis/name/height/color)\n"
+                "  FXChainSync:       %6.2f ms\n"
+                "  SendsSetup:        %6.2f ms\n"
+                "  TrackReorder:      %6.2f ms\n"
+                "  BuildLerpLists:    %6.2f ms  (vol/pan:%d  fx:%d  wet:%d  send:%d)\n"
+                "  Engine total:      %6.2f ms\n"
+                "  RestoreLayerState: %6.2f ms\n"
+                "  ── TOTAL ──        %6.2f ms\n",
+                snap->m_name.c_str(), duration,
+                t.snapToEnd,
+                t.buildTrackMap,  t.tracksMatched,  t.tracksSkipped,
+                t.discreteParams,
+                t.fxChainSync,
+                t.sendsSetup,
+                t.trackReorder,
+                t.buildLerpLists, t.volPanLerps, t.paramLerps, t.wetLerps, t.sendLerps,
+                t.total,
+                msLayers,
+                msTotal);
+        }
         ShowConsoleMsg(buf);
     }
 

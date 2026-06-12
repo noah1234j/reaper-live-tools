@@ -64,6 +64,28 @@ public:
     // -----------------------------------------------------------------------
     void Recall(const TransitionSnapshot* snap, int mask, double duration);
 
+    // Per-recall sub-step timing, populated by the last Recall() call.
+    // All values in milliseconds; zero if that phase was skipped.
+    struct RecallTimings
+    {
+        double snapToEnd      = 0.0;  // snap active transition to end
+        double buildTrackMap  = 0.0;  // GUID→MediaTrack* map build
+        double discreteParams = 0.0;  // mute/solo/vis/name/height/color per track
+        double fxChainSync    = 0.0;  // SyncFXChain calls across all tracks
+        double sendsSetup     = 0.0;  // send routing add/remove pass
+        double trackReorder   = 0.0;  // TS_TRACKORDER reorder pass
+        double buildLerpLists = 0.0;  // BuildLerpLists (vol/pan/FX lerp setup)
+        double total          = 0.0;  // wall time for entire Recall()
+        int    tracksMatched  = 0;    // tracks found in project
+        int    tracksSkipped  = 0;    // tracks not found
+        int    paramLerps     = 0;    // FX param lerp entries
+        int    volPanLerps    = 0;    // vol/pan lerp entries
+        int    wetLerps       = 0;    // wet/dry lerp entries
+        int    sendLerps      = 0;    // send lerp entries
+        bool   instantPath    = false; // true = duration==0
+    };
+    RecallTimings lastTimings;
+
     // Progress [0.0 .. 1.0] for the progress bar; 1.0 when idle
     double      GetProgress()  const;
     bool        IsActive()     const { return m_active; }

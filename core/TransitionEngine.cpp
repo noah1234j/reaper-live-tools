@@ -11,6 +11,17 @@
 #include <unordered_map>
 
 // ---------------------------------------------------------------------------
+// Tiny QPC timing helper used by Recall() instrumentation
+// ---------------------------------------------------------------------------
+static inline double QpcMs()
+{
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
+// ---------------------------------------------------------------------------
 // Helper: returns true if moving 'tr' to 0-based position targetIdx would
 // take it outside its parent folder, which we must not allow.
 // ---------------------------------------------------------------------------
@@ -1237,6 +1248,9 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
 {
     if (!snap) return;
 
+    lastTimings = RecallTimings{};  // reset
+    double tRecallStart = QpcMs();
+
     m_lastRecalledSlot = snap->m_slot;
     m_targetSceneName  = snap->m_name;
 
@@ -1247,9 +1261,11 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // If a transition is already active, snap it to end first
     if (m_active)
     {
+        double t0 = QpcMs();
         SnapToEnd();
         plugin_register("-timer", (void*)&TransitionEngine::TimerCallback);
         m_active = false;
+        lastTimings.snapToEnd = QpcMs() - t0;
     }
 
     // -----------------------------------------------------------------------
@@ -1257,8 +1273,19 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // -----------------------------------------------------------------------
     if (duration <= 0.0)
     {
+        lastTimings.instantPath = true;
+
+        double t0 = QpcMs();
         TrackMap tmap = BuildTrackMap();
+        lastTimings.buildTrackMap = QpcMs() - t0;
+
+        t0 = QpcMs();
         ApplyImmediate(snap, mask, tmap);
+        lastTimings.discreteParams = QpcMs() - t0;  // ApplyImmediate covers all instant work
+
+        lastTimings.tracksMatched = (int)tmap.size();
+        lastTimings.total = QpcMs() - tRecallStart;
+
         m_active = false;
         if (onTransitionComplete) onTransitionComplete();
         return;
@@ -1267,11 +1294,19 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // -----------------------------------------------------------------------
     // Timed path: apply discrete params immediately, then build lerp lists
     // -----------------------------------------------------------------------
+    lastTimings.instantPath = false;
+
+    double t0 = QpcMs();
     TrackMap tmap = BuildTrackMap();
+    lastTimings.buildTrackMap = QpcMs() - t0;
+    lastTimings.tracksMatched = (int)tmap.size();
+
     m_wetLerps.clear();
     int skippedTracks = 0;
 
     PreventUIRefresh(1);
+
+    double tDiscrete = 0.0, tFXChain = 0.0, tSends = 0.0;
 
     for (const auto& ts : snap->m_tracks)
     {
@@ -1283,6 +1318,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         const int effMask = mask & ~safe;
 
         // Apply discrete params immediately (no lerp for these)
+        double td0 = QpcMs();
         if (effMask & TS_MUTE)  { bool m = ts.mute;  GetSetMediaTrackInfo(tr, "B_MUTE",  &m); }
         if (effMask & TS_SOLO)  { int  s = ts.solo;  GetSetMediaTrackInfo(tr, "I_SOLO",  &s); }
         if (effMask & TS_PHASE) { bool p = ts.phase; GetSetMediaTrackInfo(tr, "B_PHASE", &p); }
@@ -1315,13 +1351,17 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
             GetSetMediaTrackInfo(tr, "I_HEIGHTOVERRIDE", &h);
             GetSetMediaTrackInfo(tr, "B_HEIGHTLOCK",     &l);
         }
+        tDiscrete += QpcMs() - td0;
 
         // FX chain sync: add/remove plugins with wet-fade (timed=true)
+        double tfx0 = QpcMs();
         if (effMask & (TS_FXPARAMS | TS_FXCHAIN))
             SyncFXChain(tr, ts, true /*timed*/, m_wetLerps);
+        tFXChain += QpcMs() - tfx0;
 
         // Sends routing – apply at t=0 (same guard as TS_FXCHAIN)
         // Level changes are handled by BuildLerpLists / SendLerp.
+        double ts0 = QpcMs();
         if ((effMask & TS_SENDS) && !ts.sends.empty())
         {
             const bool canRoute = !(GetPlayState() & 4);
@@ -1394,11 +1434,20 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                 // Nothing to do now for the removal side.
             }
         }
+        tSends += QpcMs() - ts0;
     } // end per-track timed loop
 
+    lastTimings.discreteParams = tDiscrete;
+    lastTimings.fxChainSync    = tFXChain;
+    lastTimings.sendsSetup     = tSends;
+    lastTimings.tracksSkipped  = skippedTracks;
+    lastTimings.tracksMatched  = (int)tmap.size() - skippedTracks;
+
     // Track reordering – instant, happens before lerp timer starts
-    if (mask & TS_TRACKORDER)
     {
+        double tr0 = QpcMs();
+        if (mask & TS_TRACKORDER)
+        {
         struct OrderEntry { int targetIdx; GUID guid; };
         std::vector<OrderEntry> order;
         for (const auto& ts : snap->m_tracks)
@@ -1429,12 +1478,24 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
             int one = 1; GetSetMediaTrackInfo(tr, "I_SELECTED", &one);
             ReorderSelectedTracks(pass, 0);
         }
+        }
+        lastTimings.trackReorder = QpcMs() - tr0;
     }
 
     PreventUIRefresh(-1);
 
     // Build lerp lists for vol/pan/FX params
-    BuildLerpLists(snap, mask, tmap);
+    {
+        double tbl0 = QpcMs();
+        BuildLerpLists(snap, mask, tmap);
+        lastTimings.buildLerpLists = QpcMs() - tbl0;
+    }
+
+    lastTimings.paramLerps  = (int)m_paramLerps.size();
+    lastTimings.volPanLerps = (int)m_volPanLerps.size();
+    lastTimings.wetLerps    = (int)m_wetLerps.size();
+    lastTimings.sendLerps   = (int)m_sendLerps.size();
+    lastTimings.total       = QpcMs() - tRecallStart;
 
     if (m_paramLerps.empty() && m_volPanLerps.empty() && m_wetLerps.empty() && m_sendLerps.empty())
     {
