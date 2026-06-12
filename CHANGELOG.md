@@ -1,5 +1,29 @@
 # Changelog
 
+## [v0.0.16-beta] — 2026-06-11
+
+### New Features
+
+- **Settings: Layers button**: Global Settings dialog now has a "Layers..." button that opens the Layers window directly. The button is disabled (greyed out) when the Global Safes "Layers" safe is active.
+
+- **Safes: Per-track column cleanup**: The per-track safes ListView no longer shows Visibility, Selected, Height, or Order columns — those parameters are only relevant in Global Safes and have been removed from the per-track section. Remaining columns: Vol, Pan, Mute, Solo, Phase, FX, Name, Color, All.
+
+- **Safes: Rotated column headers**: Per-track safes column headers (Vol, Pan, Mute, etc.) now render rotated 90° so narrow checkbox columns display their full label without truncation.
+
+- **Safes: Drag-to-check**: Click and drag across multiple checkboxes in the per-track safes list to check/uncheck them all in one gesture. The drag applies the same action (checking or unchecking) determined by the first cell clicked.
+
+- **Scenes: Add Spacer restored**: "Add Spacer" is back in the scene list right-click context menu, allowing visual divider rows to be added between scenes. Adding a spacer now correctly marks the project dirty.
+
+### Bug Fixes
+
+- **Track Order: folder boundary protection**: When recalling a scene with track reordering enabled, tracks inside a folder can no longer be moved outside of that folder. Any reorder move that would cross a folder boundary is silently skipped for that track.
+
+- **Layers: left-panel "Capture Visible Tracks" now adds spacers**: The "Capture Visible Tracks" option on the left-panel (layer list) context menu now reads REAPER's native `I_SPACER` value for each track and inserts a layer spacer entry before tracks that have one — matching the behaviour of the right-panel version and "Add Layer (Current MCP Visibility)". Also captures `I_FOLDERCOMPACT` (folder open/close state) like those functions already did.
+
+- **Layers: removed "Add Layer" and "Add Sel" buttons**: The two bottom buttons that had no `WM_COMMAND` handler were removed from the Layers dialog. The freed space was given back to the layer and track ListViews. All layer/track management remains available via right-click context menus.
+
+---
+
 ## [v0.0.15-beta] — 2026-06-10
 
 ### New Features

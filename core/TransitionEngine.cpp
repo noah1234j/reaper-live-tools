@@ -11,6 +11,47 @@
 #include <unordered_map>
 
 // ---------------------------------------------------------------------------
+// Helper: returns true if moving 'tr' to 0-based position targetIdx would
+// take it outside its parent folder, which we must not allow.
+// ---------------------------------------------------------------------------
+static bool WouldLeaveFolder(MediaTrack* tr, int targetIdx)
+{
+    if (!tr) return false;
+    // P_PARTRACK returns the parent folder track, or null if at root
+    MediaTrack* parent = (MediaTrack*)GetSetMediaTrackInfo(tr, "P_PARTRACK", nullptr);
+    if (!parent) return false;  // track is at root – no folder constraint
+
+    // Find parent's 0-based index
+    int numTracks = GetNumTracks();
+    int parentIdx = -1;
+    for (int t = 0; t < numTracks; t++)
+    {
+        if (GetTrack(nullptr, t) == parent) { parentIdx = t; break; }
+    }
+    if (parentIdx < 0) return false;
+
+    // Walk forward from parentIdx+1 to find the last track inside this folder.
+    // I_FOLDERDEPTH: +1 = folder start (the parent itself), -1 = decrements depth,
+    // 0 = normal. We track net depth; when it goes below 1 the folder has ended.
+    int depth = 1;
+    int folderLastIdx = parentIdx;
+    for (int t = parentIdx + 1; t < numTracks; t++)
+    {
+        int* pfd = (int*)GetSetMediaTrackInfo(GetTrack(nullptr, t), "I_FOLDERDEPTH", nullptr);
+        if (pfd)
+        {
+            if (*pfd > 0) depth += *pfd;  // nested sub-folder start
+            else if (*pfd < 0) depth += *pfd;  // folder end
+        }
+        if (depth <= 0) break;
+        folderLastIdx = t;
+    }
+
+    // targetIdx must stay within [parentIdx+1, folderLastIdx]
+    return (targetIdx < parentIdx + 1 || targetIdx > folderLastIdx);
+}
+
+// ---------------------------------------------------------------------------
 // Safes globals
 // ---------------------------------------------------------------------------
 int  g_globalSafeMask     = 0;
@@ -784,6 +825,8 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             // IP_TRACKNUMBER returns the value directly as void* (1-based), not a pointer
             int curIdx = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
             if (curIdx == pass) continue; // already in place
+            // Don't move a track outside its parent folder
+            if (WouldLeaveFolder(tr, pass)) continue;
             // Deselect all, select only this track
             int n = GetNumTracks();
             for (int i = 0; i < n; ++i)
@@ -1374,6 +1417,8 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
             if (!tr) continue;
             int curIdx = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
             if (curIdx == pass) continue;
+            // Don't move a track outside its parent folder
+            if (WouldLeaveFolder(tr, pass)) continue;
             int n = GetNumTracks();
             for (int i = 0; i < n; ++i)
             {

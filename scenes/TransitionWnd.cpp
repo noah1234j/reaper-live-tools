@@ -3,6 +3,7 @@
 #include "ChunkRecallList.h"
 #include "SafesWnd.h"
 #include "LayersEngine.h"
+#include "../layers/LayersWnd.h"
 #include "api.h"
 #include "resource.h"
 
@@ -1270,6 +1271,9 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER),       !instant);
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER_CUSTOM),
                      !instant && g_defaultTaper == TAPER_CUSTOM);
+        // Layers button: disabled when Layers safe is active
+        EnableWindow(GetDlgItem(hwnd, IDC_GSET_LAYERS_BTN),
+                     !(g_globalSafeMask & TS_LAYERS));
         return TRUE;
     }
     case WM_COMMAND:
@@ -1297,6 +1301,11 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         {
             DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_CHUNK_RECALL_PLUGINS),
                            hwnd, ChunkRecallPluginsDlgProc, 0);
+            return TRUE;
+        }
+        if (id == IDC_GSET_LAYERS_BTN)
+        {
+            LayersWnd_ShowHide();
             return TRUE;
         }
         if (id == IDOK)
@@ -1772,6 +1781,8 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         AppendMenu(hMenu, MF_STRING | (g_snapshots.empty() ? MF_GRAYED : 0), CTX_DELETE_ALL, "Delete All Scenes");
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_EXPORT, "Export...");
         AppendMenu(hMenu, MF_STRING, CTX_IMPORT, "Import...");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenu(hMenu, MF_STRING, CTX_ADDSPACER, "Add Spacer");
     }
 
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -1909,6 +1920,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         g_snapshots.insert(g_snapshots.begin() + insertAfter, std::move(spacer));
         for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
         RefreshListView(hwnd);
+        MarkProjectDirty(nullptr);
         break;
     }
 

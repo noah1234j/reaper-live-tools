@@ -998,8 +998,19 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     if (!vis) continue;
                     GUID* tg = GetTrackGUID(tr);
                     if (!tg) continue;
+                    // Capture any native REAPER spacer above this track
+                    int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+                    if (sp && *sp > 0)
+                    {
+                        LayerTrack spacerLt = {};
+                        spacerLt.isSpacer = true;
+                        strncpy(spacerLt.name, "--- Spacer ---", sizeof(spacerLt.name) - 1);
+                        ld.tracks.push_back(spacerLt);
+                    }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
+                    if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
                     GetTrackName(tr, buf, (int)sizeof(buf));
                     strncpy(lt.name, buf, sizeof(lt.name) - 1);

@@ -173,6 +173,7 @@
 #define IDC_GSET_PRELOAD_OFFLINE 2245   // "Preload new plugins offline" checkbox
 #define IDC_GSET_SKIP_UNCHANGED  2246   // "Skip writing unchanged params on recall" checkbox
 #define IDC_GSET_CHUNK_BTN       2247   // "Chunk Recall Plugins..." button in global settings
+#define IDC_GSET_LAYERS_BTN      2253   // "Layers..." button in global settings
 
 // ---- Chunk Recall Plugins dialog ------------------------------------------
 #define IDD_CHUNK_RECALL_PLUGINS 273
