@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.0.18-beta] — 2026-06-12
+
+### New Features
+
+- **Settings: Detailed recall timing breakdown**: When "Duration debug" is enabled, the REAPER console now shows a full per-phase breakdown after each scene recall — SnapToEnd, BuildTrackMap (with matched/skipped track counts), DiscreteParams, FXChainSync, SendsSetup, TrackReorder, BuildLerpLists (with vol/pan, FX param, wet, and send lerp counts), RestoreLayerState, and grand total. Instant-path recalls show a simplified version. Makes it easy to pinpoint which phase is taking the most time.
+
+### Bug Fixes
+
+- **Layers: Track selection preserved on layer switch**: Switching layers no longer selects all tracks. The previous code passed a `bool*` to `GetSetMediaTrackInfo(tr, "I_SELECTED", ...)` — REAPER reads 4 bytes for `I_SELECTED`, so a 1-byte `bool` caused garbage reads that resulted in all tracks appearing selected. Fixed by using `int` throughout and saving/restoring the selection vector explicitly.
+
+- **Layers: REAPER native spacers auto-sync into active layer**: Visual spacers inserted via the REAPER track list (Edit → Insert visual spacer) are now automatically detected and written into the active layer on the next timer tick. Previously, `SyncLayerOrderFromReaper` only synced track order — it now also reads `I_SPACER` per track and injects or removes spacer slots in the layer to match.
+
+- **Scenes: Spacer recall fixed**: Visual spacers in scenes were silently failing to apply on recall. `Main_OnCommand(42665)` ("Insert visual spacer before selected tracks") does not work inside `PreventUIRefresh(1)` — moved the spacer insertion step to after `PreventUIRefresh(-1)` so REAPER processes the action correctly.
+
+---
+
 ## [v0.0.17-beta] — 2026-06-12
 
 ### New Features
