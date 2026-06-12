@@ -7,6 +7,9 @@
 #include <cstring>
 #include <algorithm>
 
+// Defined in TransitionWnd.cpp — used for optional debug popups
+extern bool g_durationDebug;
+
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
@@ -274,6 +277,7 @@ void TransitionSnapshot::Capture(int mask)
     }
 
     // --- Debug notify -------------------------------------------------------
+    // Chunk recall debug
     if (g_chunkRecallNotify)
     {
         std::string msg;
@@ -284,8 +288,46 @@ void TransitionSnapshot::Capture(int mask)
         if (!msg.empty())
         {
             std::string full = "Scene saved with chunk recall for:\n" + msg;
-            MessageBoxA(GetMainHwnd(), full.c_str(), "Chunk Recall — Debug", MB_OK | MB_ICONINFORMATION);
+            MessageBoxA(GetMainHwnd(), full.c_str(), "Chunk Recall \u2014 Debug", MB_OK | MB_ICONINFORMATION);
         }
+    }
+
+    // Spacer debug (requires Duration Debug mode on in Global Settings)
+    if (g_durationDebug && !m_layers.empty())
+    {
+        std::string msg;
+        bool anySpacers = false;
+        for (int li = 0; li < (int)m_layers.size(); li++)
+        {
+            const CapturedLayer& cl = m_layers[li];
+            int spacerCount = 0;
+            for (const auto& t : cl.tracks)
+                if (t.isSpacer) spacerCount++;
+
+            char buf[256];
+            snprintf(buf, sizeof(buf), "Layer %d \"%s\": %d track(s), %d spacer(s)\n",
+                     li, cl.name.c_str(), (int)cl.tracks.size(), spacerCount);
+            msg += buf;
+
+            if (spacerCount > 0)
+            {
+                anySpacers = true;
+                msg += "  Spacer positions: ";
+                for (int ti = 0; ti < (int)cl.tracks.size(); ti++)
+                {
+                    if (cl.tracks[ti].isSpacer)
+                    {
+                        char pos[16];
+                        snprintf(pos, sizeof(pos), "[%d] ", ti);
+                        msg += pos;
+                    }
+                }
+                msg += "\n";
+            }
+        }
+        std::string title = anySpacers ? "Spacer Debug \u2014 Scene Save (spacers found)"
+                                       : "Spacer Debug \u2014 Scene Save (NO spacers in any layer)";
+        MessageBoxA(GetMainHwnd(), msg.c_str(), title.c_str(), MB_OK | MB_ICONINFORMATION);
     }
 }
 

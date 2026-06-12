@@ -202,15 +202,49 @@ void LayersEngine::DoApplyLayer(int idx)
         }
     }
 
+    // Briefly select then deselect the first visible MCP track to nudge
+    // control surfaces into refreshing their channel strip assignments.
+    if (cfg.triggerMcpSelect)
+    {
+        int numAllTracks = CountTracks(0);
+        MediaTrack* firstTr = nullptr;
+        for (int li = 0; li < limit && !firstTr; li++)
+        {
+            if (layer.tracks[li].isSpacer) continue;
+            for (int t = 0; t < numAllTracks; t++)
+            {
+                MediaTrack* tr = GetTrack(0, t);
+                if (!tr) continue;
+                GUID* tg = GetTrackGUID(tr);
+                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
+                {
+                    firstTr = tr;
+                    break;
+                }
+            }
+        }
+        if (firstTr)
+        {
+            SetOnlyTrackSelected(firstTr);
+            // Deselect immediately so we don't leave an unintended selection.
+            bool sel = false;
+            GetSetMediaTrackInfo(firstTr, "I_SELECTED", &sel);
+        }
+    }
+
+    // End the UI-refresh suppression before firing REAPER actions.
+    // Main_OnCommand needs UI refresh active to correctly write I_SPACER.
+    PreventUIRefresh(-1);
+    TrackList_AdjustWindows(false);
+
     // ---- Set REAPER visual spacers via built-in actions --------------------
     // Action 42665 = "Track: Insert visual spacer before tracks"
-    // We select each target track and fire the action so REAPER handles the
-    // I_SPACER write AND the visual repaint itself.
+    // Must run AFTER PreventUIRefresh(-1) — REAPER actions need UI refresh
+    // active to correctly detect selection and write I_SPACER values.
     {
         int numAllTracks = CountTracks(0);
 
-        // Clear all existing spacers with I_SPACER=0.  No repaint needed yet;
-        // the action calls below will trigger a full refresh at the end.
+        // Clear all existing spacers directly.
         int zeroVal = 0;
         for (int t = 0; t < numAllTracks; t++)
         {
@@ -257,39 +291,6 @@ void LayersEngine::DoApplyLayer(int idx)
         }
     }
 
-    // Briefly select then deselect the first visible MCP track to nudge
-    // control surfaces into refreshing their channel strip assignments.
-    if (cfg.triggerMcpSelect)
-    {
-        int numAllTracks = CountTracks(0);
-        MediaTrack* firstTr = nullptr;
-        for (int li = 0; li < limit && !firstTr; li++)
-        {
-            if (layer.tracks[li].isSpacer) continue;
-            for (int t = 0; t < numAllTracks; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                if (!tr) continue;
-                GUID* tg = GetTrackGUID(tr);
-                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                {
-                    firstTr = tr;
-                    break;
-                }
-            }
-        }
-        if (firstTr)
-        {
-            SetOnlyTrackSelected(firstTr);
-            // Deselect immediately so we don't leave an unintended selection.
-            bool sel = false;
-            GetSetMediaTrackInfo(firstTr, "I_SELECTED", &sel);
-        }
-    }
-
-    PreventUIRefresh(-1);
-
-    TrackList_AdjustWindows(false);
     UpdateArrange();
 }
 
