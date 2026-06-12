@@ -67,6 +67,9 @@
 #define IDC_SNAP_LAYER           2142   // layer assignment combobox
 #define IDC_RECALL_LAYERS        2143   // "Recall layer with scene" checkbox
 #define IDC_SETTINGS_BTN         2144   // "Settings..." button (opens scene settings popup)
+#define IDC_SNAPNAME             2145   // scene title edit box (main Scenes window right panel)
+#define IDC_LAYERS_BTN           2146   // "Layers..." button (main Scenes window right panel)
+#define IDC_LAYER_STATUS         2147   // current layer indicator label (main Scenes window)
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213
@@ -146,8 +149,11 @@
 #define IDC_GSAFE_LAYERS         2221
 #define IDC_GSAFE_ALL            2222
 
+// ---- Duration debug checkbox (Global Settings) ---------------------------
+#define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox
+
 // ---- Scenes window dock toggle + marker option ----------------------------
-#define IDC_DOCK_BTN             2145   // (unused, reserved)
+// (2145-2147 now used – see IDC_SNAPNAME etc. above)
 #define IDC_MARKER_BTN           2222
 #define IDC_CUE_SETUP_BTN        2223   // "Cue Setup..." button
 

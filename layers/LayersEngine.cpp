@@ -120,6 +120,8 @@ void LayersEngine::DoApplyLayer(int idx)
     const LayerDef&       layer = m_layers[idx];
     const LayersSettings& cfg   = m_settings;
 
+    PreventUIRefresh(1);
+
     // Determine slot limit (spacers count as slots)
     int limit = (int)layer.tracks.size();
     if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
@@ -179,6 +181,7 @@ void LayersEngine::DoApplyLayer(int idx)
         {
             for (int li = 0; li < limit; li++)
             {
+                if (layer.tracks[li].isSpacer) continue;  // spacers have no GUID, skip
                 int curPos = -1;
                 int now = CountTracks(0);
                 for (int t = 0; t < now; t++)
@@ -283,6 +286,8 @@ void LayersEngine::DoApplyLayer(int idx)
             GetSetMediaTrackInfo(firstTr, "I_SELECTED", &sel);
         }
     }
+
+    PreventUIRefresh(-1);
 
     TrackList_AdjustWindows(false);
     UpdateArrange();

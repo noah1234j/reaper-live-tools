@@ -23,7 +23,7 @@
 //   Right (x 158-255) : controls (~97 DU wide)
 // ---------------------------------------------------------------------------
 
-IDD_TSNAPS DIALOGEX 0, 0, 258, 175
+IDD_TSNAPS DIALOGEX 0, 0, 258, 193
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Scenes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -33,31 +33,44 @@ BEGIN
     CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
 
     // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-    LTEXT           "", IDC_LIST, 5, 19, 148, 153
+    LTEXT           "", IDC_LIST, 5, 19, 148, 171
 
     // ---- Top action buttons -----------------------------------------------
     PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
     PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
 
+    // ---- Scene title (inline name edit) ----------------------------------
+    EDITTEXT        IDC_SNAPNAME,                   158, 17, 97, 12, ES_AUTOHSCROLL | WS_BORDER
+
     // ---- Progress bar placeholder – replaced dynamically -----------------
-    LTEXT           "", IDC_PROGRESS,          158, 37, 97,  8
+    LTEXT           "", IDC_PROGRESS,          158, 31, 97,  8
+
+    // ---- Per-scene layer selector ----------------------------------------
+    COMBOBOX        IDC_SNAP_LAYER,             158, 41, 97, 100,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     // ---- Scene notes (multiline) -----------------------------------------
-    LTEXT           "Notes:", IDC_STATIC,       158, 48, 97,  8
-    EDITTEXT        IDC_SNAPNOTES,              158, 58, 97, 40,
+    LTEXT           "Notes:", IDC_STATIC,       158, 55, 97,  8
+    EDITTEXT        IDC_SNAPNOTES,              158, 65, 97, 34,
                     ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER
 
+    // ---- Current layer indicator -----------------------------------------
+    LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 101, 97, 8
+
     // ---- Status ----------------------------------------------------------
-    LTEXT           "Idle",   IDC_STATUS,      158, 102, 97, 10
+    LTEXT           "Idle",   IDC_STATUS,      158, 111, 97, 10
 
     // ---- Safes button ---------------------------------------------------
-    PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 117, 97, 13
+    PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 124, 97, 13
 
     // ---- Cue list setup button ------------------------------------------
-    PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 134, 97, 13
+    PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 141, 97, 13
 
     // ---- Settings button (opens global settings) -------------------------
-    PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 151, 97, 13
+    PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 158, 97, 13
+
+    // ---- Layers button (opens Layers window) ----------------------------
+    PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 175, 97, 13
 END
 
 // ---------------------------------------------------------------------------
@@ -136,7 +149,8 @@ BEGIN
     CONTROL         "Skip writing unchanged params on recall (faster for stable FX chains)", IDC_GSET_SKIP_UNCHANGED, "Button",
                     BS_AUTOCHECKBOX | WS_TABSTOP, 10, 196, 185, 10
     PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 210, 120, 13
-    PUSHBUTTON      "Layers...", IDC_GSET_LAYERS_BTN, 10, 226, 60, 13
+    CONTROL         "Duration debug (print step timing to console)", IDC_GSET_DURATION_DEBUG, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 10, 226, 185, 10
 
     DEFPUSHBUTTON   "OK",     IDOK,      75, 243, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 135, 243, 50, 14

@@ -1,5 +1,29 @@
 # Changelog
 
+## [v0.0.17-beta] — 2026-06-12
+
+### New Features
+
+- **Scenes: Scene title edit box**: A new text edit field above the Notes area shows the selected scene's name. Editing it immediately renames the scene in the list, replacing the previous need to double-click inline in the ListView.
+
+- **Scenes: Layers button in main UI**: "Layers..." button added to the bottom of the Scenes window right panel (below Settings). Clicking it opens the Layers window. The button is no longer inside the Global Settings dialog.
+
+- **Scenes: Per-scene layer dropdown**: A dropdown (combobox) in the right panel lets you choose which layer activates when a scene is recalled. It shows the layers stored inside that scene's snapshot. "no layer recall" (index 0) means no layer change on recall. Default is the layer that was active when the scene was saved.
+
+- **Scenes: Layer status indicator**: A "Layer: [name]" readout in the right panel updates in real time (every 100ms) to show which layer is currently active.
+
+- **Scenes/Layers: Mutual exclusivity**: When a scene with an assigned layer is recalled, the scene engine no longer applies track visibility (TS_VIS) — the Layers engine manages visibility instead. This prevents the two systems from conflicting.
+
+- **Settings: Duration debug**: New "Duration debug" checkbox in Global Settings. When enabled, a timing breakdown is printed to the REAPER console after each scene recall, showing time spent in engine recall and RestoreLayerState so performance bottlenecks can be identified.
+
+### Bug Fixes
+
+- **Layers: Fader levels no longer jump on layer switch**: `DoApplyLayer` now wraps all REAPER state changes inside `PreventUIRefresh(1)` / `PreventUIRefresh(-1)`, preventing automation modes or control surfaces from triggering spurious fader updates during the layer apply.
+
+- **Layers: Spacer check in reorder loop**: Added an explicit `isSpacer` guard to the optional track-reorder loop in `DoApplyLayer` to prevent zero-GUID spacer slots from being processed as real tracks.
+
+---
+
 ## [v0.0.16-beta] — 2026-06-11
 
 ### New Features

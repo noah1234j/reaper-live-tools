@@ -67,6 +67,7 @@ static bool g_ctrlClickOverwrite  = false;  // Ctrl+click overwrites a scene
 // FX window setting (non-static so TransitionEngine.cpp can extern it)
 bool g_preloadOffline             = false;  // keep FX windows open during recall
 bool g_skipUnchangedParams        = false;  // skip writing params that haven't changed
+bool g_durationDebug              = false;  // print step-timing report to REAPER console on recall
 
 // Global default transition settings for newly created scenes
 static double g_defaultDuration = 0.0;
@@ -250,7 +251,11 @@ void TransitionWnd_RecallScene(int index)
         double pos = GetPlayPosition();
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
     }
-    TransitionEngine::Get().Recall(snap, snap->m_mask, duration);
+    // Strip TS_VIS when a layer is being recalled (layers manage visibility)
+    int effectiveMask = snap->m_mask;
+    if (!snap->m_layers.empty() && snap->m_layerIdx >= 0)
+        effectiveMask &= ~TS_VIS;
+    TransitionEngine::Get().Recall(snap, effectiveMask, duration);
     TransitionEngine::Get().SetCurrentSlot(index);
     // Restore full layer state (always, unless TS_LAYERS safe bit is set)
     RestoreLayerState(snap);
@@ -430,6 +435,13 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_chunkRecallNotify = (val != 0);
         return true;
     }
+    if (strncmp(line, "LTDURATIONDEBUG ", 16) == 0)
+    {
+        int val = 0;
+        sscanf(line + 16, "%d", &val);
+        g_durationDebug = (val != 0);
+        return true;
+    }
     if (strncmp(line, "LTSCENESWND ", 12) == 0)
     {
         int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
@@ -460,6 +472,7 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
     for (const auto& kw : g_chunkRecallKeywords)
         ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
+    ctx->AddLine("LTDURATIONDEBUG %d", g_durationDebug ? 1 : 0);
 
     // Per-project window state – snapshot dock/float/rect so reloading the project
     // restores exactly what the user had open.
@@ -522,8 +535,43 @@ static void LoadEditorFromSnapshot(HWND hwnd, const TransitionSnapshot* snap)
 {
     g_syncingEditor = true;
 
+    // Scene title edit box
+    SetDlgItemText(hwnd, IDC_SNAPNAME, snap ? snap->m_name.c_str() : "");
+
     // Transition settings and notes are in the per-scene Settings popup.
     SetDlgItemText(hwnd, IDC_SNAPNOTES, snap ? snap->m_notes.c_str() : "");
+
+    // Per-scene layer selector: populate from the scene's captured layer list
+    {
+        HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
+        g_syncingEditor = true;  // keep the guard while filling combobox
+        SendMessage(hCb, CB_RESETCONTENT, 0, 0);
+        SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)"(no layer recall)");
+        if (snap && !snap->m_isSpacer)
+        {
+            for (const auto& cl : snap->m_layers)
+                SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)cl.name.c_str());
+            int sel = (snap->m_layerIdx >= 0 && snap->m_layerIdx < (int)snap->m_layers.size())
+                      ? snap->m_layerIdx + 1 : 0;
+            SendMessage(hCb, CB_SETCURSEL, (WPARAM)sel, 0);
+            EnableWindow(hCb, TRUE);
+        }
+        else
+        {
+            SendMessage(hCb, CB_SETCURSEL, 0, 0);
+            EnableWindow(hCb, FALSE);
+        }
+    }
+
+    // Update current layer indicator
+    {
+        char layerBuf[128] = "Layer: -";
+        int activeLyr = LayersEngine::Get().GetActiveLayer();
+        if (activeLyr >= 0 && activeLyr < LayersEngine::Get().GetLayerCount())
+            snprintf(layerBuf, sizeof(layerBuf), "Layer: %s",
+                     LayersEngine::Get().GetLayer(activeLyr).name);
+        SetDlgItemText(hwnd, IDC_LAYER_STATUS, layerBuf);
+    }
 
     g_syncingEditor = false;
 }
@@ -759,12 +807,43 @@ static void DoRecall(HWND hwnd, int listIndex)
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
     }
 
-    TransitionEngine::Get().Recall(snap, snap->m_mask, duration);
+    // When a layer is being recalled, layers manage track visibility.
+    // Strip TS_VIS from the engine mask so the two systems don't fight.
+    int effectiveMask = snap->m_mask;
+    if (!snap->m_layers.empty() && snap->m_layerIdx >= 0)
+        effectiveMask &= ~TS_VIS;
+
+    // --- Duration debug: record step timings if enabled ---
+    LARGE_INTEGER freq = {}, t0 = {}, t1 = {}, t2 = {}, t3 = {};
+    if (g_durationDebug)
+        QueryPerformanceFrequency(&freq);
+
+    if (g_durationDebug) QueryPerformanceCounter(&t0);
+    TransitionEngine::Get().Recall(snap, effectiveMask, duration);
+    if (g_durationDebug) QueryPerformanceCounter(&t1);
+
     TransitionEngine::Get().SetCurrentSlot(snapIdx);
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
 
-    // Restore full layer state if "Recall layer with scene" is enabled
+    // Restore full layer state
+    if (g_durationDebug) QueryPerformanceCounter(&t2);
     RestoreLayerState(snap);
+    if (g_durationDebug) QueryPerformanceCounter(&t3);
+
+    if (g_durationDebug && freq.QuadPart > 0)
+    {
+        double msRecall = (double)(t1.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        double msLayers = (double)(t3.QuadPart - t2.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        double msTotal  = (double)(t3.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+            "[Live Tools] Scene recall timing for \"%s\":\n"
+            "  Engine recall:       %.2f ms\n"
+            "  RestoreLayerState:   %.2f ms\n"
+            "  Total:               %.2f ms\n",
+            snap->m_name.c_str(), msRecall, msLayers, msTotal);
+        ShowConsoleMsg(buf);
+    }
 
     // Cue mode: auto-advance to the next item in the cue list
     if (g_cueMode)
@@ -1235,6 +1314,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_CTRL_OVERWRITE,  g_ctrlClickOverwrite  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_PRELOAD_OFFLINE,  g_preloadOffline      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SKIP_UNCHANGED,   g_skipUnchangedParams ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_DURATION_DEBUG,   g_durationDebug       ? BST_CHECKED : BST_UNCHECKED);
 
         // Tooltip for the preload offline checkbox
         HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
@@ -1271,9 +1351,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER),       !instant);
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER_CUSTOM),
                      !instant && g_defaultTaper == TAPER_CUSTOM);
-        // Layers button: disabled when Layers safe is active
-        EnableWindow(GetDlgItem(hwnd, IDC_GSET_LAYERS_BTN),
-                     !(g_globalSafeMask & TS_LAYERS));
         return TRUE;
     }
     case WM_COMMAND:
@@ -1303,11 +1380,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
                            hwnd, ChunkRecallPluginsDlgProc, 0);
             return TRUE;
         }
-        if (id == IDC_GSET_LAYERS_BTN)
-        {
-            LayersWnd_ShowHide();
-            return TRUE;
-        }
         if (id == IDOK)
         {
             bool instant = (IsDlgButtonChecked(hwnd, IDC_GSET_INSTANT) == BST_CHECKED);            if (instant)
@@ -1334,6 +1406,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_ctrlClickOverwrite  = (IsDlgButtonChecked(hwnd, IDC_GSET_CTRL_OVERWRITE)   == BST_CHECKED);
             g_preloadOffline      = (IsDlgButtonChecked(hwnd, IDC_GSET_PRELOAD_OFFLINE)   == BST_CHECKED);
             g_skipUnchangedParams = (IsDlgButtonChecked(hwnd, IDC_GSET_SKIP_UNCHANGED)    == BST_CHECKED);
+            g_durationDebug       = (IsDlgButtonChecked(hwnd, IDC_GSET_DURATION_DEBUG)    == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);
@@ -2359,6 +2432,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             SendMessage(hProg, PBM_SETPOS, (WPARAM)pct, 0);
 
             SetDlgItemText(hwnd, IDC_STATUS, eng.GetStatus());
+
+            // Update layer status indicator
+            {
+                char layerBuf[128] = "Layer: -";
+                int activeLyr = LayersEngine::Get().GetActiveLayer();
+                if (activeLyr >= 0 && activeLyr < LayersEngine::Get().GetLayerCount())
+                    snprintf(layerBuf, sizeof(layerBuf), "Layer: %s",
+                             LayersEngine::Get().GetLayer(activeLyr).name);
+                SetDlgItemText(hwnd, IDC_LAYER_STATUS, layerBuf);
+            }
         }
         return TRUE;
 
@@ -2396,6 +2479,33 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return TRUE;
         }
 
+        if (id == IDC_SNAPNAME && evt == EN_CHANGE && !g_syncingEditor)
+        {
+            int idx = GetSelectedListIndex(hwnd);
+            if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
+            {
+                char buf[256] = {};
+                GetDlgItemText(hwnd, IDC_SNAPNAME, buf, sizeof(buf));
+                g_snapshots[idx]->m_name = buf;
+                HWND hList = GetDlgItem(hwnd, IDC_LIST);
+                ListView_SetItemText(hList, idx, 1, buf);
+                MarkProjectDirty(nullptr);
+            }
+            return TRUE;
+        }
+
+        if (id == IDC_SNAP_LAYER && evt == CBN_SELCHANGE && !g_syncingEditor)
+        {
+            int idx = GetSelectedListIndex(hwnd);
+            if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
+            {
+                int sel = (int)SendDlgItemMessage(hwnd, IDC_SNAP_LAYER, CB_GETCURSEL, 0, 0);
+                g_snapshots[idx]->m_layerIdx = sel - 1;  // index 0 = "no layer recall"
+                MarkProjectDirty(nullptr);
+            }
+            return TRUE;
+        }
+
         // ---- Button / checkbox handlers ----------------------------------
         switch (id)
         {
@@ -2411,6 +2521,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             // Opens global default transition settings
             DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_GLOBAL_SETTINGS),
                            hwnd, GlobalSettingsDialogProc, 0);
+            break;
+
+        case IDC_LAYERS_BTN:
+            LayersWnd_ShowHide();
             break;
 
         case IDC_CUE_SETUP_BTN:
