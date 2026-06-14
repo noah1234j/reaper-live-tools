@@ -68,6 +68,8 @@ static bool g_ctrlClickOverwrite  = false;  // Ctrl+click overwrites a scene
 bool g_preloadOffline             = false;  // keep FX windows open during recall
 bool g_skipUnchangedParams        = false;  // skip writing params that haven't changed
 bool g_durationDebug              = false;  // print step-timing report to REAPER console on recall
+bool g_shadowParams               = false;  // maintain VST3 param shadow map for instant recall
+bool g_chunkAllInstant            = false;  // capture+restore all plugins by chunk on instant path
 
 // Global default transition settings for newly created scenes
 static double g_defaultDuration = 0.0;
@@ -373,6 +375,8 @@ void TransitionWnd_ResetSettings()
     g_ctrlClickOverwrite = false;
     g_preloadOffline     = false;
     g_skipUnchangedParams = false;
+    g_shadowParams        = false;
+    g_chunkAllInstant     = false;
     g_chunkRecallKeywords = GetChunkRecallDefaults();  // restore defaults on project reset
     g_chunkRecallNotify   = false;
     s_chunkPluginsLoadedFromProject = false;  // allow project list to replace defaults
@@ -411,6 +415,20 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         int val = 0;
         sscanf(line + 16, "%d", &val);
         g_skipUnchangedParams = (val != 0);
+        return true;
+    }
+    if (strncmp(line, "LTSHADOWPARAMS ", 15) == 0)
+    {
+        int val = 0;
+        sscanf(line + 15, "%d", &val);
+        g_shadowParams = (val != 0);
+        return true;
+    }
+    if (strncmp(line, "LTCHUNKALLINSTANT ", 18) == 0)
+    {
+        int val = 0;
+        sscanf(line + 18, "%d", &val);
+        g_chunkAllInstant = (val != 0);
         return true;
     }
     if (strncmp(line, "LTCHUNKPLUGIN ", 14) == 0)
@@ -469,6 +487,8 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_ctrlClickOverwrite ? 1 : 0);
     ctx->AddLine("LTPRELOADOFFLINE %d", g_preloadOffline ? 1 : 0);
     ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
+    ctx->AddLine("LTSHADOWPARAMS %d", g_shadowParams ? 1 : 0);
+    ctx->AddLine("LTCHUNKALLINSTANT %d", g_chunkAllInstant ? 1 : 0);
     for (const auto& kw : g_chunkRecallKeywords)
         ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
@@ -836,19 +856,42 @@ static void DoRecall(HWND hwnd, int listIndex)
         double msLayers = (double)(t3.QuadPart - t2.QuadPart) * 1000.0 / (double)freq.QuadPart;
         double msTotal  = (double)(t3.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart;
 
-        char buf[1024];
+        // Settings line (shown for both instant and timed)
+        char settingsBuf[256];
+        snprintf(settingsBuf, sizeof(settingsBuf),
+            "  Settings:  ShadowParams=%s  ChunkInstant=%s  SkipUnchanged=%s  PreloadOffline=%s\n",
+            t.s_shadowParams    ? "ON" : "off",
+            t.s_chunkAllInstant ? "ON" : "off",
+            t.s_skipUnchanged   ? "ON" : "off",
+            t.s_preloadOffline  ? "ON" : "off");
+
+        char buf[2048];
         if (t.instantPath)
         {
             snprintf(buf, sizeof(buf),
                 "[Live Tools] Scene recall timing: \"%s\"  [INSTANT]\n"
+                "%s"
                 "  BuildTrackMap:     %6.2f ms  (%d tracks)\n"
                 "  ApplyImmediate:    %6.2f ms\n"
+                "    VolPan:          %6.2f ms\n"
+                "    Mute/Solo/Phase: %6.2f ms\n"
+                "    Vis/Sel/Offset:  %6.2f ms\n"
+                "    Layout:          %6.2f ms\n"
+                "    FX chains:       %6.2f ms\n"
+                "    Sends:           %6.2f ms\n"
                 "  Engine total:      %6.2f ms\n"
                 "  RestoreLayerState: %6.2f ms\n"
                 "  ── TOTAL ──        %6.2f ms\n",
                 snap->m_name.c_str(),
+                settingsBuf,
                 t.buildTrackMap,  t.tracksMatched,
                 t.discreteParams,
+                t.i_volPan,
+                t.i_muteSolo,
+                t.i_vis,
+                t.i_layout,
+                t.i_fx,
+                t.i_sends,
                 t.total,
                 msLayers,
                 msTotal);
@@ -857,6 +900,7 @@ static void DoRecall(HWND hwnd, int listIndex)
         {
             snprintf(buf, sizeof(buf),
                 "[Live Tools] Scene recall timing: \"%s\"  [%.2fs timed]\n"
+                "%s"
                 "  SnapToEnd:         %6.2f ms\n"
                 "  BuildTrackMap:     %6.2f ms  (%d matched, %d skipped)\n"
                 "  DiscreteParams:    %6.2f ms  (mute/solo/vis/name/height/color)\n"
@@ -868,6 +912,7 @@ static void DoRecall(HWND hwnd, int listIndex)
                 "  RestoreLayerState: %6.2f ms\n"
                 "  ── TOTAL ──        %6.2f ms\n",
                 snap->m_name.c_str(), duration,
+                settingsBuf,
                 t.snapToEnd,
                 t.buildTrackMap,  t.tracksMatched,  t.tracksSkipped,
                 t.discreteParams,
@@ -1407,6 +1452,8 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_PRELOAD_OFFLINE,  g_preloadOffline      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SKIP_UNCHANGED,   g_skipUnchangedParams ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_DURATION_DEBUG,   g_durationDebug       ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_SHADOW_PARAMS,     g_shadowParams       ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_CHUNK_ALL_INSTANT, g_chunkAllInstant    ? BST_CHECKED : BST_UNCHECKED);
 
         // Tooltip for the preload offline checkbox
         HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
@@ -1499,6 +1546,8 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_preloadOffline      = (IsDlgButtonChecked(hwnd, IDC_GSET_PRELOAD_OFFLINE)   == BST_CHECKED);
             g_skipUnchangedParams = (IsDlgButtonChecked(hwnd, IDC_GSET_SKIP_UNCHANGED)    == BST_CHECKED);
             g_durationDebug       = (IsDlgButtonChecked(hwnd, IDC_GSET_DURATION_DEBUG)    == BST_CHECKED);
+            g_shadowParams        = (IsDlgButtonChecked(hwnd, IDC_GSET_SHADOW_PARAMS)     == BST_CHECKED);
+            g_chunkAllInstant     = (IsDlgButtonChecked(hwnd, IDC_GSET_CHUNK_ALL_INSTANT) == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);

@@ -191,6 +191,19 @@ void TransitionSnapshot::Capture(int mask)
                     fs.normVals.resize(fs.paramCount);
                     for (int p = 0; p < fs.paramCount; p++)
                         fs.normVals[p] = TrackFX_GetParamNormalized(tr, fx, p);
+
+                    // Always capture vst_chunk alongside normVals.
+                    // This makes g_chunkAllInstant a pure recall-time switch:
+                    // no need to re-save scenes after changing the setting.
+                    // normVals is kept so timed transitions can still lerp params.
+                    {
+                        std::vector<char> chunkBuf(512 * 1024, '\0');
+                        if (TrackFX_GetNamedConfigParm(tr, fx, "vst_chunk",
+                                                       chunkBuf.data(), (int)chunkBuf.size()))
+                        {
+                            fs.fxChunk = chunkBuf.data();
+                        }
+                    }
                 }
 
                 ts.fx.push_back(std::move(fs));

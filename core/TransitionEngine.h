@@ -8,6 +8,7 @@ class MediaTrack;
 #include <vector>
 #include <map>
 #include <functional>
+#include <unordered_map>
 
 // ---------------------------------------------------------------------------
 // Safes – prevent specific parameter types from being touched during recall.
@@ -76,6 +77,14 @@ public:
         double trackReorder   = 0.0;  // TS_TRACKORDER reorder pass
         double buildLerpLists = 0.0;  // BuildLerpLists (vol/pan/FX lerp setup)
         double total          = 0.0;  // wall time for entire Recall()
+
+        // Instant-path sub-breakdowns (only collected when g_durationDebug)
+        double i_volPan   = 0.0;  // vol/pan/panMode/panLaw across all tracks
+        double i_muteSolo = 0.0;  // mute/solo/phase across all tracks
+        double i_vis      = 0.0;  // visibility + selection + play-offset
+        double i_layout   = 0.0;  // name/color/height across all tracks
+        double i_fx       = 0.0;  // total SyncFXChain time (all tracks)
+        double i_sends    = 0.0;  // send add/update/remove time (all tracks)
         int    tracksMatched  = 0;    // tracks found in project
         int    tracksSkipped  = 0;    // tracks not found
         int    paramLerps     = 0;    // FX param lerp entries
@@ -83,6 +92,12 @@ public:
         int    wetLerps       = 0;    // wet/dry lerp entries
         int    sendLerps      = 0;    // send lerp entries
         bool   instantPath    = false; // true = duration==0
+
+        // Settings that were active at recall time (logged when g_durationDebug)
+        bool   s_skipUnchanged    = false;
+        bool   s_shadowParams     = false;
+        bool   s_chunkAllInstant  = false;
+        bool   s_preloadOffline   = false;
 
         // Per-FX operation timing for the instant path.
         // Only populated when g_durationDebug is true.
@@ -122,6 +137,29 @@ public:
     // Callback registered with plugin_register("timer", ...)
     // – must be a plain static function (no captures)
     static void TimerCallback();
+
+    // -----------------------------------------------------------------------
+    // FX Parameter Shadow Map
+    // -----------------------------------------------------------------------
+    // Tracks the last-written normalized value for each (track GUID, fxIdent,
+    // paramIdx) triple.  Populated two ways:
+    //   (a) Write-through: after each TrackFX_SetParamNormalized in SyncFXChain.
+    //   (b) CSURF_EXT_SETFXPARAM notifications via the FXShadowSurface class.
+    // Used during instant recall of VST3 plugins: if the shadow value already
+    // matches the target, the SetParamNormalized call (and the plugin DSP
+    // recalc it triggers) is skipped.
+    //
+    // Shadow is per-plugin identified by fxIdent ("fx_ident" named config parm).
+    // It is cleared on project load to prevent stale data from a previous project.
+    // -----------------------------------------------------------------------
+    void ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val);
+    bool ShadowGet  (const GUID& guid, const char* fxIdent, int paramIdx, double& outVal) const;
+    void ShadowClear();
+
+    // Register / unregister the internal CSURF surface that feeds the shadow map.
+    // Called from ReaperPluginEntry on load and unload.
+    static void RegisterShadowSurface();
+    static void UnregisterShadowSurface();
 
     // Optional notify: set by TransitionWnd so the engine can poke UI on finish
     std::function<void()> onTransitionComplete;
@@ -237,4 +275,15 @@ private:
     std::vector<SendLerp>    m_sendLerps;
 
     char   m_statusBuf[256]   = "Idle";
+
+    // -----------------------------------------------------------------------
+    // Shadow map storage
+    // Key: track GUID → fxIdent string → per-param values (indexed by param idx)
+    // A value of -1e308 (kShadowEmpty) means "not yet observed".
+    // -----------------------------------------------------------------------
+    using ShadowParamVec = std::vector<double>;
+    using ShadowFXMap    = std::unordered_map<std::string, ShadowParamVec>;
+    using ShadowTrackMap = std::unordered_map<GUID, ShadowFXMap, GUIDHash, GUIDEqual>;
+    ShadowTrackMap m_shadow;
+    static constexpr double kShadowEmpty = -1e308;
 };

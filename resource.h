@@ -151,6 +151,8 @@
 
 // ---- Duration debug checkbox (Global Settings) ---------------------------
 #define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox
+#define IDC_GSET_SHADOW_PARAMS      2255   // "Shadow VST3 params" checkbox
+#define IDC_GSET_CHUNK_ALL_INSTANT  2256   // "Chunk all on instant path" checkbox
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 // (2145-2147 now used – see IDC_SNAPNAME etc. above)

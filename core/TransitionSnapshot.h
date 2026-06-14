@@ -9,8 +9,27 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <unordered_map>
 
 class ProjectStateContext; // defined in reaper_plugin.h
+
+// ---------------------------------------------------------------------------
+// GUID hash/equality for unordered containers
+// (Identical definitions also live in LayersEngine.cpp as local types.)
+// ---------------------------------------------------------------------------
+struct GUIDHash {
+    size_t operator()(const GUID& g) const noexcept {
+        size_t h1, h2;
+        memcpy(&h1, &g,         8);
+        memcpy(&h2, reinterpret_cast<const char*>(&g) + 8, 8);
+        return h1 ^ (h2 * 2654435761ULL);
+    }
+};
+struct GUIDEqual {
+    bool operator()(const GUID& a, const GUID& b) const noexcept {
+        return memcmp(&a, &b, sizeof(GUID)) == 0;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Mask bits – map 1:1 to the UI checkboxes
@@ -78,16 +97,19 @@ struct FXState
     bool   enabled    = true;// FX bypass state
 
     // Normalized [0..1] parameter values; size == paramCount.
-    // Empty when fxChunk is set (chunk is the sole source of state).
+    // Empty only for ChunkRecallList plugins (chunk is the sole source of state).
     std::vector<double> normVals;
 
     // Wet/dry mix (REAPER per-FX wet control, accessed via ":wet" ident)
     double wetVal = 1.0;
 
-    // Full VST state blob (base64 vst_chunk). Non-empty for plugins in the
-    // Chunk Recall list (e.g. Waves VMR) where module-swapping changes param
-    // semantics. When non-empty, recall uses vst_chunk restore instead of
-    // per-param writes; normVals is always empty.
+    // Full VST state blob (base64 vst_chunk). Non-empty for:
+    //   (a) ChunkRecallList plugins — normVals is always empty here;
+    //       recall uses vst_chunk only.
+    //   (b) All other plugins — vst_chunk captured alongside normVals
+    //       so g_chunkAllInstant is a pure recall-time switch (no re-save needed).
+    // Instant path uses vst_chunk when g_chunkAllInstant is on (or normVals empty).
+    // Timed path ignores fxChunk when normVals is populated (lerps via params).
     std::string fxChunk;
 };
 

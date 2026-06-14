@@ -57,3 +57,5 @@ void TransitionWnd_OnProjectLoad();   // restore window state after project load
 // Toggled via Global Settings. Saved per-project.
 extern bool g_preloadOffline;
 extern bool g_skipUnchangedParams;
+extern bool g_shadowParams;
+extern bool g_chunkAllInstant;

@@ -127,6 +127,7 @@ static void BeginLoadProjectState(bool isUndo,
     g_snapshots.clear();
     g_layouts.clear();
     g_dcaGroups.clear();
+    TransitionEngine::Get().ShadowClear();
     TransitionWnd_ResetCueList();
     TransitionWnd_ResetSettings();
     LayersEngine::Get().ResetForProject();
@@ -334,6 +335,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("-timer",          (void*)LiveLockEngine::TimerCallback);
         plugin_register("-csurf",           &csurf_integrator_reg);
         if (g_cmdSurfaceDiag) plugin_register("-gaccel", &g_surfaceDiagAccel);
+        TransitionEngine::UnregisterShadowSurface();
         plugin_register("-timer",          (void*)&TransitionEngine::TimerCallback);
         plugin_register("-projectconfig",  &g_projectconfig);
         plugin_register("-hookcustommenu", (void*)MenuHook);
@@ -589,6 +591,9 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     SurfaceMonitorWnd_Init(hInstance);
     // TEMPORARILY DISABLED – Control Surface (CSI) not registered
     // rec->Register("csurf", &csurf_integrator_reg);
+
+    // Register the hidden CSURF surface that feeds the VST3 parameter shadow map
+    TransitionEngine::RegisterShadowSurface();
 
     return 1; // success
 }

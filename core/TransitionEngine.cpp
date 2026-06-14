@@ -74,6 +74,8 @@ std::vector<TrackSafeEntry> g_trackSafes;
 // Shared UI preferences (defined non-static in TransitionWnd.cpp)
 extern bool g_preloadOffline;
 extern bool g_skipUnchangedParams;
+extern bool g_shadowParams;
+extern bool g_chunkAllInstant;
 
 int GetEffectiveSafeMask(const GUID& guid)
 {
@@ -93,6 +95,86 @@ TransitionEngine& TransitionEngine::Get()
 {
     static TransitionEngine s_inst;
     return s_inst;
+}
+
+// ---------------------------------------------------------------------------
+// FX Parameter Shadow Map – implementation
+// ---------------------------------------------------------------------------
+
+// Internal IReaperControlSurface that listens for CSURF_EXT_SETFXPARAM
+// notifications and writes them into the TransitionEngine shadow map.
+// Registered as a hidden "csurf_inst" surface so REAPER drives it alongside
+// all other surfaces. When g_shadowParams is off the handler is a fast no-op.
+class FXShadowSurface : public IReaperControlSurface
+{
+public:
+    const char* GetTypeString() override { return "LT_SHADOW"; }
+    const char* GetDescString() override { return "Live Tools Shadow Surface"; }
+    const char* GetConfigString() override { return ""; }
+    void CloseNoReset() override {}
+
+    int Extended(int call, void* p1, void* p2, void* p3) override
+    {
+        if (call != CSURF_EXT_SETFXPARAM || !g_shadowParams) return 0;
+        if (!p1 || !p2 || !p3) return 0;
+
+        MediaTrack* tr = static_cast<MediaTrack*>(p1);
+        int packed   = *static_cast<int*>(p2);
+        int fxIdx    = (packed >> 16) & 0xFFFF;
+        int paramIdx = packed & 0xFFFF;
+        double val   = *static_cast<double*>(p3);
+
+        GUID* tg = GetTrackGUID(tr);
+        if (!tg) return 0;
+
+        char ident[512] = {};
+        if (!TrackFX_GetNamedConfigParm(tr, fxIdx, "fx_ident", ident, (int)sizeof(ident)))
+            return 0;
+        if (!ident[0]) return 0;
+
+        TransitionEngine::Get().ShadowWrite(*tg, ident, paramIdx, val);
+        return 0;
+    }
+};
+
+static FXShadowSurface s_shadowSurface;
+
+void TransitionEngine::RegisterShadowSurface()
+{
+    plugin_register("csurf_inst", static_cast<IReaperControlSurface*>(&s_shadowSurface));
+}
+
+void TransitionEngine::UnregisterShadowSurface()
+{
+    plugin_register("-csurf_inst", static_cast<IReaperControlSurface*>(&s_shadowSurface));
+}
+
+void TransitionEngine::ShadowClear()
+{
+    m_shadow.clear();
+}
+
+void TransitionEngine::ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val)
+{
+    if (paramIdx < 0 || paramIdx > 8192) return; // sanity guard
+    auto& pvec = m_shadow[guid][fxIdent];
+    if (paramIdx >= static_cast<int>(pvec.size()))
+        pvec.resize(static_cast<size_t>(paramIdx + 1), kShadowEmpty);
+    pvec[static_cast<size_t>(paramIdx)] = val;
+}
+
+bool TransitionEngine::ShadowGet(const GUID& guid, const char* fxIdent, int paramIdx, double& outVal) const
+{
+    auto it = m_shadow.find(guid);
+    if (it == m_shadow.end()) return false;
+    auto it2 = it->second.find(fxIdent);
+    if (it2 == it->second.end()) return false;
+    const auto& pvec = it2->second;
+    if (paramIdx < 0 || paramIdx >= static_cast<int>(pvec.size())) return false;
+    double v = pvec[static_cast<size_t>(paramIdx)];
+    if (v == kShadowEmpty) return false;
+    outVal = v;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -461,17 +543,35 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             {
                 // Opt B: for existing (not newly added) plugins, skip params that
                 // already match the saved value to avoid redundant API calls.
+                // g_shadowParams (VST3): compare against the in-memory shadow map —
+                //   no API read-back needed; falls through to write only on mismatch.
+                // g_skipUnchangedParams (fallback): reads the live value via API.
+                // Both strategies write through and update the shadow on any write.
+                const bool isVST3 = (strncmp(fxs.name, "VST3:", 5) == 0);
                 if (out_fxOps)
                 {
                     double t0 = QpcMs();
                     for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     {
-                        if (!isNewPlugin && g_skipUnchangedParams)
+                        const double target = fxs.normVals[p];
+                        if (!isNewPlugin)
                         {
-                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
-                            if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                            if (isVST3 && g_shadowParams)
+                            {
+                                double sv;
+                                if (TransitionEngine::Get().ShadowGet(ts.guid, fxs.fxIdent, p, sv)
+                                    && fabs(sv - target) < 1e-7)
+                                    continue;
+                            }
+                            else if (g_skipUnchangedParams)
+                            {
+                                double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                                if (fabs(cur - target) < 1e-7) continue;
+                            }
                         }
-                        TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                        TrackFX_SetParamNormalized(tr, slot, p, target);
+                        if (isVST3 && g_shadowParams)
+                            TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                     opT.paramLoop_ms = QpcMs() - t0;
                 }
@@ -479,12 +579,25 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 {
                     for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     {
-                        if (!isNewPlugin && g_skipUnchangedParams)
+                        const double target = fxs.normVals[p];
+                        if (!isNewPlugin)
                         {
-                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
-                            if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                            if (isVST3 && g_shadowParams)
+                            {
+                                double sv;
+                                if (TransitionEngine::Get().ShadowGet(ts.guid, fxs.fxIdent, p, sv)
+                                    && fabs(sv - target) < 1e-7)
+                                    continue;
+                            }
+                            else if (g_skipUnchangedParams)
+                            {
+                                double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                                if (fabs(cur - target) < 1e-7) continue;
+                            }
                         }
-                        TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                        TrackFX_SetParamNormalized(tr, slot, p, target);
+                        if (isVST3 && g_shadowParams)
+                            TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                 }
                 // REAPER's :wet index is typically above paramCount and therefore not
@@ -586,9 +699,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             else
             {
                 // No change in enabled state.
-                if (!target->fxChunk.empty())
+                // Use chunk only when normVals is empty (true chunk-only plugin from
+                // ChunkRecallList). When normVals is also populated (g_chunkAllInstant
+                // snapshot), prefer lerping via normVals so smooth transitions work.
+                if (!target->fxChunk.empty() && target->normVals.empty())
                 {
-                    // Chunk plugin: apply vst_chunk directly on the online plugin.
+                    // Chunk-only plugin: apply vst_chunk directly on the online plugin.
                     // Wet lerp handled normally by BuildLerpLists (current→target).
                     TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
                 }
@@ -684,11 +800,14 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
 
         if (effMask & TS_VOL)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             double v = ts.vol;
             GetSetMediaTrackInfo(tr, "D_VOL", &v);
+            if (g_durationDebug) lastTimings.i_volPan += QpcMs() - t0;
         }
         if (effMask & TS_PAN)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             double pan = ts.pan;  int pm = ts.panMode;
             double w = ts.width;  double dpl = ts.dualPanL;
             double dpr = ts.dualPanR;  double pl = ts.panLaw;
@@ -698,38 +817,71 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             GetSetMediaTrackInfo(tr, "D_DUALPANL", &dpl);
             GetSetMediaTrackInfo(tr, "D_DUALPANR", &dpr);
             GetSetMediaTrackInfo(tr, "D_PANLAW",   &pl);
+            if (g_durationDebug) lastTimings.i_volPan += QpcMs() - t0;
         }
-        if (effMask & TS_MUTE)  { bool m = ts.mute;  GetSetMediaTrackInfo(tr, "B_MUTE",  &m); }
-        if (effMask & TS_SOLO)  { int s = ts.solo;   GetSetMediaTrackInfo(tr, "I_SOLO",  &s); }
-        if (effMask & TS_PHASE) { bool p = ts.phase; GetSetMediaTrackInfo(tr, "B_PHASE", &p); }
+        if (effMask & TS_MUTE)
+        {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
+            bool m = ts.mute;  GetSetMediaTrackInfo(tr, "B_MUTE",  &m);
+            if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
+        }
+        if (effMask & TS_SOLO)
+        {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
+            int s = ts.solo;   GetSetMediaTrackInfo(tr, "I_SOLO",  &s);
+            if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
+        }
+        if (effMask & TS_PHASE)
+        {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
+            bool p = ts.phase; GetSetMediaTrackInfo(tr, "B_PHASE", &p);
+            if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
+        }
         if (effMask & TS_VIS)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             int mixer = ts.vis & 1;  int tcp = (ts.vis >> 1) & 1;
             GetSetMediaTrackInfo(tr, "I_SHOWINMIXER", &mixer);
             GetSetMediaTrackInfo(tr, "I_SHOWINTCP",   &tcp);
+            if (g_durationDebug) lastTimings.i_vis += QpcMs() - t0;
         }
-        if (effMask & TS_SELECTION) { int sel = ts.selected; GetSetMediaTrackInfo(tr, "I_SELECTED", &sel); }
+        if (effMask & TS_SELECTION)
+        {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
+            int sel = ts.selected; GetSetMediaTrackInfo(tr, "I_SELECTED", &sel);
+            if (g_durationDebug) lastTimings.i_vis += QpcMs() - t0;
+        }
         if (effMask & TS_PLAY_OFFSET)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             int pof = ts.playOffsetFlag;  double pov = ts.playOffset;
             GetSetMediaTrackInfo(tr, "I_PLAY_OFFSET_FLAG", &pof);
             GetSetMediaTrackInfo(tr, "D_PLAY_OFFSET",      &pov);
+            if (g_durationDebug) lastTimings.i_vis += QpcMs() - t0;
         }
 
         // Layout – applied instantly, no lerp
         if ((effMask & TS_TRACKNAME) && !ts.trackName.empty())
+        {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             GetSetMediaTrackInfo_String(tr, "P_NAME", (char*)ts.trackName.c_str(), true);
+            if (g_durationDebug) lastTimings.i_layout += QpcMs() - t0;
+        }
         if (effMask & TS_TRACKCOLOR)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             int c = ts.color;
             GetSetMediaTrackInfo(tr, "I_CUSTOMCOLOR", &c);
+            if (g_durationDebug) lastTimings.i_layout += QpcMs() - t0;
         }
         if (effMask & TS_TRACKHEIGHT)
         {
+            double t0 = g_durationDebug ? QpcMs() : 0.0;
             int  h = ts.heightOverride;
             bool l = ts.heightLocked;
             GetSetMediaTrackInfo(tr, "I_HEIGHTOVERRIDE", &h);
             GetSetMediaTrackInfo(tr, "B_HEIGHTLOCK",     &l);
+            if (g_durationDebug) lastTimings.i_layout += QpcMs() - t0;
         }
 
         if (effMask & (TS_FXPARAMS | TS_FXCHAIN))
@@ -741,6 +893,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 std::vector<RecallTimings::FXOpTiming> trackFXOps;
                 SyncFXChain(tr, ts, false /*instant*/, dummy, &trackFXOps);
                 double trackFXMs = QpcMs() - tFX0;
+                lastTimings.i_fx += trackFXMs;
                 if (trackFXMs > 1.0 || !trackFXOps.empty())
                 {
                     char trkNameBuf[256] = {};
@@ -766,6 +919,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
         // Sends – routing changes guarded by recording check (same as TS_FXCHAIN)
         if (effMask & TS_SENDS)
         {
+            const double tSend0 = g_durationDebug ? QpcMs() : 0.0;
             const bool canRoute = !(GetPlayState() & 4); // no routing changes while recording
 
             // --- Build maps of current live sends ---
@@ -899,6 +1053,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     }
                 }
             }
+            if (g_durationDebug) lastTimings.i_sends += QpcMs() - tSend0;
         }
     }
 
@@ -1369,6 +1524,12 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     {
         lastTimings.instantPath = true;
 
+        // Snapshot active settings for the duration debug report
+        lastTimings.s_skipUnchanged   = g_skipUnchangedParams;
+        lastTimings.s_shadowParams    = g_shadowParams;
+        lastTimings.s_chunkAllInstant = g_chunkAllInstant;
+        lastTimings.s_preloadOffline  = g_preloadOffline;
+
         double t0 = QpcMs();
         TrackMap tmap = BuildTrackMap();
         lastTimings.buildTrackMap = QpcMs() - t0;
@@ -1395,6 +1556,12 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // Timed path: apply discrete params immediately, then build lerp lists
     // -----------------------------------------------------------------------
     lastTimings.instantPath = false;
+
+    // Snapshot active settings for the duration debug report
+    lastTimings.s_skipUnchanged   = g_skipUnchangedParams;
+    lastTimings.s_shadowParams    = g_shadowParams;
+    lastTimings.s_chunkAllInstant = g_chunkAllInstant;
+    lastTimings.s_preloadOffline  = g_preloadOffline;
 
     double t0 = QpcMs();
     TrackMap tmap = BuildTrackMap();
