@@ -1,5 +1,24 @@
 # Changelog
 
+## [v0.0.19-beta] — 2026-06-14
+
+### New Features
+
+- **Settings: Shadow VST3 params**: New "Shadow VST3 params" checkbox in Global Settings. When enabled, a hidden REAPER control surface listens to all VST3 parameter changes via `CSURF_EXT_SETFXPARAM` and maintains an in-memory shadow map of current values. On instant scene recall, each param write is skipped if the shadow value already matches the target — eliminating redundant `SetParamNormalized` calls that each trigger a DSP recalc. This is the primary tool for reducing FX chain recall latency when many params are already at their target values.
+
+- **Settings: Recall all plugins by chunk on instant path**: New "Recall by chunk on instant path" checkbox in Global Settings. When enabled, the instant recall path restores VST3 and VST2 plugins via `SetNamedConfigParm("vst_chunk")` (a single atomic state dump) instead of looping over individual parameters. Both `vst_chunk` and per-param values are now always captured at snapshot time, so this flag is a pure recall-time switch — no re-saving of scenes is required after enabling it.
+
+- **Settings: Per-category instant recall timing**: When "Duration debug" is enabled, the console output for instant-path recalls now shows a six-row breakdown — VolPan, Mute/Solo/Phase, Vis/Sel/Offset, Layout, FX chains, and Sends — making it easy to identify which category dominates recall time.
+
+- **Settings: Active-flags header in timing output**: Every timing report (both instant and timed path) now opens with a settings header line showing which of ShadowParams / ChunkInstant / SkipUnchanged / PreloadOffline were active at the moment of recall. Useful for comparing measurements across different configuration combinations.
+
+### Technical Notes
+
+- Shadow map key: `(track GUID, fx_ident string, paramIdx)` → normalized double. Map is cleared on project load and the surface is registered/unregistered with the plugin lifecycle.
+- Chunk capture: `vst_chunk` is now always written into every `FXState` at snapshot time regardless of settings, keeping scenes self-contained. The `g_chunkAllInstant` flag only controls which code path is used at recall time.
+
+---
+
 ## [v0.0.18-beta] — 2026-06-12
 
 ### New Features
