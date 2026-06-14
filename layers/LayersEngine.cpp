@@ -13,8 +13,28 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <unordered_map>
 
 static const char* k_Sec = "reaper_transitions";
+
+// ---------------------------------------------------------------------------
+// GUID hash/equality for O(1) unordered_map lookups
+// ---------------------------------------------------------------------------
+struct GUIDHash {
+    size_t operator()(const GUID& g) const noexcept {
+        size_t h1, h2;
+        memcpy(&h1, &g,         8);
+        memcpy(&h2, reinterpret_cast<const char*>(&g) + 8, 8);
+        return h1 ^ (h2 * 2654435761ULL);
+    }
+};
+struct GUIDEqual {
+    bool operator()(const GUID& a, const GUID& b) const noexcept {
+        return memcmp(&a, &b, sizeof(GUID)) == 0;
+    }
+};
+// GUID → MediaTrack* — built once per operation and reused across loops
+using GUIDTrackMap = std::unordered_map<GUID, MediaTrack*, GUIDHash, GUIDEqual>;
 
 // ---------------------------------------------------------------------------
 // LayerDef
@@ -120,10 +140,44 @@ void LayersEngine::DoApplyLayer(int idx)
     const LayerDef&       layer = m_layers[idx];
     const LayersSettings& cfg   = m_settings;
 
-    // Snapshot the current track selection so we can restore it unchanged.
-    // Internal calls to SetOnlyTrackSelected (reorder + spacer actions) must
-    // not affect what the user had selected.
-    std::vector<MediaTrack*> savedSelection;
+    // Determine slot limit (spacers count as slots)
+    int limit = (int)layer.tracks.size();
+    if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
+        limit = cfg.globalMaxChannels;
+
+    // -----------------------------------------------------------------------
+    // Build O(1) lookup maps up front — one pass over project tracks,
+    // one pass over layer tracks.  All inner-loop linear scans below are
+    // replaced with map lookups.
+    // -----------------------------------------------------------------------
+
+    // project GUID → MediaTrack* (one GetTrack + GetTrackGUID per project track)
+    GUIDTrackMap projByGUID;
+    {
+        int n = CountTracks(0);
+        projByGUID.reserve(n);
+        for (int t = 0; t < n; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            if (!tr) continue;
+            GUID* tg = GetTrackGUID(tr);
+            if (tg) projByGUID[*tg] = tr;
+        }
+    }
+
+    // layer GUID → slot index (for O(1) membership test and folderCompact lookup)
+    std::unordered_map<GUID, int, GUIDHash, GUIDEqual> layerSlotMap;
+    layerSlotMap.reserve(limit);
+    for (int li = 0; li < limit; li++)
+    {
+        if (!layer.tracks[li].isSpacer)
+            layerSlotMap[layer.tracks[li].guid] = li;
+    }
+
+    // -----------------------------------------------------------------------
+    // Save current track selection so spacer/reorder actions don't corrupt it
+    // -----------------------------------------------------------------------
+    std::unordered_map<GUID, bool, GUIDHash, GUIDEqual> savedSelGUIDs;
     {
         int n = CountTracks(0);
         for (int t = 0; t < n; t++)
@@ -131,40 +185,29 @@ void LayersEngine::DoApplyLayer(int idx)
             MediaTrack* tr = GetTrack(0, t);
             if (!tr) continue;
             int* ps = (int*)GetSetMediaTrackInfo(tr, "I_SELECTED", nullptr);
-            if (ps && *ps) savedSelection.push_back(tr);
+            if (ps && *ps)
+            {
+                GUID* tg = GetTrackGUID(tr);
+                if (tg) savedSelGUIDs[*tg] = true;
+            }
         }
     }
 
     PreventUIRefresh(1);
 
-    // Determine slot limit (spacers count as slots)
-    int limit = (int)layer.tracks.size();
-    if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
-        limit = cfg.globalMaxChannels;
-
     if (cfg.applyMcpVisibility)
     {
+        // ----- MCP/TCP visibility — O(numTracks) with O(1) map lookup -----
         int numTracks = CountTracks(0);
-
         for (int t = 0; t < numTracks; t++)
         {
             MediaTrack* track = GetTrack(0, t);
             if (!track) continue;
-
             GUID* tg = GetTrackGUID(track);
             if (!tg) continue;
 
-            // Check membership in active range
-            bool inLayer = false;
-            for (int li = 0; li < limit; li++)
-            {
-                if (layer.tracks[li].isSpacer) continue;  // spacer has no GUID
-                if (memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                {
-                    inLayer = true;
-                    break;
-                }
-            }
+            auto it = layerSlotMap.find(*tg);
+            const bool inLayer = (it != layerSlotMap.end());
 
             bool showMixer = inLayer;
             GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMixer);
@@ -175,42 +218,26 @@ void LayersEngine::DoApplyLayer(int idx)
                 GetSetMediaTrackInfo(track, "B_SHOWINTCP", &showTcp);
             }
 
-            // Restore folder open/closed state for tracks in the layer
+            // Restore folder open/closed state — no second scan needed
             if (inLayer)
             {
-                for (int li = 0; li < limit; li++)
-                {
-                    if (layer.tracks[li].isSpacer) continue;
-                    if (memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                    {
-                        int fc = layer.tracks[li].folderCompact;
-                        GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
-                        break;
-                    }
-                }
+                int fc = layer.tracks[it->second].folderCompact;
+                GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
             }
         }
 
-        // Optional: reorder tracks to match layer ordering
+        // ----- Track reorder — O(limit) using IP_TRACKNUMBER for cur pos ----
         if (cfg.reorderTracks && limit > 0)
         {
             for (int li = 0; li < limit; li++)
             {
-                if (layer.tracks[li].isSpacer) continue;  // spacers have no GUID, skip
-                int curPos = -1;
-                int now = CountTracks(0);
-                for (int t = 0; t < now; t++)
-                {
-                    MediaTrack* tr = GetTrack(0, t);
-                    GUID* tg = GetTrackGUID(tr);
-                    if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                    {
-                        curPos = t;
-                        break;
-                    }
-                }
+                if (layer.tracks[li].isSpacer) continue;
+                auto it = projByGUID.find(layer.tracks[li].guid);
+                if (it == projByGUID.end()) continue;
+                MediaTrack* tr = it->second;
+                // IP_TRACKNUMBER returns 1-based position directly — no scan needed
+                int curPos = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
                 if (curPos < 0 || curPos == li) continue;
-                MediaTrack* tr = GetTrack(0, curPos);
                 SetOnlyTrackSelected(tr);
                 ReorderSelectedTracks(li, 0);
             }
@@ -223,9 +250,6 @@ void LayersEngine::DoApplyLayer(int idx)
     TrackList_AdjustWindows(false);
 
     // ---- Set REAPER visual spacers via built-in actions --------------------
-    // Action 42665 = "Track: Insert visual spacer before tracks"
-    // Must run AFTER PreventUIRefresh(-1) — REAPER actions need UI refresh
-    // active to correctly detect selection and write I_SPACER values.
     {
         int numAllTracks = CountTracks(0);
 
@@ -242,6 +266,7 @@ void LayersEngine::DoApplyLayer(int idx)
 
         // For each real track that immediately follows a spacer entry in the
         // layer, select it and fire the "insert spacer before" action (42665).
+        // Track lookup is O(1) via projByGUID — no inner scan needed.
         for (int li = 0; li < limit; li++)
         {
             if (layer.tracks[li].isSpacer) continue;
@@ -254,29 +279,21 @@ void LayersEngine::DoApplyLayer(int idx)
             }
             if (!hasPrecedingSpacers) continue;
 
-            for (int t = 0; t < numAllTracks; t++)
-            {
-                MediaTrack* tr = GetTrack(0, t);
-                if (!tr) continue;
-                GUID* tg = GetTrackGUID(tr);
-                if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-                {
-                    SetOnlyTrackSelected(tr);
-                    Main_OnCommand(42665, 0);  // Insert visual spacer before tracks
-                    break;
-                }
-            }
+            auto it = projByGUID.find(layer.tracks[li].guid);
+            if (it == projByGUID.end()) continue;
+            SetOnlyTrackSelected(it->second);
+            Main_OnCommand(42665, 0);  // Insert visual spacer before tracks
         }
 
-        // Restore selection — undo any SetOnlyTrackSelected calls made above.
+        // Restore selection using the GUID set built earlier — O(n) with O(1) lookups
         {
             int n = CountTracks(0);
             for (int t = 0; t < n; t++)
             {
                 MediaTrack* tr = GetTrack(0, t);
                 if (!tr) continue;
-                bool wasSel = std::find(savedSelection.begin(), savedSelection.end(), tr)
-                              != savedSelection.end();
+                GUID* tg = GetTrackGUID(tr);
+                const bool wasSel = tg && savedSelGUIDs.count(*tg) > 0;
                 int sel = wasSel ? 1 : 0;
                 GetSetMediaTrackInfo(tr, "I_SELECTED", &sel);
             }
@@ -649,8 +666,46 @@ void LayersEngine::RefreshTrackNames(int layerIdx)
 
 void LayersEngine::RefreshAllTrackNames()
 {
+    // Build GUID→MediaTrack* map once (O(n)) and reuse it across all layers,
+    // replacing the O(layers × layer_tracks × n) nested scan in the original.
+    int n = CountTracks(0);
+    GUIDTrackMap tmap;
+    tmap.reserve(n);
+    for (int t = 0; t < n; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+        GUID* tg = GetTrackGUID(tr);
+        if (tg) tmap[*tg] = tr;
+    }
+
     for (int i = 0; i < (int)m_layers.size(); i++)
-        RefreshTrackNames(i);
+    {
+        LayerDef& layer = m_layers[i];
+        for (auto& lt : layer.tracks)
+        {
+            if (lt.isSpacer)
+            {
+                strncpy(lt.name, "--- Spacer ---", sizeof(lt.name) - 1);
+                lt.name[sizeof(lt.name) - 1] = '\0';
+                continue;
+            }
+            lt.name[0] = '\0';
+            auto it = tmap.find(lt.guid);
+            if (it != tmap.end())
+            {
+                char buf[128] = {};
+                GetTrackName(it->second, buf, (int)sizeof(buf));
+                strncpy(lt.name, buf, sizeof(lt.name) - 1);
+                lt.name[sizeof(lt.name) - 1] = '\0';
+            }
+            else
+            {
+                strncpy(lt.name, "(not in project)", sizeof(lt.name) - 1);
+                lt.name[sizeof(lt.name) - 1] = '\0';
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

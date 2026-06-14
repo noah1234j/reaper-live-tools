@@ -3,6 +3,8 @@
 #include "api.h"
 
 #include <cmath>
+
+extern bool g_durationDebug;  // defined in scenes/TransitionWnd.cpp
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -278,7 +280,8 @@ static void EnforceFXOrder(MediaTrack* tr,
 // Uses TrackFX_AddByName/Delete (surgical ops, safe during recording).
 // ---------------------------------------------------------------------------
 void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
-                                    bool timed, std::vector<WetLerp>& wetLerps)
+                                    bool timed, std::vector<WetLerp>& wetLerps,
+                                    std::vector<RecallTimings::FXOpTiming>* out_fxOps)
 {
     // --- Opt C: build O(1) lookup caches from a single pass over live chain ---
     struct LiveFXInfo {
@@ -369,10 +372,25 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         {
             int slot = findFXCached(fxs);
             const bool isNewPlugin = (slot < 0);
+
+            // Per-FX timing (only collected when caller wants it)
+            RecallTimings::FXOpTiming opT;
+            if (out_fxOps) opT.fxName = fxs.name;
+
             if (isNewPlugin)
             {
                 const char* addName = fxs.fxIdent[0] ? fxs.fxIdent : fxs.name;
-                slot = TrackFX_AddByName(tr, addName, false, -1000);
+                if (out_fxOps)
+                {
+                    double t0 = QpcMs();
+                    slot = TrackFX_AddByName(tr, addName, false, -1000);
+                    opT.addByName_ms = QpcMs() - t0;
+                    opT.wasNew = true;
+                }
+                else
+                {
+                    slot = TrackFX_AddByName(tr, addName, false, -1000);
+                }
                 if (slot < 0) continue;
                 if (g_preloadOffline)
                 {
@@ -382,8 +400,18 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                     // it when AddByName fired. Don't re-open: this is a new add, not
                     // a user-opened window being preserved.
                     TrackFX_Show(tr, slot, 0);
-                    TrackFX_SetOffline(tr, slot, true);
-                    TrackFX_SetOffline(tr, slot, false);
+                    if (out_fxOps)
+                    {
+                        double t0 = QpcMs();
+                        TrackFX_SetOffline(tr, slot, true);
+                        TrackFX_SetOffline(tr, slot, false);
+                        opT.offlineSandwich_ms = QpcMs() - t0;
+                    }
+                    else
+                    {
+                        TrackFX_SetOffline(tr, slot, true);
+                        TrackFX_SetOffline(tr, slot, false);
+                    }
                 }
             }
             else if (TrackFX_GetOffline(tr, slot))
@@ -391,8 +419,19 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 // Primed plugin — bring online with offline sandwich so params stick
                 bool wasOpen = TrackFX_GetOpen(tr, slot);
                 if (wasOpen) TrackFX_Show(tr, slot, 0);
-                TrackFX_SetOffline(tr, slot, true);
-                TrackFX_SetOffline(tr, slot, false);
+                if (out_fxOps)
+                {
+                    opT.wasPrimed = true;
+                    double t0 = QpcMs();
+                    TrackFX_SetOffline(tr, slot, true);
+                    TrackFX_SetOffline(tr, slot, false);
+                    opT.offlineSandwich_ms = QpcMs() - t0;
+                }
+                else
+                {
+                    TrackFX_SetOffline(tr, slot, true);
+                    TrackFX_SetOffline(tr, slot, false);
+                }
                 if (wasOpen) TrackFX_Show(tr, slot, 1);
             }
             // Set state on the live plugin (new or existing).
@@ -405,7 +444,16 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 // Do NOT wrap in an offline sandwich: SetOffline(true) causes REAPER to
                 // snapshot the plugin's current state; SetOffline(false) restores that
                 // snapshot, silently overwriting anything written while offline.
-                TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                if (out_fxOps)
+                {
+                    double t0 = QpcMs();
+                    TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                    opT.setChunk_ms = QpcMs() - t0;
+                }
+                else
+                {
+                    TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                }
                 int wi = TrackFX_GetParamFromIdent(tr, slot, ":wet");
                 if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
             }
@@ -413,14 +461,31 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             {
                 // Opt B: for existing (not newly added) plugins, skip params that
                 // already match the saved value to avoid redundant API calls.
-                for (int p = 0; p < (int)fxs.normVals.size(); ++p)
+                if (out_fxOps)
                 {
-                    if (!isNewPlugin && g_skipUnchangedParams)
+                    double t0 = QpcMs();
+                    for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     {
-                        double cur = TrackFX_GetParamNormalized(tr, slot, p);
-                        if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                        if (!isNewPlugin && g_skipUnchangedParams)
+                        {
+                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                            if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                        }
+                        TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
                     }
-                    TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                    opT.paramLoop_ms = QpcMs() - t0;
+                }
+                else
+                {
+                    for (int p = 0; p < (int)fxs.normVals.size(); ++p)
+                    {
+                        if (!isNewPlugin && g_skipUnchangedParams)
+                        {
+                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                            if (fabs(cur - fxs.normVals[p]) < 1e-7) continue;
+                        }
+                        TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
+                    }
                 }
                 // REAPER's :wet index is typically above paramCount and therefore not
                 // covered by the normVals loop — apply it explicitly.
@@ -428,6 +493,15 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
             }
             TrackFX_SetNamedConfigParm(tr, slot, "chain_bypass_delta", "0");
+
+            // Record op timing if any phase was non-trivial
+            if (out_fxOps)
+            {
+                const double opTotal = opT.addByName_ms + opT.offlineSandwich_ms
+                                     + opT.setChunk_ms  + opT.paramLoop_ms;
+                if (opTotal > 0.01)
+                    out_fxOps->push_back(std::move(opT));
+            }
         }
         EnforceFXOrder(tr, ts.fx);
         return;
@@ -661,7 +735,27 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
         if (effMask & (TS_FXPARAMS | TS_FXCHAIN))
         {
             std::vector<WetLerp> dummy; // instant path: no wet lerps needed
-            SyncFXChain(tr, ts, false /*instant*/, dummy);
+            if (g_durationDebug)
+            {
+                double tFX0 = QpcMs();
+                std::vector<RecallTimings::FXOpTiming> trackFXOps;
+                SyncFXChain(tr, ts, false /*instant*/, dummy, &trackFXOps);
+                double trackFXMs = QpcMs() - tFX0;
+                if (trackFXMs > 1.0 || !trackFXOps.empty())
+                {
+                    char trkNameBuf[256] = {};
+                    GetTrackName(tr, trkNameBuf, (int)sizeof(trkNameBuf));
+                    RecallTimings::TrackFXTiming tft;
+                    tft.trackName = trkNameBuf;
+                    tft.total_ms  = trackFXMs;
+                    tft.fxOps     = std::move(trackFXOps);
+                    lastTimings.fxDetail.push_back(std::move(tft));
+                }
+            }
+            else
+            {
+                SyncFXChain(tr, ts, false /*instant*/, dummy);
+            }
             // Clear any delta-solo state that may linger from the chain sync.
             // TrackFX_SetNamedConfigParm silently fails if the param is unsupported.
             const int nfxPost = TrackFX_GetCount(tr);
@@ -1282,6 +1376,12 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         t0 = QpcMs();
         ApplyImmediate(snap, mask, tmap);
         lastTimings.discreteParams = QpcMs() - t0;  // ApplyImmediate covers all instant work
+
+        // Sort fxDetail slowest-first for the console report
+        std::sort(lastTimings.fxDetail.begin(), lastTimings.fxDetail.end(),
+                  [](const RecallTimings::TrackFXTiming& a,
+                     const RecallTimings::TrackFXTiming& b)
+                  { return a.total_ms > b.total_ms; });
 
         lastTimings.tracksMatched = (int)tmap.size();
         lastTimings.total = QpcMs() - tRecallStart;

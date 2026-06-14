@@ -83,6 +83,26 @@ public:
         int    wetLerps       = 0;    // wet/dry lerp entries
         int    sendLerps      = 0;    // send lerp entries
         bool   instantPath    = false; // true = duration==0
+
+        // Per-FX operation timing for the instant path.
+        // Only populated when g_durationDebug is true.
+        struct FXOpTiming
+        {
+            std::string fxName;
+            double addByName_ms      = 0.0;
+            double offlineSandwich_ms = 0.0;
+            double setChunk_ms       = 0.0;
+            double paramLoop_ms      = 0.0;
+            bool   wasNew    = false;
+            bool   wasPrimed = false;
+        };
+        struct TrackFXTiming
+        {
+            std::string          trackName;
+            double               total_ms = 0.0;
+            std::vector<FXOpTiming> fxOps;
+        };
+        std::vector<TrackFXTiming> fxDetail;  // sorted slowest-first
     };
     RecallTimings lastTimings;
 
@@ -196,7 +216,8 @@ private:
     // In timed mode: collects WetLerp entries instead of deleting/disabling
     // immediately, so plugins can be faded in/out via the wet control.
     static void SyncFXChain(MediaTrack* tr, const TrackState& ts,
-                             bool timed, std::vector<WetLerp>& wetLerps);
+                             bool timed, std::vector<WetLerp>& wetLerps,
+                             std::vector<RecallTimings::FXOpTiming>* out_fxOps = nullptr);
 
     // -----------------------------------------------------------------------
     // State

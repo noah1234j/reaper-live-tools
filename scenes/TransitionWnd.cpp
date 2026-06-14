@@ -880,7 +880,62 @@ static void DoRecall(HWND hwnd, int listIndex)
                 msTotal);
         }
         ShowConsoleMsg(buf);
-    }
+
+        // FX detail: list top-5 slowest tracks and their per-FX op costs
+        if (t.instantPath && !t.fxDetail.empty())
+        {
+            const int maxTracks = 5;
+            const int maxOps    = 4;
+            const int nTracks   = (int)t.fxDetail.size() < maxTracks
+                                  ? (int)t.fxDetail.size() : maxTracks;
+
+            std::string detail;
+            char tmp[512];
+            snprintf(tmp, sizeof(tmp),
+                "  ── FX detail (top %d slowest track%s) ──\n",
+                nTracks, nTracks != 1 ? "s" : "");
+            detail += tmp;
+
+            for (int ti = 0; ti < nTracks; ++ti)
+            {
+                const auto& tft = t.fxDetail[ti];
+                snprintf(tmp, sizeof(tmp),
+                    "    %-36s %8.2f ms\n",
+                    tft.trackName.c_str(), tft.total_ms);
+                detail += tmp;
+
+                const int nOps = (int)tft.fxOps.size() < maxOps
+                                 ? (int)tft.fxOps.size() : maxOps;
+                for (int oi = 0; oi < nOps; ++oi)
+                {
+                    const auto& op = tft.fxOps[oi];
+                    const char* tag = op.wasNew    ? "[new]   "
+                                    : op.wasPrimed ? "[primed]"
+                                    :                "[exist] ";
+                    // Build cost string from non-trivial fields only
+                    char costs[256] = {};
+                    int cpos = 0;
+                    if (op.addByName_ms > 0.01)
+                        cpos += snprintf(costs + cpos, sizeof(costs) - cpos,
+                            "  AddByName: %.2f ms", op.addByName_ms);
+                    if (op.offlineSandwich_ms > 0.01)
+                        cpos += snprintf(costs + cpos, sizeof(costs) - cpos,
+                            "  Offline: %.2f ms", op.offlineSandwich_ms);
+                    if (op.setChunk_ms > 0.01)
+                        cpos += snprintf(costs + cpos, sizeof(costs) - cpos,
+                            "  SetChunk: %.2f ms", op.setChunk_ms);
+                    if (op.paramLoop_ms > 0.01)
+                        cpos += snprintf(costs + cpos, sizeof(costs) - cpos,
+                            "  Params: %.2f ms", op.paramLoop_ms);
+                    snprintf(tmp, sizeof(tmp),
+                        "      %s  %-30s%s\n",
+                        tag, op.fxName.c_str(), costs);
+                    detail += tmp;
+                }
+            }
+            ShowConsoleMsg(detail.c_str());
+        }
+    }  // end if (g_durationDebug)
 
     // Cue mode: auto-advance to the next item in the cue list
     if (g_cueMode)
