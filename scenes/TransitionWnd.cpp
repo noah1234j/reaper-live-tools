@@ -748,15 +748,20 @@ static void DoSave(HWND hwnd)
 
 // ---------------------------------------------------------------------------
 // RestoreLayerState – apply full layer state from a snapshot on recall.
-// Skipped only when the TS_LAYERS safe bit is set.
+// Skipped when the TS_LAYERS safe bit is set, when no specific layer was
+// designated for recall (m_layerIdx < 0), or when the scene has no captured
+// layer data (m_layers empty — e.g. old-format scenes).
 // ---------------------------------------------------------------------------
 static void RestoreLayerState(const TransitionSnapshot* snap)
 {
     if (!snap) return;
     if (g_globalSafeMask & TS_LAYERS) return;
 
-    // Always replace the full layer set – even if the scene was stored with 0 layers
-    // (that means: clear all layers on recall).
+    // If the scene has no layer to recall (user chose "(no layer recall)" or
+    // the scene was saved before layer capture was introduced) leave the
+    // current layer system untouched.
+    if (snap->m_layerIdx < 0 || snap->m_layers.empty()) return;
+
     std::vector<LayerDef> newLayers;
     for (const auto& cl : snap->m_layers)
     {
@@ -767,9 +772,10 @@ static void RestoreLayerState(const TransitionSnapshot* snap)
         for (const auto& clt : cl.tracks)
         {
             LayerTrack lt;
-            lt.guid     = clt.guid;
-            lt.isSpacer = clt.isSpacer;
-            lt.name[0]  = '\0';
+            lt.guid        = clt.guid;
+            lt.isSpacer    = clt.isSpacer;
+            lt.name[0]     = '\0';
+            lt.folderCompact = 0;
             ld.tracks.push_back(lt);
         }
         newLayers.push_back(ld);
@@ -1049,7 +1055,7 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// ExportScene – write a single scene to a .tscene file
+// ExportScene – write a single scene to a .lts file
 // ---------------------------------------------------------------------------
 static void ExportScene(HWND hwnd, int item)
 {
@@ -1066,10 +1072,10 @@ static void ExportScene(HWND hwnd, int item)
     OPENFILENAMEA ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner   = hwnd;
-    ofn.lpstrFilter = "Scene Files (*.tscene)\0*.tscene\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = "Scene Files (*.lts)\0*.lts\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile   = szFile;
     ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrDefExt = "tscene";
+    ofn.lpstrDefExt = "lts";
     ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle  = "Export Scene";
 
@@ -1088,7 +1094,7 @@ static void ExportScene(HWND hwnd, int item)
 }
 
 // ---------------------------------------------------------------------------
-// ImportScene – load a .tscene file and append to g_snapshots
+// ImportScene – load a .lts file and append to g_snapshots
 // ---------------------------------------------------------------------------
 static void ImportScene(HWND hwnd)
 {
@@ -1096,10 +1102,10 @@ static void ImportScene(HWND hwnd)
     OPENFILENAMEA ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner   = hwnd;
-    ofn.lpstrFilter = "Scene Files (*.tscene)\0*.tscene\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFilter = "Scene Files (*.lts)\0*.lts\0All Files (*.*)\0*.*\0";
     ofn.lpstrFile   = szFile;
     ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrDefExt = "tscene";
+    ofn.lpstrDefExt = "lts";
     ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     ofn.lpstrTitle  = "Import Scene";
 

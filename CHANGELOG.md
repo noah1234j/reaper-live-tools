@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.0.20-beta] — 2026-06-22
+
+### New Features
+
+- **Scenes: Export / Import (.lts files)**: Right-click any scene to export it as a `.lts` file, or import a `.lts` file to append it to the current scene list. Scene files use the same serialization format as the project file, so all captured state (mix, FX, layers, notes, transition settings) is fully preserved.
+
+- **Scenes: Copy / Paste**: Right-click a scene and choose **Copy**, then right-click anywhere in the list and choose **Paste** to insert a duplicate of the scene at that position. The pasted scene is named with ` (copy)` appended.
+
+### Bug Fixes
+
+- **Scenes: Selected layer now recalled correctly**: Scenes were not activating their designated layer on recall. The `RestoreLayerState` path called `ReplaceAllLayers` even when `m_layerIdx == -1` ("no layer recall"), which reset `m_activeLayer` to `-1` inside the engine and then skipped `ActivateLayer`/`DoApplyLayer` — leaving track visibility unchanged. Fixed by adding an early return when `m_layerIdx < 0` or when the scene has no captured layer data, so only scenes with an explicitly assigned layer trigger a layer switch.
+
+- **Scenes: Old-format scenes no longer wipe layer definitions**: Previously, recalling a scene saved without `LAYERDEF` blocks (old format, `m_layers` empty) would call `ReplaceAllLayers({}, idx)` and destroy all layer definitions in the engine. The same guard above prevents this.
+
+### Changes
+
+- **PAFL Monitor**: Temporarily disabled. The PAFL Monitor action and menu entry are hidden pending further development. All PAFL code is preserved in the codebase.
+
+---
+
 ## [v0.0.19-beta] — 2026-06-14
 
 ### New Features

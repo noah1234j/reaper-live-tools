@@ -398,11 +398,12 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     g_cmdShowPafl = plugin_register("command_id", (void*)"LT_PAFL");
     if (!g_cmdShowPafl) return 0;
 
-    static gaccel_register_t g_paflAccel;
-    memset(&g_paflAccel, 0, sizeof(g_paflAccel));
-    g_paflAccel.desc      = "Live Tools: PAFL Monitor - Show/Hide";
-    g_paflAccel.accel.cmd = (WORD)g_cmdShowPafl;
-    plugin_register("gaccel", &g_paflAccel);
+    // TEMPORARILY DISABLED – PAFL action hidden from action list
+    // static gaccel_register_t g_paflAccel;
+    // memset(&g_paflAccel, 0, sizeof(g_paflAccel));
+    // g_paflAccel.desc      = "Live Tools: PAFL Monitor - Show/Hide";
+    // g_paflAccel.accel.cmd = (WORD)g_cmdShowPafl;
+    // plugin_register("gaccel", &g_paflAccel);
 
     // ---- Register Control Surface settings command -------------------------
     g_cmdShowCSurf = plugin_register("command_id", (void*)"LT_CSURF_SETTINGS");
@@ -615,7 +616,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
     if (flag == 0)
     {
         // Build: add "Live Tools" submenu
-        // TEMPORARILY DISABLED items: Layouts, Surface & Zone Editor, Surface Monitor
+        // TEMPORARILY DISABLED items: Layouts, Surface & Zone Editor, Surface Monitor, PAFL
         HMENU hSub = CreatePopupMenu();
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowHide,    "Scenes...");
         // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLayouts, "Layouts...");  // TEMPORARILY DISABLED
@@ -627,7 +628,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowDca,         "DCA Groups...");
         // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowSurfaceEditor, "Surface & Zone Editor...");  // TEMPORARILY DISABLED
         AppendMenuA(hSub,  MF_SEPARATOR, 0, nullptr);
-        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowPafl,    "PAFL Monitor...");
+        // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowPafl,    "PAFL Monitor...");  // TEMPORARILY DISABLED
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowTalkback,    "Talkback...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdLiveOpt,     "Live Optimizer...");
         // AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdSurfaceDiag, "Surface Monitor...");  // TEMPORARILY DISABLED
@@ -637,9 +638,9 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
     else if (flag == 1 && s_hLiveToolsMenu)
     {
         // Update check states
-        // Menu positions (Layouts, SurfaceEditor, SurfaceMonitor currently disabled):
+        // Menu positions (Layouts, SurfaceEditor, SurfaceMonitor, PAFL currently disabled):
         // 0=Scenes, 1=Monitor, 2=MeterBridge, 3=LiveLock, 4=MuteGroups,
-        // 5=Layers, 6=DCA, 7=separator, 8=PAFL, 9=Talkback, 10=Optimizer
+        // 5=Layers, 6=DCA, 7=separator, 8=Talkback, 9=Optimizer
         CheckMenuItem(s_hLiveToolsMenu,  0, MF_BYPOSITION | (TransitionWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  1, MF_BYPOSITION | (MonitorWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  2, MF_BYPOSITION | (MeterBridgeWnd_IsVisible()    ? MF_CHECKED : MF_UNCHECKED));
@@ -648,8 +649,8 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         CheckMenuItem(s_hLiveToolsMenu,  5, MF_BYPOSITION | (LayersWnd_IsVisible()         ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  6, MF_BYPOSITION | (DcaWnd_IsVisible()            ? MF_CHECKED : MF_UNCHECKED));
         // pos 7 = separator
-        CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (PaflWnd_IsVisible()           ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu,  9, MF_BYPOSITION | (TalkbackWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(s_hLiveToolsMenu, 10, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
+        // pos 8 = PAFL (TEMPORARILY DISABLED)
+        CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (TalkbackWnd_IsVisible()       ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  9, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
     }
 }
