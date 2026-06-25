@@ -44,30 +44,9 @@ The core feature. Scenes are full-project mix snapshots — every track's volume
 
 ---
 
-### Safes (`Safes` window)
-
-A track × parameter grid. Each cell is a checkbox:
-
-- **Row 0 — Global:** protects that parameter type on every track.
-- **Per-track rows:** per-track overrides, OR'd with the global mask.
-
-Parameters covered: **Vol · Pan · Mute · Solo · Phase · FX · Visibility · Selection**
-
----
-
 ### Layouts (`Live Tools: Layouts`)
 
 Visual-only snapshots — track order, height, TCP/MCP visibility, and track names — completely separate from the mix. Recall a layout without touching a single fader. Useful for switching between "FOH view" and "monitor view" on the same project.
-
----
-
-### PAFL Monitor (`Live Tools: PAFL Monitor`)
-
-A Pre/After Fader Listen system that mimics hardware console behaviour:
-
-- Designates a dedicated PAFL bus track.
-- When PAFL intercept is active, soloing a track mutes the program feed and routes only that track to the PAFL bus.
-- Bus and source track assignments are saved per-project inside the `.RPP` file.
 
 ---
 
@@ -87,21 +66,6 @@ Color-coded **green → yellow → orange → red** as values approach danger le
 ### Live Optimize (`Live Tools: Live Optimize`)
 
 Scans REAPER and Windows system settings for anything that could cause audio dropouts during a live show and produces a scored report with actionable fixes — ASIO buffer size, Windows power plan, background processes, REAPER preferences, and more.
-
----
-
-### Control Surface (`Live Tools: Control Surface Settings`)
-
-A built-in MCU/HUI control surface driver:
-
-- **MCU and HUI** protocol support
-- **8 or 16 channel** banks
-- Motorized fader mode: **Volume, Pan, or Sends**
-- VU metering, scribble strip names, track colors (X-Touch)
-- Follow selection / follow MCP track order
-- Configurable at runtime via the standalone settings dialog — no REAPER restart required
-
-Pre-baked templates included for common surfaces (Behringer X-Touch, iCON Platform, etc.).
 
 ---
 
