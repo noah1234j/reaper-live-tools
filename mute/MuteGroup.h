@@ -5,6 +5,8 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#else
+#  include "WDL/swell/swell.h"
 #endif
 
 #include <string>

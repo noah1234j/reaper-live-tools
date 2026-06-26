@@ -6,7 +6,11 @@
 // PDC, round-trip latency) in a compact custom-painted panel.  Color-coded
 // green → yellow → orange → red as values approach danger zones.
 // ---------------------------------------------------------------------------
-#include <windows.h>
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include "WDL/swell/swell.h"
+#endif
 
 void MonitorWnd_Init(HINSTANCE hInst);
 void MonitorWnd_Cleanup();

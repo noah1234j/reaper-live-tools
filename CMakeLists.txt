@@ -76,9 +76,6 @@ add_library(reaper_transitions SHARED
   # Scenes
   scenes/TransitionWnd.cpp
   scenes/SafesWnd.cpp
-  # Layouts
-  layouts/LayoutSnapshot.cpp
-  layouts/LayoutsWnd.cpp
   # Layers
   layers/LayersEngine.cpp
   layers/LayersWnd.cpp
@@ -90,31 +87,27 @@ add_library(reaper_transitions SHARED
   mute/MuteGroup.cpp
   mute/MuteGroupsWnd.cpp
   # Monitors
-  monitors/PaflWnd.cpp
   monitors/MonitorWnd.cpp
   monitors/MeterBridgeWnd.cpp
   monitors/LiveOptimizeWnd.cpp
   # Livelock
   livelock/LiveLockEngine.cpp
   livelock/LiveLockWnd.cpp
-  # Control surface (CSI)
-  csurf/control_surface_integrator.cpp
-  csurf/control_surface_integrator_ui.cpp
-  csurf/SurfaceMonitorWnd.cpp
-  # WDL UTF8 shims (required by CSI)
-  ${VENDOR_DIR}/WDL/WDL/win32_utf8.c
-  # Talkback
-  talkback/TalkbackWnd.cpp
-  # Surface & Zone Editor
-  surface_editor/SurfaceModel.cpp
-  surface_editor/ZoneModel.cpp
-  surface_editor/CanvasWnd.cpp
-  surface_editor/ActionSearchDlg.cpp
-  surface_editor/ZoneEditorWnd.cpp
-  surface_editor/SurfaceEditorWnd.cpp
-  # Resources
-  reaper_transitions.rc
 )
+
+# Platform-specific resources / SWELL stub
+if(WIN32)
+  target_sources(reaper_transitions PRIVATE reaper_transitions.rc)
+elseif(APPLE)
+  # swell-modstub.mm registers this plugin with REAPER's embedded SWELL.
+  # We do NOT compile the full SWELL implementation – REAPER provides it.
+  # reaper_transitions_mac_res.mm contains the SWELL-generated dialog resources
+  # (produced by: php vendor/WDL/WDL/swell/swell_resgen.php reaper_transitions.rc)
+  target_sources(reaper_transitions PRIVATE
+    "${VENDOR_DIR}/WDL/WDL/swell/swell-modstub.mm"
+    reaper_transitions_mac_res.mm
+  )
+endif()
 
 target_compile_features(reaper_transitions PRIVATE cxx_std_17)
 
@@ -122,17 +115,14 @@ target_include_directories(reaper_transitions PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/core
   ${CMAKE_CURRENT_SOURCE_DIR}/scenes
-  ${CMAKE_CURRENT_SOURCE_DIR}/layouts
   ${CMAKE_CURRENT_SOURCE_DIR}/layers
   ${CMAKE_CURRENT_SOURCE_DIR}/dca
   ${CMAKE_CURRENT_SOURCE_DIR}/mute
   ${CMAKE_CURRENT_SOURCE_DIR}/monitors
   ${CMAKE_CURRENT_SOURCE_DIR}/livelock
-  ${CMAKE_CURRENT_SOURCE_DIR}/csurf
-  ${CMAKE_CURRENT_SOURCE_DIR}/talkback
-  ${CMAKE_CURRENT_SOURCE_DIR}/surface_editor
   "${VENDOR_DIR}/reaper-sdk/sdk"
-  "${VENDOR_DIR}/WDL"          # only needed for swell.h on non-Windows
+  "${VENDOR_DIR}/WDL"       # root of WDL repo; lets code include "WDL/swell/swell.h"
+  "${VENDOR_DIR}/WDL/WDL"   # inside WDL repo; lets code include "swell/swell.h" directly
 )
 
 if(MSVC)
@@ -143,16 +133,27 @@ if(MSVC)
     $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>
     $<$<NOT:$<CONFIG:Debug>>:/PDBALTPATH:%_PDB%>
   )
+elseif(APPLE)
+  target_compile_options(reaper_transitions PRIVATE
+    -Wall -Wno-unused-function -Wno-unused-parameter
+    -Wno-sign-compare -Wno-deprecated-declarations
+    -ObjC++
+  )
+  set_target_properties(reaper_transitions PROPERTIES
+    MACOSX_DEPLOYMENT_TARGET "10.15"
+    BUNDLE FALSE
+  )
+  # Produce a flat .dylib that REAPER can load (no undefined symbol errors at
+  # link time – undefined SWELL symbols are resolved by REAPER at runtime via
+  # swell-modstub).
+  target_link_options(reaper_transitions PRIVATE
+    -undefined dynamic_lookup
+  )
 else()
   target_compile_options(reaper_transitions PRIVATE
     -Wall -Wno-unused-function -Wno-unused-parameter
     -Wno-sign-compare -Wno-deprecated-declarations
   )
-  # On macOS/Linux REAPER provides SWELL; link against it
-  find_library(SWELL_LIB NAMES SWELL swell)
-  if(SWELL_LIB)
-    target_link_libraries(reaper_transitions PRIVATE ${SWELL_LIB})
-  endif()
 endif()
 
 set_target_properties(reaper_transitions PROPERTIES

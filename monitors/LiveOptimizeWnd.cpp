@@ -13,11 +13,15 @@
 #include "api.h"
 #include "resource.h"
 
-#include <commctrl.h>
-#include <windowsx.h>
-#include <powrprof.h>
-#include <psapi.h>
-#include <tlhelp32.h>
+#ifdef _WIN32
+#  include <commctrl.h>
+#  include <windowsx.h>
+#  include <powrprof.h>
+#  include <psapi.h>
+#  include <tlhelp32.h>
+#else
+#  include <unistd.h>   // geteuid()
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -30,9 +34,11 @@ using std::max;
 #include <functional>
 #include <algorithm>
 
+#ifdef _WIN32
 #pragma comment(lib, "PowrProf.lib")
 #pragma comment(lib, "Psapi.lib")
 #pragma comment(lib, "Advapi32.lib")
+#endif
 
 // ---------------------------------------------------------------------------
 // Helpers – forward declarations
@@ -40,7 +46,9 @@ using std::max;
 static INT_PTR CALLBACK LiveOptDlgProc(HWND, UINT, WPARAM, LPARAM);
 static void RunChecks();
 static void PopulateList(HWND hwnd);
+#ifdef _WIN32
 static bool IsRunningAsAdmin();
+#endif
 
 // ---------------------------------------------------------------------------
 // Check status constants
@@ -122,6 +130,7 @@ static std::string GetIniStr(const char* section, const char* key,
 // ---------------------------------------------------------------------------
 // Admin check
 // ---------------------------------------------------------------------------
+#ifdef _WIN32
 static bool IsRunningAsAdmin()
 {
     BOOL isAdmin = FALSE;
@@ -136,7 +145,11 @@ static bool IsRunningAsAdmin()
     }
     return isAdmin == TRUE;
 }
+#else
+static bool IsRunningAsAdmin() { return geteuid() == 0; }
+#endif
 
+#ifdef _WIN32
 // ---------------------------------------------------------------------------
 // Power-plan helpers
 // ---------------------------------------------------------------------------
@@ -243,6 +256,9 @@ static std::vector<std::string> FindBadProcesses()
     std::sort(found.begin(), found.end());
     return found;
 }
+#else
+static std::vector<std::string> FindBadProcesses() { return {}; }
+#endif
 
 // ---------------------------------------------------------------------------
 // REAPER config-var helper (tries get_config_var_string, falls back to INI)
@@ -610,6 +626,7 @@ static void RunChecks()
             false, nullptr);
     }
 
+#ifdef _WIN32
     // ===================================================================
     // CATEGORY 3 – System Health  (35 pts)
     // ===================================================================
@@ -1212,6 +1229,7 @@ static void RunChecks()
                 false, nullptr);
         }
     }
+#endif // _WIN32 – Windows-only System Health checks
 
     int numTracks = GetNumTracks ? GetNumTracks() : 0;
 

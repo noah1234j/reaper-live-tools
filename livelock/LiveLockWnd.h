@@ -1,5 +1,9 @@
 #pragma once
-#include <windows.h>
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include "WDL/swell/swell.h"
+#endif
 
 // ---------------------------------------------------------------------------
 // LiveLockWnd  -  Live Safe Locking dockable panel

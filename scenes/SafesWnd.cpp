@@ -6,8 +6,10 @@
 
 extern bool g_trackSafesEnabled;
 
-#include <commctrl.h>
-#include <windowsx.h>
+#ifdef _WIN32
+#  include <commctrl.h>
+#  include <windowsx.h>
+#endif
 #include <cstring>
 #include <cstdio>
 #include <vector>

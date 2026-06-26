@@ -24,11 +24,13 @@
 #include "DcaGroup.h"
 #include "resource.h"
 
-#include <commctrl.h>
+#ifdef _WIN32
+#  include <commctrl.h>
+#  include <windowsx.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <string>
-#include <windowsx.h>
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -182,8 +184,10 @@ void DcaWnd_Init(HINSTANCE hInstance)
     g_hInst = hInstance;
     DcaWnd_ResetSettings();  // defaults; actual values loaded per-project via ProcessLine
 
+#ifdef _WIN32
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
+#endif
 }
 
 void DcaWnd_Cleanup()
@@ -776,7 +780,12 @@ static void ShowContextMenu(HWND hwnd, int row, int screenX, int screenY)
 
     if (cmd == kMID_Rename && dca)
     {
-        if (g_listWnd) ListView_EditLabel(g_listWnd, row);
+        if (g_listWnd)
+        {
+#ifdef _WIN32
+            ListView_EditLabel(g_listWnd, row);
+#endif
+        }
         return;
     }
 
@@ -1187,7 +1196,9 @@ static INT_PTR CALLBACK DcaDlgProc(HWND hwnd, UINT msg,
                 if (newRow >= 0 && g_listWnd)
                 {
                     ListView_EnsureVisible(g_listWnd, newRow, FALSE);
+#ifdef _WIN32
                     ListView_EditLabel(g_listWnd, newRow);
+#endif
                 }
             }
             else

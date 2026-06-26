@@ -3,7 +3,7 @@
 #ifdef _WIN32
 #  include <windows.h>
 #else
-#  include "../sws-master-2.14.0 - Copy/vendor/WDL/WDL/swell/swell.h"
+#  include "WDL/swell/swell.h"
 #endif
 
 #include <string>

@@ -14,8 +14,10 @@
 #include "api.h"
 #include "resource.h"
 
-#include <commctrl.h>
-#include <windowsx.h>
+#ifdef _WIN32
+#  include <commctrl.h>
+#  include <windowsx.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <string>

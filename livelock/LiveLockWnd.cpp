@@ -17,8 +17,10 @@
 #include "api.h"
 #include "resource.h"
 
-#include <windowsx.h>
-#include <commctrl.h>
+#ifdef _WIN32
+#  include <windowsx.h>
+#  include <commctrl.h>
+#endif
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -212,8 +214,10 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
     {
     case WM_INITDIALOG:
     {
+#ifdef _WIN32
         INITCOMMONCONTROLSEX icx = { sizeof(icx), ICC_UPDOWN_CLASS };
         InitCommonControlsEx(&icx);
+#endif
 
         const LiveLockSettings& s = LiveLockEngine::Get().GetSettings();
 

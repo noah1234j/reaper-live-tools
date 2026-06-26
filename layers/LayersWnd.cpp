@@ -18,8 +18,10 @@
 #include "api.h"
 #include "resource.h"
 
-#include <windowsx.h>
-#include <commctrl.h>
+#ifdef _WIN32
+#  include <windowsx.h>
+#  include <commctrl.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
@@ -35,13 +37,17 @@ static int       s_selLayer = 0;   // index of layer selected in list (0-based)
 static bool s_draggingLayer  = false;
 static int  s_dragLayerSrc   = -1;
 static int  s_dragLayerDst   = -1;
+#ifdef _WIN32
 static HIMAGELIST s_hLayerDragImg = nullptr;
+#endif
 
 // Drag state – track list within a layer
 static bool s_draggingTrack  = false;
 static int  s_dragTrackSrc   = -1;
 static int  s_dragTrackDst   = -1;
+#ifdef _WIN32
 static HIMAGELIST s_hTrackDragImg = nullptr;
+#endif
 
 // Subclass state – layer list
 static WNDPROC s_origLayerListProc = nullptr;
@@ -358,6 +364,7 @@ static int GetTrackListSel(HWND hwnd)
 // ---------------------------------------------------------------------------
 static void EndLayerDrag(HWND hwnd, bool apply)
 {
+#ifdef _WIN32
     if (s_hLayerDragImg)
     {
         ImageList_DragLeave(hwnd);
@@ -365,6 +372,7 @@ static void EndLayerDrag(HWND hwnd, bool apply)
         ImageList_Destroy(s_hLayerDragImg);
         s_hLayerDragImg = nullptr;
     }
+#endif
     ReleaseCapture();
 
     HWND hList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
@@ -389,6 +397,7 @@ static void EndLayerDrag(HWND hwnd, bool apply)
 
 static void EndTrackDrag(HWND hwnd, bool apply)
 {
+#ifdef _WIN32
     if (s_hTrackDragImg)
     {
         ImageList_DragLeave(hwnd);
@@ -396,6 +405,7 @@ static void EndTrackDrag(HWND hwnd, bool apply)
         ImageList_Destroy(s_hTrackDragImg);
         s_hTrackDragImg = nullptr;
     }
+#endif
     ReleaseCapture();
 
     HWND hListT = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
@@ -532,6 +542,7 @@ static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                 s_lyrLbTracking = false;
                 SetCapture(hList);
                 POINT off = { 8, 8 };
+#ifdef _WIN32
                 s_hLayerDragImg = ListView_CreateDragImage(hList, s_dragLayerSrc, &off);
                 if (s_hLayerDragImg)
                 {
@@ -541,6 +552,7 @@ static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                     ImageList_BeginDrag(s_hLayerDragImg, 0, 8, 8);
                     ImageList_DragEnter(dlg, dlgPt.x, dlgPt.y);
                 }
+#endif
                 s_draggingLayer = true;
             }
         }
@@ -549,11 +561,13 @@ static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wPara
             POINT dlgPt = pt;
             ClientToScreen(hList, &dlgPt);
             ScreenToClient(dlg, &dlgPt);
+#ifdef _WIN32
             if (s_hLayerDragImg)
             {
                 ImageList_DragMove(dlgPt.x, dlgPt.y);
                 ImageList_DragShowNolock(FALSE);
             }
+#endif
             LVHITTESTINFO hti = {};
             hti.pt = pt;
             int dst = ListView_HitTest(hList, &hti);
@@ -565,8 +579,10 @@ static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                 if (dst >= 0)
                     ListView_SetItemState(hList, dst, LVIS_DROPHILITED, LVIS_DROPHILITED);
             }
+#ifdef _WIN32
             if (s_hLayerDragImg)
                 ImageList_DragShowNolock(TRUE);
+#endif
             return 0;
         }
         break;
@@ -645,6 +661,7 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                 s_trkLbTracking = false;
                 SetCapture(hList);
                 POINT off = { 8, 8 };
+#ifdef _WIN32
                 s_hTrackDragImg = ListView_CreateDragImage(hList, s_dragTrackSrc, &off);
                 if (s_hTrackDragImg)
                 {
@@ -654,6 +671,7 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                     ImageList_BeginDrag(s_hTrackDragImg, 0, 8, 8);
                     ImageList_DragEnter(dlg, dlgPt.x, dlgPt.y);
                 }
+#endif
                 s_draggingTrack = true;
             }
         }
@@ -662,11 +680,13 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
             POINT dlgPt = pt;
             ClientToScreen(hList, &dlgPt);
             ScreenToClient(dlg, &dlgPt);
+#ifdef _WIN32
             if (s_hTrackDragImg)
             {
                 ImageList_DragMove(dlgPt.x, dlgPt.y);
                 ImageList_DragShowNolock(FALSE);
             }
+#endif
             LVHITTESTINFO hti = {};
             hti.pt = pt;
             int dst = ListView_HitTest(hList, &hti);
@@ -678,8 +698,10 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
                 if (dst >= 0)
                     ListView_SetItemState(hList, dst, LVIS_DROPHILITED, LVIS_DROPHILITED);
             }
+#ifdef _WIN32
             if (s_hTrackDragImg)
                 ImageList_DragShowNolock(TRUE);
+#endif
             return 0;
         }
         break;

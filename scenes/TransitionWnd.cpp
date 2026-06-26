@@ -7,9 +7,11 @@
 #include "api.h"
 #include "resource.h"
 
-#include <commctrl.h>
-#include <commdlg.h>
-#include <windowsx.h>
+#ifdef _WIN32
+#  include <commctrl.h>
+#  include <commdlg.h>
+#  include <windowsx.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -79,7 +81,9 @@ static double g_defaultTaperExp = 2.0;
 // Drag-drop state
 static int        g_dragSrc     = -1;
 static int        g_dragTarget  = -1;
+#ifdef _WIN32
 static HIMAGELIST g_hDragImages = nullptr;
+#endif
 
 // List subclass for reliable drag-drop mouse tracking
 static WNDPROC s_origListProc  = nullptr;
@@ -1152,6 +1156,7 @@ static void ImportScene(HWND hwnd)
 // ---------------------------------------------------------------------------
 static void DoEndDrag(HWND hwnd)
 {
+#ifdef _WIN32
     if (g_hDragImages)
     {
         ImageList_DragLeave(hwnd);
@@ -1159,6 +1164,7 @@ static void DoEndDrag(HWND hwnd)
         ImageList_Destroy(g_hDragImages);
         g_hDragImages = nullptr;
     }
+#endif
     ReleaseCapture();
 
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
@@ -2244,6 +2250,7 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                 SetCapture(hList);  // capture now that drag is confirmed
 
                 POINT ptOffset = { 8, 8 };
+#ifdef _WIN32
                 g_hDragImages = ListView_CreateDragImage(hList, g_dragSrc, &ptOffset);
                 if (g_hDragImages)
                 {
@@ -2253,6 +2260,7 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                     ImageList_BeginDrag(g_hDragImages, 0, 8, 8);
                     ImageList_DragEnter(dlg, dlgPt.x, dlgPt.y);
                 }
+#endif
             }
         }
 
@@ -2262,11 +2270,13 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
             POINT dlgPt = pt;
             ClientToScreen(hList, &dlgPt);
             ScreenToClient(dlg, &dlgPt);
+#ifdef _WIN32
             if (g_hDragImages)
             {
                 ImageList_DragMove(dlgPt.x, dlgPt.y);
                 ImageList_DragShowNolock(FALSE);
             }
+#endif
             LVHITTESTINFO hti = {};
             hti.pt = pt;
             int newTgt = ListView_HitTest(hList, &hti);
@@ -2278,8 +2288,10 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                     ListView_SetItemState(hList, g_dragTarget,
                                          LVIS_DROPHILITED, LVIS_DROPHILITED);
             }
+#ifdef _WIN32
             if (g_hDragImages)
                 ImageList_DragShowNolock(TRUE);
+#endif
             return 0;
         }
         break;

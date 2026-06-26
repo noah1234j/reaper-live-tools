@@ -17,10 +17,11 @@
 #include <cstring>
 #include <vector>
 #include <algorithm>
-#include <windowsx.h>
-#include <commctrl.h>
-
-#pragma comment(lib, "comctl32.lib")
+#ifdef _WIN32
+#  include <windowsx.h>
+#  include <commctrl.h>
+#  pragma comment(lib, "comctl32.lib")
+#endif
 
 // ---------------------------------------------------------------------------
 // Constants

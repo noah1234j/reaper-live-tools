@@ -9,7 +9,12 @@
 #include "api.h"
 #include "resource.h"
 
-#include <windowsx.h>
+#ifdef _WIN32
+#  include <windowsx.h>
+#else
+#  include <sys/resource.h> // getrusage
+#  include <time.h>         // clock_gettime
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -155,6 +160,7 @@ static MonitorMetrics s_m = {};
 // Uses GetProcessTimes to match what REAPER's own performance meter displays
 // (REAPER's CPU bar shows REAPER's process load, not system-wide load).
 // ---------------------------------------------------------------------------
+#ifdef _WIN32
 static double SampleCpu()
 {
     static ULARGE_INTEGER sPrevKernel = {};
@@ -205,6 +211,51 @@ static double SampleCpu()
     double frac = (double)dProcess / ((double)dWall * (double)sNumCpus);
     return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
 }
+#else  // macOS: use getrusage + CLOCK_MONOTONIC
+static double SampleCpu()
+{
+    static struct rusage    sPrevRu   = {};
+    static struct timespec  sPrevWall = {};
+    static bool             sFirst    = true;
+    static int              sNumCpus  = 0;
+
+    if (sNumCpus == 0)
+    {
+        SYSTEM_INFO si = {};
+        GetSystemInfo(&si);   // SWELL provides this
+        sNumCpus = (int)si.dwNumberOfProcessors;
+        if (sNumCpus < 1) sNumCpus = 1;
+    }
+
+    struct rusage   ru;
+    struct timespec now;
+    getrusage(RUSAGE_SELF, &ru);
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
+    if (sFirst)
+    {
+        sFirst    = false;
+        sPrevRu   = ru;
+        sPrevWall = now;
+        return 0.0;
+    }
+
+    // Time deltas in microseconds
+    double dProcess = (ru.ru_utime.tv_sec  - sPrevRu.ru_utime.tv_sec)  * 1e6
+                    + (double)(ru.ru_utime.tv_usec - sPrevRu.ru_utime.tv_usec)
+                    + (ru.ru_stime.tv_sec  - sPrevRu.ru_stime.tv_sec)  * 1e6
+                    + (double)(ru.ru_stime.tv_usec - sPrevRu.ru_stime.tv_usec);
+    double dWall    = (now.tv_sec  - sPrevWall.tv_sec)  * 1e6
+                    + (now.tv_nsec - sPrevWall.tv_nsec) / 1e3;
+
+    sPrevRu   = ru;
+    sPrevWall = now;
+
+    if (dWall <= 0.0) return 0.0;
+    double frac = dProcess / (dWall * (double)sNumCpus);
+    return frac < 0.0 ? 0.0 : (frac > 1.0 ? 1.0 : frac);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Max PDC helper  – returns the maximum chain_pdc_reporting value in samples

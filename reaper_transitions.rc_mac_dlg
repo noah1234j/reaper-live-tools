@@ -1,0 +1,497 @@
+#ifndef SWELL_DLG_SCALE_AUTOGEN
+#ifdef __APPLE__
+  #define SWELL_DLG_SCALE_AUTOGEN 1.7
+#else
+  #define SWELL_DLG_SCALE_AUTOGEN 1.9
+#endif
+#endif
+#ifndef SWELL_DLG_FLAGS_AUTOGEN
+#define SWELL_DLG_FLAGS_AUTOGEN SWELL_DLG_WS_FLIPPED|SWELL_DLG_WS_NOAUTOSIZE
+#endif
+
+#ifndef SET_IDD_TSNAPS_SCALE
+#define SET_IDD_TSNAPS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_TSNAPS_STYLE
+#define SET_IDD_TSNAPS_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_TSNAPS,SET_IDD_TSNAPS_STYLE,"Scenes",258,193,SET_IDD_TSNAPS_SCALE)
+BEGIN
+// ---- Mode toggle buttons (Scenes / Cue List) -------------------------
+CONTROL         "Scenes",   IDC_MODE_SCENES, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 5, 3, 72, 13
+CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
+
+// ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
+LTEXT           "", IDC_LIST, 5, 19, 148, 171
+
+// ---- Top action buttons -----------------------------------------------
+PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
+PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
+
+// ---- Scene title (inline name edit) ----------------------------------
+EDITTEXT        IDC_SNAPNAME,                   158, 17, 97, 12, ES_AUTOHSCROLL | WS_BORDER
+
+// ---- Progress bar placeholder – replaced dynamically -----------------
+LTEXT           "", IDC_PROGRESS,          158, 31, 97,  8
+
+// ---- Per-scene layer selector ----------------------------------------
+COMBOBOX        IDC_SNAP_LAYER,             158, 41, 97, 100,
+CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+// ---- Scene notes (multiline) -----------------------------------------
+LTEXT           "Notes:", IDC_STATIC,       158, 55, 97,  8
+EDITTEXT        IDC_SNAPNOTES,              158, 65, 97, 34,
+ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER
+
+// ---- Current layer indicator -----------------------------------------
+LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 101, 97, 8
+
+// ---- Status ----------------------------------------------------------
+LTEXT           "Idle",   IDC_STATUS,      158, 111, 97, 10
+
+// ---- Safes button ---------------------------------------------------
+PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 124, 97, 13
+
+// ---- Cue list setup button ------------------------------------------
+PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 141, 97, 13
+
+// ---- Settings button (opens global settings) -------------------------
+PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 158, 97, 13
+
+// ---- Layers button (opens Layers window) ----------------------------
+PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 175, 97, 13
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_TSNAPS)
+
+
+#ifndef SET_IDD_SNAP_SETTINGS_SCALE
+#define SET_IDD_SNAP_SETTINGS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_SNAP_SETTINGS_STYLE
+#define SET_IDD_SNAP_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_SNAP_SETTINGS,SET_IDD_SNAP_SETTINGS_STYLE,"Scene Settings",190,165,SET_IDD_SNAP_SETTINGS_SCALE)
+BEGIN
+// ---- Notes ----------------------------------------------------------
+LTEXT           "Notes:", IDC_STATIC,   5,  5, 24, 8
+EDITTEXT        IDC_SNAPNOTES,          5, 15, 180, 36,
+ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER
+
+// ---- Transition settings --------------------------------------------
+GROUPBOX        "Transition", IDC_STATIC, 4, 56, 181, 72
+
+CONTROL         "Instant", IDC_INSTANT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 69, 80, 10
+
+LTEXT           "Duration:", IDC_STATIC, 10, 83, 38, 8
+EDITTEXT        IDC_DURATION,            50, 81, 34, 12, ES_AUTOHSCROLL
+LTEXT           "sec",       IDC_STATIC, 86, 83, 18, 8
+
+LTEXT           "Taper:",    IDC_STATIC, 10, 98, 28, 8
+COMBOBOX        IDC_TAPER,              40, 96, 140, 70,
+CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+LTEXT           "Exponent:", IDC_STATIC, 10, 113, 38, 8
+EDITTEXT        IDC_TAPER_CUSTOM,        50, 111, 34, 12, ES_AUTOHSCROLL
+
+// ---- Buttons --------------------------------------------------------
+DEFPUSHBUTTON   "OK",     IDOK,     80, 136, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 135, 136, 50, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SNAP_SETTINGS)
+
+
+#ifndef SET_IDD_GLOBAL_SETTINGS_SCALE
+#define SET_IDD_GLOBAL_SETTINGS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_GLOBAL_SETTINGS_STYLE
+#define SET_IDD_GLOBAL_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_GLOBAL_SETTINGS,SET_IDD_GLOBAL_SETTINGS_STYLE,"Global Settings",205,298,SET_IDD_GLOBAL_SETTINGS_SCALE)
+BEGIN
+GROUPBOX        "New Scene Defaults", IDC_STATIC, 5, 5, 194, 83
+
+CONTROL         "Instant", IDC_GSET_INSTANT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 20, 80, 10
+
+LTEXT           "Duration:", IDC_STATIC,  10, 35, 38, 8
+EDITTEXT        IDC_GSET_DURATION,         52, 33, 34, 12, ES_AUTOHSCROLL
+LTEXT           "sec",       IDC_STATIC,   88, 35, 18, 8
+
+LTEXT           "Taper:",    IDC_STATIC,  10, 51, 28, 8
+COMBOBOX        IDC_GSET_TAPER,            40, 49, 154, 70,
+CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+LTEXT           "Exponent:", IDC_STATIC,  10, 67, 38, 8
+EDITTEXT        IDC_GSET_TAPER_CUSTOM,     52, 65, 34, 12, ES_AUTOHSCROLL
+
+CONTROL         "Place marker at playhead on recall", IDC_GSET_MARKER, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 95, 185, 10
+
+GROUPBOX        "Scene List", IDC_STATIC, 5, 109, 194, 60
+CONTROL         "Single click to recall scene",    IDC_GSET_SINGLE_CLICK,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 121, 185, 10
+CONTROL         "Alt+click to delete scene",       IDC_GSET_ALT_DELETE,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 134, 185, 10
+CONTROL         "Ctrl+click to overwrite scene",   IDC_GSET_CTRL_OVERWRITE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 147, 185, 10
+
+GROUPBOX        "Live Performance", IDC_STATIC, 5, 173, 194, 95
+CONTROL         "Preload new plugins offline (reduces live audio stuttering)", IDC_GSET_PRELOAD_OFFLINE, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 183, 185, 10
+CONTROL         "Skip writing unchanged params on recall (faster for stable FX chains)", IDC_GSET_SKIP_UNCHANGED, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 196, 185, 10
+PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 210, 120, 13
+CONTROL         "Duration debug (print step timing to console)", IDC_GSET_DURATION_DEBUG, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 226, 185, 10
+CONTROL         "Shadow VST3 params (skip unchanged writes on instant recall)", IDC_GSET_SHADOW_PARAMS, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 239, 185, 10
+CONTROL         "Recall all plugins by chunk on instant path (re-save scenes)", IDC_GSET_CHUNK_ALL_INSTANT, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 252, 185, 10
+
+DEFPUSHBUTTON   "OK",     IDOK,      75, 275, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 135, 275, 50, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_GLOBAL_SETTINGS)
+
+
+#ifndef SET_IDD_CHUNK_RECALL_PLUGINS_SCALE
+#define SET_IDD_CHUNK_RECALL_PLUGINS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_CHUNK_RECALL_PLUGINS_STYLE
+#define SET_IDD_CHUNK_RECALL_PLUGINS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_CHUNK_RECALL_PLUGINS,SET_IDD_CHUNK_RECALL_PLUGINS_STYLE,"Chunk Recall Plugins",260,193,SET_IDD_CHUNK_RECALL_PLUGINS_SCALE)
+BEGIN
+LTEXT           "Plugins matching these keywords save/restore their full state as a VST chunk instead of per-parameter values. Use for rack plugins with fixed param-count but variable param roles (e.g. Waves VMR).",
+IDC_STATIC, 7, 7, 246, 28
+
+LISTBOX         IDC_CRP_LIST, 7, 39, 246, 108,
+LBS_NOINTEGRALHEIGHT | WS_BORDER | WS_VSCROLL | WS_TABSTOP
+
+PUSHBUTTON      "Add...",  IDC_CRP_ADD,    7,  153, 50, 14
+PUSHBUTTON      "Remove",  IDC_CRP_REMOVE, 62, 153, 50, 14
+PUSHBUTTON      "Close",   IDCANCEL,      203, 153, 50, 14
+
+AUTOCHECKBOX    "Notify after saving a scene with chunk-recall plugins (debug)",
+IDC_CRP_NOTIFY, 7, 172, 246, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_CHUNK_RECALL_PLUGINS)
+
+
+#ifndef SET_IDD_ADD_KEYWORD_SCALE
+#define SET_IDD_ADD_KEYWORD_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_ADD_KEYWORD_STYLE
+#define SET_IDD_ADD_KEYWORD_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_ADD_KEYWORD,SET_IDD_ADD_KEYWORD_STYLE,"Add Keyword",200,64,SET_IDD_ADD_KEYWORD_SCALE)
+BEGIN
+LTEXT           "Enter plugin name keyword (substring, case-insensitive):",
+IDC_STATIC, 7, 7, 186, 16
+EDITTEXT        IDC_AK_EDIT, 7, 26, 186, 12, ES_AUTOHSCROLL
+DEFPUSHBUTTON   "OK",     IDOK,      93, 44, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 148, 44, 50, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_ADD_KEYWORD)
+
+
+#ifndef SET_IDD_CUE_SETUP_SCALE
+#define SET_IDD_CUE_SETUP_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_CUE_SETUP_STYLE
+#define SET_IDD_CUE_SETUP_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_CUE_SETUP,SET_IDD_CUE_SETUP_STYLE,"Cue List Setup",315,215,SET_IDD_CUE_SETUP_SCALE)
+BEGIN
+LTEXT           "Scenes (drag or dbl-click \x2192)", IDC_STATIC, 5,  3, 148, 8
+LTEXT           "Cue Order",                         IDC_STATIC, 162, 3, 148, 8
+
+// List placeholders – replaced by SysListView32 in WM_INITDIALOG
+LTEXT           "", IDC_CUE_LEFT_LIST,   5, 13, 148, 198
+LTEXT           "", IDC_CUE_RIGHT_LIST, 162, 13, 148, 198
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_CUE_SETUP)
+
+
+#ifndef SET_IDD_SAFES_SCALE
+#define SET_IDD_SAFES_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_SAFES_STYLE
+#define SET_IDD_SAFES_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_SAFES,SET_IDD_SAFES_STYLE,"Live Tools - Safes",430,252,SET_IDD_SAFES_SCALE)
+BEGIN
+// ---- Global Safes groupbox (two rows) --------------------------------
+GROUPBOX        "Global Safes", IDC_GSAFES_GROUP, 5, 4, 420, 52
+
+// Row 1 – mix params
+CONTROL "Vol",   IDC_GSAFE_VOL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 46, 10
+CONTROL "Pan",   IDC_GSAFE_PAN,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  72, 18, 46, 10
+CONTROL "Mutes", IDC_GSAFE_MUTE,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 132, 18, 48, 10
+CONTROL "Solo",  IDC_GSAFE_SOLO,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 192, 18, 46, 10
+CONTROL "Phase", IDC_GSAFE_PHASE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 252, 18, 48, 10
+CONTROL "FX",    IDC_GSAFE_FX,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 312, 18, 40, 10
+CONTROL "Vis",   IDC_GSAFE_VIS,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366, 18, 40, 10
+
+// Row 2 – layout params
+CONTROL "Name",   IDC_GSAFE_NAME,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 34, 48, 10
+CONTROL "Color",  IDC_GSAFE_COLOR,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  72, 34, 48, 10
+CONTROL "Height", IDC_GSAFE_HEIGHT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 132, 34, 52, 10
+CONTROL "Order",  IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 196, 34, 48, 10
+CONTROL "Layers", IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 256, 34, 48, 10
+
+// ---- Per-track safes -------------------------------------------------
+CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 5, 62, 130, 10
+
+// ListView placeholder – replaced dynamically in WM_INITDIALOG
+LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 148
+
+// ---- Bottom buttons --------------------------------------------------
+PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 230, 56, 14
+PUSHBUTTON      "Clear All", IDC_CLEAR_SAFES,   66, 230, 56, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SAFES)
+
+
+#ifndef SET_IDD_LAYERS_SCALE
+#define SET_IDD_LAYERS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_LAYERS_STYLE
+#define SET_IDD_LAYERS_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LAYERS,SET_IDD_LAYERS_STYLE,"Live Tools - Layers",487,357,SET_IDD_LAYERS_SCALE)
+BEGIN
+// ---- Left: Layers list -----------------------------------------------
+LTEXT           "Layers (double-click to activate):", IDC_STATIC, 5, 3, 170, 8
+
+// ListView placeholder – replaced dynamically in WM_INITDIALOG
+LTEXT           "", IDC_LYR_LAYER_LIST, 5, 13, 212, 308
+
+// ---- Right: Layer properties ----------------------------------------
+GROUPBOX        "Layer Properties", IDC_LYR_PROP_GROUP, 221, 3, 260, 327
+
+LTEXT           "Name:",    IDC_STATIC,       227, 18, 26, 8, SS_CENTERIMAGE
+EDITTEXT        IDC_LYR_NAME_EDIT,            255, 16, 219, 12, ES_AUTOHSCROLL
+
+LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 32, 249, 8
+
+// ListView placeholder for track list – replaced dynamically
+LTEXT           "", IDC_LYR_TRACK_LIST, 226, 44, 249, 282
+
+// ---- Bottom bar ------------------------------------------------------
+PUSHBUTTON      "Activate",    IDC_LYR_ACTIVATE,     5,  341, 56, 13
+PUSHBUTTON      "Prev",        IDC_LYR_PREV,         64, 341, 36, 13
+PUSHBUTTON      "Next",        IDC_LYR_NEXT,        103, 341, 36, 13
+PUSHBUTTON      "Show All",    IDC_LYR_DEACTIVATE,  142, 341, 52, 13
+PUSHBUTTON      "Settings...", IDC_LYR_SETTINGS_BTN,197, 341, 58, 13
+LTEXT           "Ready",       IDC_LYR_STATUS,      259, 344, 222, 10
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LAYERS)
+
+
+#ifndef SET_IDD_LAYERS_SETTINGS_SCALE
+#define SET_IDD_LAYERS_SETTINGS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_LAYERS_SETTINGS_STYLE
+#define SET_IDD_LAYERS_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LAYERS_SETTINGS,SET_IDD_LAYERS_SETTINGS_STYLE,"Layers Settings",250,150,SET_IDD_LAYERS_SETTINGS_SCALE)
+BEGIN
+GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 113
+CONTROL         "Apply MCP (mixer) visibility",         IDC_LYR_SET_MCPVIS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 18, 175, 10
+CONTROL         "Also hide TCP (track control panel)",  IDC_LYR_SET_HIDETCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 30, 180, 10
+CONTROL         "Reorder tracks to match layer order",  IDC_LYR_SET_REORDER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 42, 185, 10
+CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 54, 200, 10
+CONTROL         "Trigger MCP select (refresh control surface channels)", IDC_LYR_SET_TRIGGERMCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 66, 225, 10
+LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 84, 105, 8, SS_CENTERIMAGE
+EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 82, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
+UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
+156, 82, 12, 12
+LTEXT           "(0 = all)", IDC_STATIC, 171, 84, 50, 8, SS_CENTERIMAGE
+
+DEFPUSHBUTTON   "OK",     IDOK,     140, 131, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 196, 131, 50, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LAYERS_SETTINGS)
+
+
+#ifndef SET_IDD_MONITOR_SCALE
+#define SET_IDD_MONITOR_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_MONITOR_STYLE
+#define SET_IDD_MONITOR_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE|SWELL_DLG_WS_OPAQUE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_MONITOR,SET_IDD_MONITOR_STYLE,"Live Monitor",148,74,SET_IDD_MONITOR_SCALE)
+BEGIN
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_MONITOR)
+
+
+#ifndef SET_IDD_MONITOR_SETTINGS_SCALE
+#define SET_IDD_MONITOR_SETTINGS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_MONITOR_SETTINGS_STYLE
+#define SET_IDD_MONITOR_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_MONITOR_SETTINGS,SET_IDD_MONITOR_SETTINGS_STYLE,"Live Monitor - Thresholds",200,100,SET_IDD_MONITOR_SETTINGS_SCALE)
+BEGIN
+// Column headers
+LTEXT           "",          IDC_STATIC,           5,  5, 72,  8
+LTEXT           "Yellow >",  IDC_STATIC,          80,  5, 30,  8, SS_CENTER
+LTEXT           "Orange >",  IDC_STATIC,         113,  5, 30,  8, SS_CENTER
+LTEXT           "Red >",     IDC_STATIC,         146,  5, 30,  8, SS_CENTER
+
+// CPU (values 0-100, interpreted as %)
+LTEXT           "CPU (%)",   IDC_STATIC,           5, 20, 72,  8, SS_CENTERIMAGE
+EDITTEXT        IDC_MON_CPU_YEL,  80, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_CPU_ORA, 113, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_CPU_RED, 146, 18, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+// I/O Latency
+LTEXT           "I/O (ms)",  IDC_STATIC,           5, 34, 72,  8, SS_CENTERIMAGE
+EDITTEXT        IDC_MON_IO_YEL,   80, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_IO_ORA,  113, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_IO_RED,  146, 32, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+// Max PDC
+LTEXT           "PDC (ms)",  IDC_STATIC,           5, 48, 72,  8, SS_CENTERIMAGE
+EDITTEXT        IDC_MON_PDC_YEL,  80, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_PDC_ORA, 113, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_PDC_RED, 146, 46, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+// Round-Trip
+LTEXT           "Round-Trip (ms)", IDC_STATIC,    5, 62, 72,  8, SS_CENTERIMAGE
+EDITTEXT        IDC_MON_RT_YEL,   80, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_RT_ORA,  113, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+EDITTEXT        IDC_MON_RT_RED,  146, 60, 30, 12, ES_AUTOHSCROLL | ES_RIGHT
+
+// Buttons
+DEFPUSHBUTTON   "OK",        IDOK,          30, 82, 38, 14
+PUSHBUTTON      "Cancel",    IDCANCEL,      75, 82, 38, 14
+PUSHBUTTON      "Defaults",  IDC_MON_RESET,120, 82, 46, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_MONITOR_SETTINGS)
+
+
+#ifndef SET_IDD_METERBRIDGE_SCALE
+#define SET_IDD_METERBRIDGE_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_METERBRIDGE_STYLE
+#define SET_IDD_METERBRIDGE_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE|SWELL_DLG_WS_OPAQUE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_METERBRIDGE,SET_IDD_METERBRIDGE_STYLE,"Meter Bridge",600,120,SET_IDD_METERBRIDGE_SCALE)
+BEGIN
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_METERBRIDGE)
+
+
+#ifndef SET_IDD_LIVE_OPTIMIZE_SCALE
+#define SET_IDD_LIVE_OPTIMIZE_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_LIVE_OPTIMIZE_STYLE
+#define SET_IDD_LIVE_OPTIMIZE_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LIVE_OPTIMIZE,SET_IDD_LIVE_OPTIMIZE_STYLE,"Live Tools - Live Optimizer",560,380,SET_IDD_LIVE_OPTIMIZE_SCALE)
+BEGIN
+// ---- Score bar (owner-draw) ----------------------------------------
+CONTROL         "", IDC_LO_SCORE_BAR,  "Static",
+SS_OWNERDRAW | WS_VISIBLE, 5, 3, 440, 18
+LTEXT           "Live Score: -- / 100", IDC_LO_SCORE_TEXT, 450, 6, 105, 12
+
+// ---- ListView placeholder – replaced dynamically in WM_INITDIALOG --
+LTEXT           "", IDC_LO_LIST, 5, 25, 550, 255
+
+// ---- Info / tooltip panel ------------------------------------------
+EDITTEXT        IDC_LO_INFO, 5, 285, 550, 46,
+ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_BORDER | NOT WS_TABSTOP
+
+// ---- Bottom action row ---------------------------------------------
+PUSHBUTTON      "Refresh",   IDC_LO_REFRESH,   5,   337, 55, 14
+PUSHBUTTON      "Apply Fix", IDC_LO_APPLY_FIX, 64,  337, 55, 14
+LTEXT           "",          IDC_LO_STATUS,    124, 340, 430, 10
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LIVE_OPTIMIZE)
+
+
+#ifndef SET_IDD_LIVELOCK_SCALE
+#define SET_IDD_LIVELOCK_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_LIVELOCK_STYLE
+#define SET_IDD_LIVELOCK_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE|SWELL_DLG_WS_OPAQUE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LIVELOCK,SET_IDD_LIVELOCK_STYLE,"Live Lock",300,22,SET_IDD_LIVELOCK_SCALE)
+BEGIN
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LIVELOCK)
+
+
+#ifndef SET_IDD_LIVELOCK_SETTINGS_SCALE
+#define SET_IDD_LIVELOCK_SETTINGS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_LIVELOCK_SETTINGS_STYLE
+#define SET_IDD_LIVELOCK_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LIVELOCK_SETTINGS,SET_IDD_LIVELOCK_SETTINGS_STYLE,"Live Lock Settings",250,215,SET_IDD_LIVELOCK_SETTINGS_SCALE)
+BEGIN
+GROUPBOX "Protect", IDC_STATIC, 5, 4, 240, 98
+CONTROL "All routing (track sends)",            IDC_LL_CHK_ROUTING,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 17, 200, 10
+CONTROL "Selected tracks only (at lock time)",  IDC_LL_CHK_SELONLY,    "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  22, 29, 210, 10
+CONTROL "Hardware outputs",                     IDC_LL_CHK_HWOUT,      "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 41, 200, 10
+CONTROL "Master send enable/disable",           IDC_LL_CHK_MASTERSEND, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 53, 200, 10
+CONTROL "FX bypass states",                     IDC_LL_CHK_FXBYPASS,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 65, 200, 10
+CONTROL "Record arm / input monitoring",        IDC_LL_CHK_RECARM,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 77, 200, 10
+
+GROUPBOX "On violation", IDC_STATIC, 5, 106, 240, 24
+CONTROL "Require confirmation before reverting", IDC_LL_CHK_CONFIRM, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 118, 225, 10
+
+LTEXT    "Check interval:", IDC_STATIC, 5, 136, 64, 10, SS_CENTERIMAGE
+EDITTEXT IDC_LL_INTERVAL_EDIT, 72, 134, 38, 14, ES_NUMBER | ES_AUTOHSCROLL
+CONTROL  "", IDC_LL_INTERVAL_SPIN, "msctls_updown32",
+UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
+110, 134, 12, 14
+LTEXT    "ms  (50 - 2000)", IDC_STATIC, 124, 136, 80, 10, SS_CENTERIMAGE
+LTEXT    "Lower values revert faster, higher CPU usage.", IDC_STATIC, 5, 152, 240, 10
+
+DEFPUSHBUTTON "OK",     IDOK,     140, 195, 50, 14
+PUSHBUTTON    "Cancel", IDCANCEL, 196, 195, 50, 14
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LIVELOCK_SETTINGS)
+
+
+#ifndef SET_IDD_DCA_SCALE
+#define SET_IDD_DCA_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_DCA_STYLE
+#define SET_IDD_DCA_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE|SWELL_DLG_WS_OPAQUE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_DCA,SET_IDD_DCA_STYLE,"Live Tools - DCA Groups",520,200,SET_IDD_DCA_SCALE)
+BEGIN
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_DCA)
+
+
+#ifndef SET_IDD_MUTEGROUPS_SCALE
+#define SET_IDD_MUTEGROUPS_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_MUTEGROUPS_STYLE
+#define SET_IDD_MUTEGROUPS_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_MUTEGROUPS,SET_IDD_MUTEGROUPS_STYLE,"Live Tools - Mute Groups",340,265,SET_IDD_MUTEGROUPS_SCALE)
+BEGIN
+LTEXT           "", IDC_MG_GROUP_LIST,  5,   3, 160, 210
+LTEXT           "", IDC_MG_TRACK_LIST, 170,  3, 165, 210
+
+PUSHBUTTON      "Add",    IDC_MG_ADD_GROUP,   5,  216, 50, 13
+PUSHBUTTON      "Rename", IDC_MG_RENAME,     58,  216, 50, 13
+PUSHBUTTON      "Delete", IDC_MG_DELETE,    111,  216, 50, 13
+
+PUSHBUTTON      "Add Selected", IDC_MG_ADD_TRACKS, 170, 216,  76, 13
+PUSHBUTTON      "Remove",       IDC_MG_REM_TRACK,  249, 216,  86, 13
+
+PUSHBUTTON      "Toggle Mute",  IDC_MG_TOGGLE,      5,  233, 160, 14
+LTEXT           "Ready",        IDC_MG_STATUS,    170,  237, 165, 10
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_MUTEGROUPS)
+
+
+
+//EOF
+

@@ -2,6 +2,8 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#else
+#  include "WDL/swell/swell.h"
 #endif
 
 // Called from ReaperPluginEntry

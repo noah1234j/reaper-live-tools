@@ -1,6 +1,10 @@
 #pragma once
 #include "api.h"
-#include <windows.h>
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include "WDL/swell/swell.h"
+#endif
 #include <vector>
 
 // ---------------------------------------------------------------------------
