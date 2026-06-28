@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.0.21-beta] — 2026-06-28
+
+### Bug Fixes
+
+- **Scenes: Send enable/disable state now applies to the correct send**: When recalling a scene that adds a new send alongside an existing send to the same destination, the new send could receive the mute/enable state intended for the existing send. Root cause: `CreateTrackSend` inserts new sends at index 0, shifting all existing send indices and invalidating the lookup map used to apply discrete params. Fixed by splitting the send update loop into two passes — pass 1 updates all existing sends (map lookups valid), pass 2 creates all new sends (no map lookups). Affects both instant and timed recall paths.
+
+- **Scenes: Extra sends now removed when scene has fewer sends to a destination**: When toggling from a scene with N sends to a destination to a scene with fewer than N sends to that same destination, the extra sends were not removed. Root cause: the removal check was a simple "is this destination in the snapshot?" boolean, which matched all N sends even when the snapshot only had M < N. Fixed by using count-based matching — each snapshot entry can absorb only one live send, so excess sends are correctly identified and removed. Applies to both track sends and HW sends on both instant and timed recall paths.
+
+---
+
 ## [v0.0.20-beta] — 2026-06-22
 
 ### New Features

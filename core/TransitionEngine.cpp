@@ -946,7 +946,9 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 }
             }
 
-            // --- Update or add sends from snapshot ---
+            // --- Update existing sends (pass 1: no routing changes) ---
+            // Must complete before any CreateTrackSend calls — REAPER may insert new sends at
+            // position 0, shifting existing indices and corrupting liveSends/liveHWSends lookups.
             for (const auto& ss : ts.sends)
             {
                 if (ss.isHW)
@@ -954,27 +956,11 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     auto it2 = liveHWSends.find(ss.hwDstChan);
                     if (it2 != liveHWSends.end())
                     {
-                        // Exists: update level params
                         int si = it2->second;
                         double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
                         GetSetTrackSendInfo(tr, 1, si, "D_VOL",  &v);
                         GetSetTrackSendInfo(tr, 1, si, "D_PAN",  &p);
                         GetSetTrackSendInfo(tr, 1, si, "B_MUTE", &m);
-                    }
-                    else if (canRoute)
-                    {
-                        // Add new HW send
-                        int newIdx = CreateTrackSend(tr, nullptr);
-                        if (newIdx >= 0)
-                        {
-                            // Set channel and rebuild map entry
-                            int ch = ss.hwDstChan;
-                            GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
-                            double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
-                            GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",  &v);
-                            GetSetTrackSendInfo(tr, 1, newIdx, "D_PAN",  &p);
-                            GetSetTrackSendInfo(tr, 1, newIdx, "B_MUTE", &m);
-                        }
                     }
                 }
                 else
@@ -982,7 +968,6 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     auto it2 = liveSends.find(ss.destGuid);
                     if (it2 != liveSends.end())
                     {
-                        // Exists: update level params
                         int si = it2->second;
                         double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
                         GetSetTrackSendInfo(tr, 0, si, "D_VOL",      &v);
@@ -990,20 +975,46 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                         GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
                         GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
                     }
-                    else if (canRoute)
+                }
+            }
+
+            // --- Add new sends (pass 2: routing changes, maps no longer used) ---
+            if (canRoute)
+            {
+                for (const auto& ss : ts.sends)
+                {
+                    if (ss.isHW)
                     {
-                        // Resolve destination track from GUID
-                        auto destIt = tmap.find(ss.destGuid);
-                        if (destIt != tmap.end())
+                        if (liveHWSends.find(ss.hwDstChan) == liveHWSends.end())
                         {
-                            int newIdx = CreateTrackSend(tr, destIt->second);
+                            int newIdx = CreateTrackSend(tr, nullptr);
                             if (newIdx >= 0)
                             {
-                                double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
-                                GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
-                                GetSetTrackSendInfo(tr, 0, newIdx, "D_PAN",      &p);
-                                GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
-                                GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                                int ch = ss.hwDstChan;
+                                GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
+                                double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
+                                GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",  &v);
+                                GetSetTrackSendInfo(tr, 1, newIdx, "D_PAN",  &p);
+                                GetSetTrackSendInfo(tr, 1, newIdx, "B_MUTE", &m);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        if (liveSends.find(ss.destGuid) == liveSends.end())
+                        {
+                            auto destIt = tmap.find(ss.destGuid);
+                            if (destIt != tmap.end())
+                            {
+                                int newIdx = CreateTrackSend(tr, destIt->second);
+                                if (newIdx >= 0)
+                                {
+                                    double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "D_PAN",      &p);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                                }
                             }
                         }
                     }
@@ -1011,15 +1022,17 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             }
 
             // --- Remove live sends absent from snapshot (routing only, not while recording) ---
+            // Uses count-based matching: if live has M sends to dest X and snapshot has N < M,
+            // M-N of them are removed. This handles duplicate sends to the same destination.
             if (canRoute)
             {
-                // Track sends: build set of GUIDs in snapshot
-                std::vector<GUID> snapGuids;
-                std::vector<int>  snapHWChans;
+                // Build count maps from snapshot
+                std::map<GUID, int, GUIDLess> snapGuidCounts;
+                std::map<int, int>             snapHWChanCounts;
                 for (const auto& ss : ts.sends)
                 {
-                    if (ss.isHW) snapHWChans.push_back(ss.hwDstChan);
-                    else         snapGuids.push_back(ss.destGuid);
+                    if (ss.isHW) snapHWChanCounts[ss.hwDstChan]++;
+                    else         snapGuidCounts[ss.destGuid]++;
                 }
 
                 // Remove track sends in reverse index order
@@ -1028,13 +1041,13 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     for (int si = n - 1; si >= 0; si--)
                     {
                         MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
-                        if (!dest) continue;
+                        if (!dest) { RemoveTrackSend(tr, 0, si); continue; }  // orphaned send, remove it
                         GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
-                        if (!pg) continue;
-                        bool found = false;
-                        for (const auto& g : snapGuids)
-                            if (IsEqualGUID(g, *pg)) { found = true; break; }
-                        if (!found)
+                        if (!pg) { RemoveTrackSend(tr, 0, si); continue; }    // unidentifiable, remove it
+                        auto it = snapGuidCounts.find(*pg);
+                        if (it != snapGuidCounts.end() && it->second > 0)
+                            it->second--;  // consumed one snapshot entry, keep this send
+                        else
                             RemoveTrackSend(tr, 0, si);
                     }
                 }
@@ -1045,10 +1058,10 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     {
                         int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
                         if (!pc) continue;
-                        bool found = false;
-                        for (int ch : snapHWChans)
-                            if (ch == *pc) { found = true; break; }
-                        if (!found)
+                        auto it = snapHWChanCounts.find(*pc);
+                        if (it != snapHWChanCounts.end() && it->second > 0)
+                            it->second--;  // consumed one snapshot entry, keep this send
+                        else
                             RemoveTrackSend(tr, 1, si);
                     }
                 }
@@ -1307,10 +1320,20 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
 
             // Also push fade-out lerps for live sends that are being removed
             // (routing guard must have allowed the removal – if not recording).
-            // We compare live sends against snapshot to find orphaned ones.
+            // Uses count-based matching: if live has M sends to dest X and snapshot has N < M,
+            // M-N of them get fade-out lerps and are removed at the end of the transition.
             if (!(GetPlayState() & 4))
             {
-                // Track sends: find live sends not in snapshot → fade to 0
+                // Build count maps from snapshot
+                std::map<GUID, int, GUIDLess> snapGuidCounts;
+                std::map<int, int>             snapHWChanCounts;
+                for (const auto& ss : ts.sends)
+                {
+                    if (ss.isHW) snapHWChanCounts[ss.hwDstChan]++;
+                    else         snapGuidCounts[ss.destGuid]++;
+                }
+
+                // Track sends: find live sends not matched by snapshot → fade to 0
                 const int nTr = GetTrackNumSends(tr, 0);
                 for (int si = 0; si < nTr; si++)
                 {
@@ -1318,26 +1341,22 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                     if (!dest) continue;
                     GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
                     if (!pg) continue;
-                    bool inSnap = false;
-                    for (const auto& ss : ts.sends)
-                        if (!ss.isHW && IsEqualGUID(ss.destGuid, *pg)) { inSnap = true; break; }
-                    if (!inSnap)
-                    {
-                        double* pv = (double*)GetSetTrackSendInfo(tr, 0, si, "D_VOL", nullptr);
-                        double* pp = (double*)GetSetTrackSendInfo(tr, 0, si, "D_PAN", nullptr);
-                        SendLerp sl{};
-                        sl.tr            = tr;
-                        sl.sendIdx       = si;
-                        sl.destGuid      = *pg;
-                        sl.isHW          = false;
-                        sl.hwDstChan     = 0;
-                        sl.startVol      = pv ? *pv : 1.0;
-                        sl.endVol        = 0.0;
-                        sl.startPan      = pp ? *pp : 0.0;
-                        sl.endPan        = pp ? *pp : 0.0;
-                        sl.pendingRemove = true;
-                        m_sendLerps.push_back(sl);
-                    }
+                    auto it = snapGuidCounts.find(*pg);
+                    if (it != snapGuidCounts.end() && it->second > 0) { it->second--; continue; }  // matched
+                    double* pv = (double*)GetSetTrackSendInfo(tr, 0, si, "D_VOL", nullptr);
+                    double* pp = (double*)GetSetTrackSendInfo(tr, 0, si, "D_PAN", nullptr);
+                    SendLerp sl{};
+                    sl.tr            = tr;
+                    sl.sendIdx       = si;
+                    sl.destGuid      = *pg;
+                    sl.isHW          = false;
+                    sl.hwDstChan     = 0;
+                    sl.startVol      = pv ? *pv : 1.0;
+                    sl.endVol        = 0.0;
+                    sl.startPan      = pp ? *pp : 0.0;
+                    sl.endPan        = pp ? *pp : 0.0;
+                    sl.pendingRemove = true;
+                    m_sendLerps.push_back(sl);
                 }
                 // HW sends: same
                 const int nHW = GetTrackNumSends(tr, 1);
@@ -1345,25 +1364,21 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                 {
                     int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
                     if (!pc) continue;
-                    bool inSnap = false;
-                    for (const auto& ss : ts.sends)
-                        if (ss.isHW && ss.hwDstChan == *pc) { inSnap = true; break; }
-                    if (!inSnap)
-                    {
-                        double* pv = (double*)GetSetTrackSendInfo(tr, 1, si, "D_VOL", nullptr);
-                        double* pp = (double*)GetSetTrackSendInfo(tr, 1, si, "D_PAN", nullptr);
-                        SendLerp sl{};
-                        sl.tr            = tr;
-                        sl.sendIdx       = si;
-                        sl.hwDstChan     = *pc;
-                        sl.isHW          = true;
-                        sl.startVol      = pv ? *pv : 1.0;
-                        sl.endVol        = 0.0;
-                        sl.startPan      = pp ? *pp : 0.0;
-                        sl.endPan        = pp ? *pp : 0.0;
-                        sl.pendingRemove = true;
-                        m_sendLerps.push_back(sl);
-                    }
+                    auto it = snapHWChanCounts.find(*pc);
+                    if (it != snapHWChanCounts.end() && it->second > 0) { it->second--; continue; }  // matched
+                    double* pv = (double*)GetSetTrackSendInfo(tr, 1, si, "D_VOL", nullptr);
+                    double* pp = (double*)GetSetTrackSendInfo(tr, 1, si, "D_PAN", nullptr);
+                    SendLerp sl{};
+                    sl.tr            = tr;
+                    sl.sendIdx       = si;
+                    sl.hwDstChan     = *pc;
+                    sl.isHW          = true;
+                    sl.startVol      = pv ? *pv : 1.0;
+                    sl.endVol        = 0.0;
+                    sl.startPan      = pp ? *pp : 0.0;
+                    sl.endPan        = pp ? *pp : 0.0;
+                    sl.pendingRemove = true;
+                    m_sendLerps.push_back(sl);
                 }
             }
         }
@@ -1656,6 +1671,36 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
             }
 
             // Add new sends (not yet live) with initial vol=0 so they fade in via SendLerp
+            // Pass 1: apply discrete params (B_MUTE, I_SENDMODE) to existing sends.
+            // Must complete before any CreateTrackSend calls — REAPER may insert new sends at
+            // position 0, shifting existing indices and corrupting liveSends/liveHWSends lookups.
+            for (const auto& ss : ts.sends)
+            {
+                if (ss.isHW)
+                {
+                    auto hwIt = liveHWSends.find(ss.hwDstChan);
+                    if (hwIt != liveHWSends.end())
+                    {
+                        int si = hwIt->second;
+                        bool m = ss.mute;
+                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE", &m);
+                    }
+                }
+                else
+                {
+                    auto sendIt = liveSends.find(ss.destGuid);
+                    if (sendIt != liveSends.end())
+                    {
+                        int si = sendIt->second;
+                        bool m = ss.mute;  int sm = ss.sendMode;
+                        GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
+                        GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
+                    }
+                }
+            }
+
+            // Pass 2: create new sends at vol=0 so they fade in via SendLerp.
+            // liveSends/liveHWSends are no longer consulted after this point.
             if (canRoute)
             {
                 for (const auto& ss : ts.sends)
@@ -1695,11 +1740,9 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                         }
                     }
                 }
-
-                // Remove sends absent from snapshot (in reverse order; they'll fade out via SendLerp before removal)
-                // We just leave them in place here — BuildLerpLists will push pendingRemove SendLerps.
-                // Nothing to do now for the removal side.
             }
+
+            // Removal of sends absent from snapshot is deferred to BuildLerpLists (pendingRemove SendLerps).
         }
         tSends += QpcMs() - ts0;
     } // end per-track timed loop
@@ -1825,15 +1868,39 @@ void TransitionEngine::TimerCallback()
                                        lerp(wl.startWet, wl.endWet, t));
     }
 
-    // Interpolate send vol/pan
-    for (const auto& sl : eng.m_sendLerps)
+    // Interpolate send vol/pan — revalidate sendIdx each tick since the send list can
+    // shift if the user modifies routing externally during an active transition.
+    for (auto& sl : eng.m_sendLerps)
     {
         if (!ValidatePtr2(nullptr, sl.tr, "MediaTrack*")) continue;
         int cat = sl.isHW ? 1 : 0;
+        int liveIdx = -1;
+        if (sl.isHW)
+        {
+            const int n = GetTrackNumSends(sl.tr, 1);
+            for (int si = 0; si < n; si++)
+            {
+                int* pc = (int*)GetSetTrackSendInfo(sl.tr, 1, si, "I_DSTCHAN", nullptr);
+                if (pc && *pc == sl.hwDstChan) { liveIdx = si; break; }
+            }
+        }
+        else
+        {
+            const int n = GetTrackNumSends(sl.tr, 0);
+            for (int si = 0; si < n; si++)
+            {
+                MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(sl.tr, 0, si, "P_DESTTRACK", nullptr);
+                if (!dest) continue;
+                GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+                if (pg && IsEqualGUID(*pg, sl.destGuid)) { liveIdx = si; break; }
+            }
+        }
+        if (liveIdx < 0) continue;
+        sl.sendIdx = liveIdx;  // keep cached index fresh for SnapToEnd
         double v = lerp(sl.startVol, sl.endVol, t);
         double p = lerp(sl.startPan, sl.endPan, t);
-        GetSetTrackSendInfo(sl.tr, cat, sl.sendIdx, "D_VOL", &v);
-        GetSetTrackSendInfo(sl.tr, cat, sl.sendIdx, "D_PAN", &p);
+        GetSetTrackSendInfo(sl.tr, cat, liveIdx, "D_VOL", &v);
+        GetSetTrackSendInfo(sl.tr, cat, liveIdx, "D_PAN", &p);
     }
 
     if (t_raw >= 1.0)
