@@ -150,6 +150,8 @@
 #define IDC_GSET_SKIP_UNCHANGED  2246   // "Skip writing unchanged params on recall" checkbox
 #define IDC_GSET_CHUNK_BTN       2247   // "Chunk Recall Plugins..." button in global settings
 #define IDC_GSET_LAYERS_BTN      2253   // "Layers..." button in global settings
+#define IDC_GSET_STOP_REC_BEFORE 2257   // "Stop recording before recall" checkbox
+#define IDC_GSET_START_REC_AFTER 2258   // "Start recording after recall" checkbox
 
 // ---- Chunk Recall Plugins dialog ------------------------------------------
 #define IDD_CHUNK_RECALL_PLUGINS 273

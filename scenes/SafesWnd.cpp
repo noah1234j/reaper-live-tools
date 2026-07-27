@@ -757,6 +757,35 @@ void SafesWnd_Refresh()
     if (g_hList) PopulateList();
 }
 
+void SafesWnd_AddSelectedTracksToSafes()
+{
+    const int nsel = CountSelectedTracks(nullptr);
+    if (nsel <= 0) return;
+
+    for (int i = 0; i < nsel; ++i)
+    {
+        MediaTrack* tr = GetSelectedTrack(nullptr, i);
+        if (!tr) continue;
+        GUID* pg = (GUID*)GetSetMediaTrackInfo(tr, "GUID", nullptr);
+        if (!pg) continue;
+
+        bool found = false;
+        for (auto& e : g_trackSafes)
+        {
+            if (IsEqualGUID(e.guid, *pg)) { e.mask |= k_ptAllBits; found = true; break; }
+        }
+        if (!found)
+            g_trackSafes.push_back({ *pg, k_ptAllBits });
+    }
+
+    MarkProjectDirty(nullptr);
+    if (g_hDlg && g_hList)
+    {
+        RebuildRows();
+        PopulateList();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // GUID helpers (local – same pattern as TransitionSnapshot.cpp)
 // ---------------------------------------------------------------------------

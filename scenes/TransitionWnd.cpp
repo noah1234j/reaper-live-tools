@@ -28,6 +28,16 @@ static HINSTANCE g_hInstance  = nullptr;
 // Clipboard for copy/paste
 static std::unique_ptr<TransitionSnapshot> g_clipboard;
 
+// Index of the most recently created, recalled, or saved/overwritten scene.
+// Backs the "Update last touched scene" action so a performer can re-capture
+// whatever scene they just interacted with without reselecting it in the list.
+static int g_lastTouchedIdx = -1;
+static void MarkTouched(int idx)
+{
+    if (idx >= 0 && idx < (int)g_snapshots.size())
+        g_lastTouchedIdx = idx;
+}
+
 // Guard: set true when programmatically updating editor fields to prevent
 // EN_CHANGE / CBN_SELCHANGE from writing back to the snapshot.
 static bool g_syncingEditor = false;
@@ -61,6 +71,10 @@ static std::vector<int> g_cueList;
 
 // Whether to place a project marker at the play-cursor on each recall
 static bool g_placeMarker = false;
+
+// Stop transport before recall; restart recording after recall
+static bool g_stopRecBeforeRecall = false;
+static bool g_startRecAfterRecall = false;
 
 // Scene list interaction settings
 static bool g_singleClickRecall   = false;  // single click recalls a scene
@@ -163,7 +177,11 @@ void TransitionWnd_Cleanup()
     }
 }
 
-void TransitionWnd_ShowHide()
+// Create the window if it doesn't exist yet (per the saved dock pref), or bring
+// it to front if it exists but isn't currently the visible one. Never hides/closes
+// an already-visible window — that's ShowHide()'s toggle behaviour, not this helper's.
+// Returns the window handle, or nullptr if creation failed.
+static HWND EnsureWndOpen()
 {
     if (!g_wnd || !IsWindow(g_wnd))
     {
@@ -178,7 +196,7 @@ void TransitionWnd_ShowHide()
             char buf[256];
             snprintf(buf, sizeof(buf), "CreateDialogParam failed. Error=%lu", GetLastError());
             MessageBoxA(hMain, buf, "Live Tools", MB_OK | MB_ICONERROR);
-            return;
+            return nullptr;
         }
         // Always register with REAPER's docker so drag-to-edge works even when floating.
         // allowShow=true  → immediately reparent into the docker (docked mode)
@@ -194,14 +212,42 @@ void TransitionWnd_ShowHide()
         {
             ShowWindow(g_wnd, SW_SHOW);
         }
-        return;
+        return g_wnd;
     }
 
-    // Window already exists – activate if docked, otherwise toggle visibility
     bool isFloat = false;
     if (DockIsChildOfDock(g_wnd, &isFloat) >= 0)
     {
-        DockWindowActivate(g_wnd);
+        if (!IsWindowVisible(g_wnd))
+            DockWindowActivate(g_wnd);
+    }
+    else
+    {
+        if (!IsWindowVisible(g_wnd))
+            ShowWindow(g_wnd, SW_SHOW);
+    }
+    return g_wnd;
+}
+
+void TransitionWnd_ShowHide()
+{
+    if (!g_wnd || !IsWindow(g_wnd))
+    {
+        EnsureWndOpen();
+        return;
+    }
+
+    // Window already exists – toggle visibility whether docked or floating.
+    bool isFloat = false;
+    if (DockIsChildOfDock(g_wnd, &isFloat) >= 0)
+    {
+        // Docked: only the active tab's window is actually visible. If we're the
+        // active tab, "toggle off" closes the window (same as the docked "x" /
+        // right-click Close); otherwise bring our tab to front.
+        if (IsWindowVisible(g_wnd))
+            DestroyWindow(g_wnd);
+        else
+            DockWindowActivate(g_wnd);
     }
     else
     {
@@ -257,12 +303,17 @@ void TransitionWnd_RecallScene(int index)
         double pos = GetPlayPosition();
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
     }
+    // Stop recording before recall (marker placed first to capture correct play position)
+    if (g_stopRecBeforeRecall && (GetPlayState() & 4))
+        Main_OnCommand(1016, 0);  // Stop transport
+
     // Strip TS_VIS when a layer is being recalled (layers manage visibility)
     int effectiveMask = snap->m_mask;
     if (!snap->m_layers.empty() && snap->m_layerIdx >= 0)
         effectiveMask &= ~TS_VIS;
     TransitionEngine::Get().Recall(snap, effectiveMask, duration);
     TransitionEngine::Get().SetCurrentSlot(index);
+    MarkTouched(index);
     // Restore full layer state (always, unless TS_LAYERS safe bit is set)
     RestoreLayerState(snap);
     if (g_wnd && IsWindow(g_wnd))
@@ -272,15 +323,64 @@ void TransitionWnd_RecallScene(int index)
         ListView_EnsureVisible(hList, index, FALSE);
     }
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
+    // Start recording after recall if enabled
+    if (g_startRecAfterRecall)
+        Main_OnCommand(1013, 0);  // Record
 }
 
 void TransitionWnd_OverwriteScene(int index)
 {
     if (index < 0 || index >= (int)g_snapshots.size()) return;
     g_snapshots[index]->Capture(TS_CAPTURE_ALL);
+    MarkTouched(index);
     if (g_wnd && IsWindow(g_wnd))
         RefreshListView(g_wnd);
     Undo_OnStateChangeEx("Save Scene", -1, -1);
+}
+
+// ---------------------------------------------------------------------------
+// Headless action helpers – thin wrappers so keyboard/MIDI-bound REAPER actions
+// can drive the scene list without the user having the window focused or even
+// open. All open/create the window on demand since scene creation and inline
+// rename need somewhere to put the ListView row.
+// ---------------------------------------------------------------------------
+void TransitionWnd_CreateNewScene()
+{
+    HWND hwnd = EnsureWndOpen();
+    if (!hwnd) return;
+    DoSave(hwnd);  // also drops into inline rename with the name field focused/selected
+}
+
+void TransitionWnd_RecallSelectedScene()
+{
+    int idx = TransitionWnd_GetSelectedIndex();
+    if (idx < 0 || idx >= (int)g_snapshots.size() || g_snapshots[idx]->m_isSpacer) return;
+    TransitionWnd_RecallScene(idx);
+}
+
+void TransitionWnd_UpdateSelectedScene()
+{
+    int idx = TransitionWnd_GetSelectedIndex();
+    if (idx < 0 || idx >= (int)g_snapshots.size() || g_snapshots[idx]->m_isSpacer) return;
+    TransitionWnd_OverwriteScene(idx);
+}
+
+void TransitionWnd_UpdateLastTouchedScene()
+{
+    if (g_lastTouchedIdx < 0 || g_lastTouchedIdx >= (int)g_snapshots.size()) return;
+    if (g_snapshots[g_lastTouchedIdx]->m_isSpacer) return;
+    TransitionWnd_OverwriteScene(g_lastTouchedIdx);
+}
+
+void TransitionWnd_RecallNextScene()
+{
+    if (g_snapshots.empty()) return;
+    int next = TransitionEngine::Get().GetCurrentSlot() + 1;
+    if (next < 0) next = 0;
+    while (next < (int)g_snapshots.size() && g_snapshots[next]->m_isSpacer)
+        ++next;
+    if (next < (int)g_snapshots.size())
+        TransitionWnd_RecallScene(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +474,8 @@ void TransitionWnd_ResetSettings()
     g_defaultTaper       = TAPER_SCURVE;
     g_defaultTaperExp    = 2.0;
     g_placeMarker        = false;
+    g_stopRecBeforeRecall = false;
+    g_startRecAfterRecall = false;
     g_singleClickRecall  = false;
     g_altClickDelete     = false;
     g_ctrlClickOverwrite = false;
@@ -464,6 +566,14 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_durationDebug = (val != 0);
         return true;
     }
+    if (strncmp(line, "LTRECORDER ", 11) == 0)
+    {
+        int stopBefore = 0, startAfter = 0;
+        sscanf(line + 11, "%d %d", &stopBefore, &startAfter);
+        g_stopRecBeforeRecall = (stopBefore != 0);
+        g_startRecAfterRecall = (startAfter != 0);
+        return true;
+    }
     if (strncmp(line, "LTSCENESWND ", 12) == 0)
     {
         int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
@@ -497,6 +607,7 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
         ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
     ctx->AddLine("LTDURATIONDEBUG %d", g_durationDebug ? 1 : 0);
+    ctx->AddLine("LTRECORDER %d %d", g_stopRecBeforeRecall ? 1 : 0, g_startRecAfterRecall ? 1 : 0);
 
     // Per-project window state – snapshot dock/float/rect so reloading the project
     // restores exactly what the user had open.
@@ -743,6 +854,7 @@ static void DoSave(HWND hwnd)
         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(hList, newIdx, FALSE);
     LoadEditorFromSnapshot(hwnd, g_snapshots[newIdx].get());
+    MarkTouched(newIdx);
 
     Undo_OnStateChangeEx("Save Scene", -1, -1);
 
@@ -837,6 +949,10 @@ static void DoRecall(HWND hwnd, int listIndex)
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
     }
 
+    // Stop recording before recall (marker placed first to capture correct play position)
+    if (g_stopRecBeforeRecall && (GetPlayState() & 4))
+        Main_OnCommand(1016, 0);  // Stop transport
+
     // When a layer is being recalled, layers manage track visibility.
     // Strip TS_VIS from the engine mask so the two systems don't fight.
     int effectiveMask = snap->m_mask;
@@ -853,6 +969,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (g_durationDebug) QueryPerformanceCounter(&t1);
 
     TransitionEngine::Get().SetCurrentSlot(snapIdx);
+    MarkTouched(snapIdx);
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
 
     // Restore full layer state
@@ -1017,6 +1134,10 @@ static void DoRecall(HWND hwnd, int listIndex)
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(hList, snapIdx, FALSE);
     }
+
+    // Start recording after recall if enabled
+    if (g_startRecAfterRecall)
+        Main_OnCommand(1013, 0);  // Record
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,7 +1578,9 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
 
         bool instant = (g_defaultDuration == 0.0);
         CheckDlgButton(hwnd, IDC_GSET_INSTANT, instant ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_GSET_MARKER,  g_placeMarker ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_MARKER,            g_placeMarker           ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_STOP_REC_BEFORE,   g_stopRecBeforeRecall   ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_START_REC_AFTER,   g_startRecAfterRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SINGLE_CLICK,    g_singleClickRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_ALT_DELETE,      g_altClickDelete      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_CTRL_OVERWRITE,  g_ctrlClickOverwrite  ? BST_CHECKED : BST_UNCHECKED);
@@ -1551,7 +1674,9 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             double ex = atof(exBuf);
             g_defaultTaperExp = (ex > 0.0) ? ex : 2.0;
 
-            g_placeMarker = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER) == BST_CHECKED);
+            g_placeMarker         = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER)            == BST_CHECKED);
+            g_stopRecBeforeRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_STOP_REC_BEFORE)   == BST_CHECKED);
+            g_startRecAfterRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_START_REC_AFTER)   == BST_CHECKED);
             g_singleClickRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SINGLE_CLICK)    == BST_CHECKED);
             g_altClickDelete      = (IsDlgButtonChecked(hwnd, IDC_GSET_ALT_DELETE)       == BST_CHECKED);
             g_ctrlClickOverwrite  = (IsDlgButtonChecked(hwnd, IDC_GSET_CTRL_OVERWRITE)   == BST_CHECKED);
@@ -2088,6 +2213,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         {
             g_snapshots[snapIdx]->Capture(TS_CAPTURE_ALL);
             g_snapshots[snapIdx]->m_time = (int)std::time(nullptr);
+            MarkTouched(snapIdx);
             RefreshListView(hwnd);
             Undo_OnStateChangeEx("Overwrite Scene", -1, -1);
         }
@@ -2913,12 +3039,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (id == CTX_DOCK)
             ToggleDocking();
         else if (id == CTX_CLOSE)
-            ShowWindow(hwnd, SW_HIDE);
+            DestroyWindow(hwnd);
         return TRUE;
     }
 
     case WM_CLOSE:
-        ShowWindow(hwnd, SW_HIDE);
+        // Actually close (and, if docked, unregister from the docker) rather than just
+        // hiding — matches the native "x" close behaviour REAPER expects from dockable
+        // windows. WM_DESTROY below persists the dock-state pref and calls
+        // DockWindowRemove before g_wnd is cleared, so re-opening restores the same state.
+        DestroyWindow(hwnd);
         return TRUE;
 
     case WM_DESTROY:

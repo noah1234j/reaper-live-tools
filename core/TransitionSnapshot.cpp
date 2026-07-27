@@ -156,6 +156,11 @@ void TransitionSnapshot::Capture(int mask)
         // FX params – live-safe path (no chunk ops except for chunk-recall plugins)
         if (mask & TS_FXPARAMS)
         {
+            // Whole-chain bypass (the master bypass button on the FX chain / track),
+            // distinct from each plugin's individual FXState::enabled bypass.
+            int* pfxen = (int*)GetSetMediaTrackInfo(tr, "I_FXEN", nullptr);
+            if (pfxen) ts.fxChainEnabled = (*pfxen != 0);
+
             const int nfx = TrackFX_GetCount(tr);
             ts.fx.reserve(nfx);
             for (int fx = 0; fx < nfx; fx++)
@@ -238,10 +243,14 @@ void TransitionSnapshot::Capture(int mask)
                 double* pp = (double*)GetSetTrackSendInfo(tr, 0, si, "D_PAN",      nullptr);
                 bool*   pm = (bool*)  GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     nullptr);
                 int*    ps = (int*)   GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", nullptr);
+                int*    psc = (int*)  GetSetTrackSendInfo(tr, 0, si, "I_SRCCHAN",  nullptr);
+                int*    pdc = (int*)  GetSetTrackSendInfo(tr, 0, si, "I_DSTCHAN",  nullptr);
                 if (pv) ss.vol      = *pv;
                 if (pp) ss.pan      = *pp;
                 if (pm) ss.mute     = *pm;
                 if (ps) ss.sendMode = *ps;
+                if (psc) ss.srcChan = *psc;
+                if (pdc) ss.dstChan = *pdc;
                 ts.sends.push_back(ss);
             }
             // Hardware outputs (category 1)
@@ -251,10 +260,12 @@ void TransitionSnapshot::Capture(int mask)
                 SendState ss;
                 ss.isHW = true;
                 int*    pc = (int*)   GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+                int*    psc = (int*)  GetSetTrackSendInfo(tr, 1, si, "I_SRCCHAN", nullptr);
                 double* pv = (double*)GetSetTrackSendInfo(tr, 1, si, "D_VOL",     nullptr);
                 double* pp = (double*)GetSetTrackSendInfo(tr, 1, si, "D_PAN",     nullptr);
                 bool*   pm = (bool*)  GetSetTrackSendInfo(tr, 1, si, "B_MUTE",    nullptr);
                 if (pc) ss.hwDstChan = *pc;
+                if (psc) ss.hwSrcChan = *psc;
                 if (pv) ss.vol       = *pv;
                 if (pp) ss.pan       = *pp;
                 if (pm) ss.mute      = *pm;
@@ -449,6 +460,7 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                      (int)ts.mute, ts.solo, (int)ts.phase,
                      ts.vis, ts.selected,
                      ts.playOffsetFlag, ts.playOffset);
+        ctx->AddLine("FXCHAINEN %d", (int)ts.fxChainEnabled);
 
         // Layout: name, color, height, heightLocked, capturedIndex
         {
@@ -516,19 +528,20 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
             ctx->AddLine("FXCHAINEND");
         }
 
-        // Sends: SEND {guid} vol pan mute sendMode  /  SEND_HW dstchan vol pan mute
+        // Sends: SEND {guid} vol pan mute sendMode srcChan dstChan  /  SEND_HW dstchan vol pan mute srcChan
         for (const auto& ss : ts.sends)
         {
             if (ss.isHW)
             {
-                ctx->AddLine("SEND_HW %d %.17g %.17g %d",
-                             ss.hwDstChan, ss.vol, ss.pan, (int)ss.mute);
+                ctx->AddLine("SEND_HW %d %.17g %.17g %d %d",
+                             ss.hwDstChan, ss.vol, ss.pan, (int)ss.mute, ss.hwSrcChan);
             }
             else
             {
                 std::string sg = GuidToString(ss.destGuid);
-                ctx->AddLine("SEND %s %.17g %.17g %d %d",
-                             sg.c_str(), ss.vol, ss.pan, (int)ss.mute, ss.sendMode);
+                ctx->AddLine("SEND %s %.17g %.17g %d %d %d %d",
+                             sg.c_str(), ss.vol, ss.pan, (int)ss.mute, ss.sendMode,
+                             ss.srcChan, ss.dstChan);
             }
         }
 
@@ -699,6 +712,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             curTrack.mute  = (mute  != 0);
             curTrack.phase = (phase != 0);
         }
+        else if (strncmp(trimmed, "FXCHAINEN ", 10) == 0)
+        {
+            int en = 1;
+            sscanf(trimmed + 10, "%d", &en);
+            curTrack.fxChainEnabled = (en != 0);
+        }
         else if (strncmp(trimmed, "LAYOUT ", 7) == 0)
         {
             int locked = 0;
@@ -779,25 +798,25 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         }
         else if (strncmp(trimmed, "SEND ", 5) == 0 && !isdigit((unsigned char)trimmed[5]) && trimmed[5] != '-')
         {
-            // "SEND {guid} vol pan mute sendMode"
+            // "SEND {guid} vol pan mute sendMode [srcChan dstChan]" (srcChan/dstChan added later; default 0 for old snapshots)
             SendState ss;
             ss.isHW = false;
             char sguid[64] = "";
             int mute = 0;
-            sscanf(trimmed + 5, "%63s %lf %lf %d %d",
-                   sguid, &ss.vol, &ss.pan, &mute, &ss.sendMode);
+            sscanf(trimmed + 5, "%63s %lf %lf %d %d %d %d",
+                   sguid, &ss.vol, &ss.pan, &mute, &ss.sendMode, &ss.srcChan, &ss.dstChan);
             ss.mute     = (mute != 0);
             ss.destGuid = StringToGuid(sguid);
             curTrack.sends.push_back(ss);
         }
         else if (strncmp(trimmed, "SEND_HW ", 8) == 0)
         {
-            // "SEND_HW dstchan vol pan mute"
+            // "SEND_HW dstchan vol pan mute [srcChan]" (srcChan added later; default 0 for old snapshots)
             SendState ss;
             ss.isHW = true;
             int mute = 0;
-            sscanf(trimmed + 8, "%d %lf %lf %d",
-                   &ss.hwDstChan, &ss.vol, &ss.pan, &mute);
+            sscanf(trimmed + 8, "%d %lf %lf %d %d",
+                   &ss.hwDstChan, &ss.vol, &ss.pan, &mute, &ss.hwSrcChan);
             ss.mute = (mute != 0);
             curTrack.sends.push_back(ss);
         }

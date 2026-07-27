@@ -916,11 +916,17 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 TrackFX_SetNamedConfigParm(tr, fx, "chain_bypass_delta", "0");
         }
 
-        // Sends – routing changes guarded by recording check (same as TS_FXCHAIN)
+        // Whole-chain FX bypass (master bypass button), distinct from per-plugin bypass above
+        if (effMask & TS_FXPARAMS)
+        {
+            int en = ts.fxChainEnabled ? 1 : 0;
+            GetSetMediaTrackInfo(tr, "I_FXEN", &en);
+        }
+
+        // Sends
         if (effMask & TS_SENDS)
         {
             const double tSend0 = g_durationDebug ? QpcMs() : 0.0;
-            const bool canRoute = !(GetPlayState() & 4); // no routing changes while recording
 
             // --- Build maps of current live sends ---
             // Track sends: destGuid -> send index
@@ -957,10 +963,11 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     if (it2 != liveHWSends.end())
                     {
                         int si = it2->second;
-                        double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
-                        GetSetTrackSendInfo(tr, 1, si, "D_VOL",  &v);
-                        GetSetTrackSendInfo(tr, 1, si, "D_PAN",  &p);
-                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE", &m);
+                        double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sc = ss.hwSrcChan;
+                        GetSetTrackSendInfo(tr, 1, si, "D_VOL",    &v);
+                        GetSetTrackSendInfo(tr, 1, si, "D_PAN",    &p);
+                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE",   &m);
+                        GetSetTrackSendInfo(tr, 1, si, "I_SRCCHAN", &sc);
                     }
                 }
                 else
@@ -970,16 +977,18 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     {
                         int si = it2->second;
                         double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
+                        int sc = ss.srcChan;  int dc = ss.dstChan;
                         GetSetTrackSendInfo(tr, 0, si, "D_VOL",      &v);
                         GetSetTrackSendInfo(tr, 0, si, "D_PAN",      &p);
                         GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
                         GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
+                        GetSetTrackSendInfo(tr, 0, si, "I_SRCCHAN",  &sc);
+                        GetSetTrackSendInfo(tr, 0, si, "I_DSTCHAN",  &dc);
                     }
                 }
             }
 
-            // --- Add new sends (pass 2: routing changes, maps no longer used) ---
-            if (canRoute)
+            // --- Add new sends (pass 2) ---
             {
                 for (const auto& ss : ts.sends)
                 {
@@ -991,7 +1000,9 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                             if (newIdx >= 0)
                             {
                                 int ch = ss.hwDstChan;
+                                int sc = ss.hwSrcChan;
                                 GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
+                                GetSetTrackSendInfo(tr, 1, newIdx, "I_SRCCHAN", &sc);
                                 double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;
                                 GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",  &v);
                                 GetSetTrackSendInfo(tr, 1, newIdx, "D_PAN",  &p);
@@ -1010,10 +1021,13 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                                 if (newIdx >= 0)
                                 {
                                     double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
+                                    int sc = ss.srcChan;  int dc = ss.dstChan;
                                     GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
                                     GetSetTrackSendInfo(tr, 0, newIdx, "D_PAN",      &p);
                                     GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
                                     GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_SRCCHAN",  &sc);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_DSTCHAN",  &dc);
                                 }
                             }
                         }
@@ -1021,10 +1035,9 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 }
             }
 
-            // --- Remove live sends absent from snapshot (routing only, not while recording) ---
+            // --- Remove live sends absent from snapshot ---
             // Uses count-based matching: if live has M sends to dest X and snapshot has N < M,
             // M-N of them are removed. This handles duplicate sends to the same destination.
-            if (canRoute)
             {
                 // Build count maps from snapshot
                 std::map<GUID, int, GUIDLess> snapGuidCounts;
@@ -1633,6 +1646,12 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
             GetSetMediaTrackInfo(tr, "I_HEIGHTOVERRIDE", &h);
             GetSetMediaTrackInfo(tr, "B_HEIGHTLOCK",     &l);
         }
+        // Whole-chain FX bypass (master bypass button) – always instant, like mute/solo
+        if (effMask & TS_FXPARAMS)
+        {
+            int en = ts.fxChainEnabled ? 1 : 0;
+            GetSetMediaTrackInfo(tr, "I_FXEN", &en);
+        }
         tDiscrete += QpcMs() - td0;
 
         // FX chain sync: add/remove plugins with wet-fade (timed=true)
@@ -1646,8 +1665,6 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         double ts0 = QpcMs();
         if ((effMask & TS_SENDS) && !ts.sends.empty())
         {
-            const bool canRoute = !(GetPlayState() & 4);
-
             // Build live send maps
             std::map<GUID, int, GUIDLess> liveSends;
             {
@@ -1682,8 +1699,9 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                     if (hwIt != liveHWSends.end())
                     {
                         int si = hwIt->second;
-                        bool m = ss.mute;
-                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE", &m);
+                        bool m = ss.mute;  int sc = ss.hwSrcChan;
+                        GetSetTrackSendInfo(tr, 1, si, "B_MUTE",   &m);
+                        GetSetTrackSendInfo(tr, 1, si, "I_SRCCHAN", &sc);
                     }
                 }
                 else
@@ -1693,15 +1711,17 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                     {
                         int si = sendIt->second;
                         bool m = ss.mute;  int sm = ss.sendMode;
+                        int sc = ss.srcChan;  int dc = ss.dstChan;
                         GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
                         GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
+                        GetSetTrackSendInfo(tr, 0, si, "I_SRCCHAN",  &sc);
+                        GetSetTrackSendInfo(tr, 0, si, "I_DSTCHAN",  &dc);
                     }
                 }
             }
 
             // Pass 2: create new sends at vol=0 so they fade in via SendLerp.
             // liveSends/liveHWSends are no longer consulted after this point.
-            if (canRoute)
             {
                 for (const auto& ss : ts.sends)
                 {
@@ -1713,7 +1733,9 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                             if (newIdx >= 0)
                             {
                                 int ch = ss.hwDstChan;  double v = 0.0;
+                                int sc = ss.hwSrcChan;
                                 GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
+                                GetSetTrackSendInfo(tr, 1, newIdx, "I_SRCCHAN", &sc);
                                 GetSetTrackSendInfo(tr, 1, newIdx, "D_VOL",     &v);
                                 bool m = ss.mute;
                                 GetSetTrackSendInfo(tr, 1, newIdx, "B_MUTE",    &m);
@@ -1731,8 +1753,11 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                                 if (newIdx >= 0)
                                 {
                                     double v = 0.0;  int sm = ss.sendMode;
+                                    int sc = ss.srcChan;  int dc = ss.dstChan;
                                     GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
                                     GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_SRCCHAN",  &sc);
+                                    GetSetTrackSendInfo(tr, 0, newIdx, "I_DSTCHAN",  &dc);
                                     bool m = ss.mute;
                                     GetSetTrackSendInfo(tr, 0, newIdx, "B_MUTE",     &m);
                                 }

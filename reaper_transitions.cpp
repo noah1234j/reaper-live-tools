@@ -64,6 +64,22 @@ static int       g_cmdShowDca             = 0;
 static gaccel_register_t g_liveLockAccel;
 static gaccel_register_t g_muteGroupsAccel;
 
+// Scenes / Safes quick actions
+static int       g_cmdShowSafes           = 0;
+static int       g_cmdSafesAddSelected    = 0;
+static int       g_cmdSceneNew            = 0;
+static int       g_cmdSceneRecallSel      = 0;
+static int       g_cmdSceneUpdateSel      = 0;
+static int       g_cmdSceneUpdateTouched  = 0;
+static int       g_cmdSceneRecallNext     = 0;
+static gaccel_register_t g_showSafesAccel;
+static gaccel_register_t g_safesAddSelectedAccel;
+static gaccel_register_t g_sceneNewAccel;
+static gaccel_register_t g_sceneRecallSelAccel;
+static gaccel_register_t g_sceneUpdateSelAccel;
+static gaccel_register_t g_sceneUpdateTouchedAccel;
+static gaccel_register_t g_sceneRecallNextAccel;
+
 // Per-scene recall/save actions (1-based slots 1-30, stored 0-based)
 static const int kSceneActionCount = 30;
 static int               g_cmdRecallScene[kSceneActionCount] = {};
@@ -116,6 +132,12 @@ static void BeginLoadProjectState(bool isUndo,
         // parsed later in ProcessExtensionLine; it is called from
         // TransitionWnd_ProcessSettingsLine() after the line is fully parsed.
     }
+    // Force the scenes list to reflect the just-cleared state immediately. Without this,
+    // switching to a project with fewer/no scenes (or a brand-new project, which per the
+    // SDK docs gets BeginLoadProjectState but no follow-up ProcessExtensionLine calls)
+    // left the ListView showing the previous project's stale rows, since it's only synced
+    // on demand rather than driven directly off g_snapshots.
+    TransitionWnd_RefreshList();
 }
 
 // Called for each unrecognised extension line in the .RPP file.
@@ -208,6 +230,13 @@ static bool RunCommand(int cmd, int /*flag*/)
     if (cmd == g_cmdShowMuteGroups) { MuteGroupsWnd_ShowHide(); return true; }
     if (cmd == g_cmdShowLayers)  { LayersWnd_ShowHide();         return true; }
     if (cmd == g_cmdShowDca)              { DcaWnd_ShowHide();               return true; }
+    if (cmd == g_cmdShowSafes)            { SafesWnd_ShowHide();             return true; }
+    if (cmd == g_cmdSafesAddSelected)     { SafesWnd_AddSelectedTracksToSafes(); return true; }
+    if (cmd == g_cmdSceneNew)             { TransitionWnd_CreateNewScene();         return true; }
+    if (cmd == g_cmdSceneRecallSel)       { TransitionWnd_RecallSelectedScene();    return true; }
+    if (cmd == g_cmdSceneUpdateSel)       { TransitionWnd_UpdateSelectedScene();    return true; }
+    if (cmd == g_cmdSceneUpdateTouched)   { TransitionWnd_UpdateLastTouchedScene(); return true; }
+    if (cmd == g_cmdSceneRecallNext)      { TransitionWnd_RecallNextScene();        return true; }
     // Per-scene recall / save
     for (int i = 0; i < kSceneActionCount; i++)
     {
@@ -232,6 +261,7 @@ static int ToggleAction(int cmd)
     if (cmd == g_cmdShowMuteGroups) return MuteGroupsWnd_IsVisible() ? 1 : 0;
     if (cmd == g_cmdShowLayers)     return LayersWnd_IsVisible()     ? 1 : 0;
     if (cmd == g_cmdShowDca)             return DcaWnd_IsVisible()             ? 1 : 0;
+    if (cmd == g_cmdShowSafes)           return SafesWnd_IsVisible()           ? 1 : 0;
     // Per-layer recall toggle state
     for (int i = 0; i < kLayerActionCount; i++)
     {
@@ -381,6 +411,71 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("gaccel", &g_dcaAccel);
     }
 
+    // ---- Register Safes command --------------------------------------------
+    g_cmdShowSafes = plugin_register("command_id", (void*)"LT_SAFES");
+    if (g_cmdShowSafes)
+    {
+        memset(&g_showSafesAccel, 0, sizeof(g_showSafesAccel));
+        g_showSafesAccel.desc      = "Live Tools: Safes - Show/Hide";
+        g_showSafesAccel.accel.cmd = (WORD)g_cmdShowSafes;
+        plugin_register("gaccel", &g_showSafesAccel);
+    }
+
+    // ---- Register scene / safes quick actions ------------------------------
+    g_cmdSafesAddSelected = plugin_register("command_id", (void*)"LT_SAFES_ADD_SELECTED_TRACKS");
+    if (g_cmdSafesAddSelected)
+    {
+        memset(&g_safesAddSelectedAccel, 0, sizeof(g_safesAddSelectedAccel));
+        g_safesAddSelectedAccel.desc      = "Live Tools: Safes - Add selected track(s) to safes";
+        g_safesAddSelectedAccel.accel.cmd = (WORD)g_cmdSafesAddSelected;
+        plugin_register("gaccel", &g_safesAddSelectedAccel);
+    }
+
+    g_cmdSceneNew = plugin_register("command_id", (void*)"LT_SCENE_NEW");
+    if (g_cmdSceneNew)
+    {
+        memset(&g_sceneNewAccel, 0, sizeof(g_sceneNewAccel));
+        g_sceneNewAccel.desc      = "Live Tools: Scenes - Create new scene";
+        g_sceneNewAccel.accel.cmd = (WORD)g_cmdSceneNew;
+        plugin_register("gaccel", &g_sceneNewAccel);
+    }
+
+    g_cmdSceneRecallSel = plugin_register("command_id", (void*)"LT_SCENE_RECALL_SELECTED");
+    if (g_cmdSceneRecallSel)
+    {
+        memset(&g_sceneRecallSelAccel, 0, sizeof(g_sceneRecallSelAccel));
+        g_sceneRecallSelAccel.desc      = "Live Tools: Scenes - Recall selected scene";
+        g_sceneRecallSelAccel.accel.cmd = (WORD)g_cmdSceneRecallSel;
+        plugin_register("gaccel", &g_sceneRecallSelAccel);
+    }
+
+    g_cmdSceneUpdateSel = plugin_register("command_id", (void*)"LT_SCENE_UPDATE_SELECTED");
+    if (g_cmdSceneUpdateSel)
+    {
+        memset(&g_sceneUpdateSelAccel, 0, sizeof(g_sceneUpdateSelAccel));
+        g_sceneUpdateSelAccel.desc      = "Live Tools: Scenes - Update selected scene";
+        g_sceneUpdateSelAccel.accel.cmd = (WORD)g_cmdSceneUpdateSel;
+        plugin_register("gaccel", &g_sceneUpdateSelAccel);
+    }
+
+    g_cmdSceneUpdateTouched = plugin_register("command_id", (void*)"LT_SCENE_UPDATE_LAST_TOUCHED");
+    if (g_cmdSceneUpdateTouched)
+    {
+        memset(&g_sceneUpdateTouchedAccel, 0, sizeof(g_sceneUpdateTouchedAccel));
+        g_sceneUpdateTouchedAccel.desc      = "Live Tools: Scenes - Update last touched scene";
+        g_sceneUpdateTouchedAccel.accel.cmd = (WORD)g_cmdSceneUpdateTouched;
+        plugin_register("gaccel", &g_sceneUpdateTouchedAccel);
+    }
+
+    g_cmdSceneRecallNext = plugin_register("command_id", (void*)"LT_SCENE_RECALL_NEXT");
+    if (g_cmdSceneRecallNext)
+    {
+        memset(&g_sceneRecallNextAccel, 0, sizeof(g_sceneRecallNextAccel));
+        g_sceneRecallNextAccel.desc      = "Live Tools: Scenes - Advance to scene after last recalled";
+        g_sceneRecallNextAccel.accel.cmd = (WORD)g_cmdSceneRecallNext;
+        plugin_register("gaccel", &g_sceneRecallNextAccel);
+    }
+
     // ---- Register per-layer recall actions (slots 1-20, by index) --------
     for (int i = 0; i < kLayerActionCount; i++)
     {
@@ -463,6 +558,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowLayers,      "Layers...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowDca,         "DCA Groups...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdLiveOpt,     "Live Optimizer...");
+        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowSafes,      "Safes...");
         AppendMenuA(hMenu, MF_POPUP,  (UINT_PTR)hSub,             "Live Tools");
         s_hLiveToolsMenu = hSub;
     }
@@ -470,7 +566,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
     {
         // Update check states
         // Menu positions: 0=Scenes, 1=Monitor, 2=MeterBridge, 3=LiveLock, 4=MuteGroups,
-        // 5=Layers, 6=DCA, 7=Optimizer
+        // 5=Layers, 6=DCA, 7=Optimizer, 8=Safes
         CheckMenuItem(s_hLiveToolsMenu,  0, MF_BYPOSITION | (TransitionWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  1, MF_BYPOSITION | (MonitorWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  2, MF_BYPOSITION | (MeterBridgeWnd_IsVisible()    ? MF_CHECKED : MF_UNCHECKED));
@@ -479,5 +575,6 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         CheckMenuItem(s_hLiveToolsMenu,  5, MF_BYPOSITION | (LayersWnd_IsVisible()         ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  6, MF_BYPOSITION | (DcaWnd_IsVisible()            ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  7, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (SafesWnd_IsVisible()          ? MF_CHECKED : MF_UNCHECKED));
     }
 }

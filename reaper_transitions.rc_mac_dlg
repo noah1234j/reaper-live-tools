@@ -106,7 +106,7 @@ SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SNAP_SETTINGS)
 #ifndef SET_IDD_GLOBAL_SETTINGS_STYLE
 #define SET_IDD_GLOBAL_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_GLOBAL_SETTINGS,SET_IDD_GLOBAL_SETTINGS_STYLE,"Global Settings",205,298,SET_IDD_GLOBAL_SETTINGS_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_GLOBAL_SETTINGS,SET_IDD_GLOBAL_SETTINGS_STYLE,"Global Settings",205,324,SET_IDD_GLOBAL_SETTINGS_SCALE)
 BEGIN
 GROUPBOX        "New Scene Defaults", IDC_STATIC, 5, 5, 194, 83
 
@@ -125,27 +125,31 @@ EDITTEXT        IDC_GSET_TAPER_CUSTOM,     52, 65, 34, 12, ES_AUTOHSCROLL
 
 CONTROL         "Place marker at playhead on recall", IDC_GSET_MARKER, "Button",
 BS_AUTOCHECKBOX | WS_TABSTOP, 10, 95, 185, 10
+CONTROL         "Stop recording before recall",       IDC_GSET_STOP_REC_BEFORE, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 108, 185, 10
+CONTROL         "Start recording after recall",        IDC_GSET_START_REC_AFTER,  "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 121, 185, 10
 
-GROUPBOX        "Scene List", IDC_STATIC, 5, 109, 194, 60
-CONTROL         "Single click to recall scene",    IDC_GSET_SINGLE_CLICK,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 121, 185, 10
-CONTROL         "Alt+click to delete scene",       IDC_GSET_ALT_DELETE,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 134, 185, 10
-CONTROL         "Ctrl+click to overwrite scene",   IDC_GSET_CTRL_OVERWRITE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 147, 185, 10
+GROUPBOX        "Scene List", IDC_STATIC, 5, 135, 194, 60
+CONTROL         "Single click to recall scene",    IDC_GSET_SINGLE_CLICK,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 147, 185, 10
+CONTROL         "Alt+click to delete scene",       IDC_GSET_ALT_DELETE,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 160, 185, 10
+CONTROL         "Ctrl+click to overwrite scene",   IDC_GSET_CTRL_OVERWRITE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 173, 185, 10
 
-GROUPBOX        "Live Performance", IDC_STATIC, 5, 173, 194, 95
+GROUPBOX        "Live Performance", IDC_STATIC, 5, 199, 194, 95
 CONTROL         "Preload new plugins offline (reduces live audio stuttering)", IDC_GSET_PRELOAD_OFFLINE, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 183, 185, 10
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 209, 185, 10
 CONTROL         "Skip writing unchanged params on recall (faster for stable FX chains)", IDC_GSET_SKIP_UNCHANGED, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 196, 185, 10
-PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 210, 120, 13
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 222, 185, 10
+PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 236, 120, 13
 CONTROL         "Duration debug (print step timing to console)", IDC_GSET_DURATION_DEBUG, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 226, 185, 10
-CONTROL         "Shadow VST3 params (skip unchanged writes on instant recall)", IDC_GSET_SHADOW_PARAMS, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 239, 185, 10
-CONTROL         "Recall all plugins by chunk on instant path (re-save scenes)", IDC_GSET_CHUNK_ALL_INSTANT, "Button",
 BS_AUTOCHECKBOX | WS_TABSTOP, 10, 252, 185, 10
+CONTROL         "Shadow VST3 params (skip unchanged writes on instant recall)", IDC_GSET_SHADOW_PARAMS, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 265, 185, 10
+CONTROL         "Recall all plugins by chunk on instant path (re-save scenes)", IDC_GSET_CHUNK_ALL_INSTANT, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 278, 185, 10
 
-DEFPUSHBUTTON   "OK",     IDOK,      75, 275, 50, 14
-PUSHBUTTON      "Cancel", IDCANCEL, 135, 275, 50, 14
+DEFPUSHBUTTON   "OK",     IDOK,      75, 301, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 135, 301, 50, 14
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_GLOBAL_SETTINGS)
 

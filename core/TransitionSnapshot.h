@@ -79,6 +79,9 @@ struct SendState
     bool   isHW      = false;  // true = hardware output (category 1)
     GUID   destGuid  = {};     // destination track GUID (track sends only)
     int    hwDstChan = 0;      // hardware send: I_DSTCHAN (identity key)
+    int    hwSrcChan = 0;      // hardware send: I_SRCCHAN (source channel routing)
+    int    srcChan   = 0;      // track send: I_SRCCHAN (source channel routing)
+    int    dstChan   = 0;      // track send: I_DSTCHAN (dest channel routing, e.g. sidechain 3&4)
     double vol       = 1.0;    // D_VOL
     double pan       = 0.0;    // D_PAN
     bool   mute      = false;  // B_MUTE
@@ -151,6 +154,10 @@ struct TrackState
     // Track order (only meaningful when TS_TRACKORDER is set; stored as
     // the 0-based index in the captured project, used on recall to reorder)
     int    capturedIndex = -1;    // index at capture time
+
+    // Whole-chain FX bypass (I_FXEN) – distinct from per-plugin FXState::enabled.
+    // Only meaningful when TS_FXPARAMS was set at capture time.
+    bool   fxChainEnabled = true;
 
     // FX states (only populated when TS_FXPARAMS was set at capture time)
     std::vector<FXState> fx;

@@ -41,6 +41,13 @@ void TransitionWnd_RefreshList();
 void TransitionWnd_RecallScene(int index);   // recall scene at slot index
 void TransitionWnd_OverwriteScene(int index); // re-capture scene at slot index
 
+// Additional headless actions – open/create the window as needed.
+void TransitionWnd_CreateNewScene();          // capture + append a new scene, focus inline rename
+void TransitionWnd_RecallSelectedScene();     // recall whatever is selected in the list
+void TransitionWnd_UpdateSelectedScene();     // re-capture whatever is selected in the list
+void TransitionWnd_UpdateLastTouchedScene();  // re-capture the last created/recalled/saved scene
+void TransitionWnd_RecallNextScene();         // recall the first non-spacer scene after the last recalled one
+
 // Cue list persistence (called from reaper_transitions.cpp project-state hooks)
 void TransitionWnd_SaveCueList(ProjectStateContext* ctx);
 bool TransitionWnd_LoadCueListLine(const char* line);
