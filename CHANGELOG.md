@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.0.23-beta] — 2026-07-27
+
+### Bug Fixes
+
+- **Scenes: Side-chain / channel-routed sends now recall correctly**: A send routed to non-default ports (e.g. 1&2 → 3&4 for a side-chain input) reverted to the default 1&2 → 1&2 routing on recall. Root cause: `SendState` never captured `I_SRCCHAN`/`I_DSTCHAN`, only volume/pan/mute/mode, so routing info was silently dropped at capture time. Fixed by capturing and restoring channel routing for both track sends and hardware sends, on both the instant and timed recall paths. Older scenes without the new fields default to standard stereo routing (the same behavior they had before).
+
+- **Scenes: Whole-channel FX bypass now saved and recalled**: The per-plugin bypass state was already captured, but the master "bypass all FX on this channel" toggle (`I_FXEN`) was not, so it never persisted across scene recall. Added `TrackState::fxChainEnabled`, captured/restored alongside FX params.
+
+- **Scenes: Docked window close/toggle now behaves correctly**: The small "x" close button on a docked window and the right-click "Close window" menu item only hid the window (`ShowWindow(SW_HIDE)`) instead of actually closing/undocking it, and the "Toggle UI Visible" action only worked when floating — while docked it just kept re-activating the tab instead of toggling it off. All three now properly destroy/undock the window, matching REAPER's native dockable-window behavior.
+
+- **Scenes: Stale scene list after switching/opening projects**: `BeginLoadProjectState` cleared the in-memory scene list but never refreshed the ListView, so opening a project with fewer (or zero) scenes left the previous project's rows on screen. The list is now refreshed immediately after the clear.
+
+### New Features
+
+- **New actions**: Safes — Show/Hide toggle, Add Selected Track(s) to Safes. Scenes — Create New Scene, Recall Selected Scene, Update Selected Scene, Update Last Touched Scene, Advance to Scene After Last Recalled.
+
+---
+
 ## [v0.0.21-beta] — 2026-06-28
 
 ### Bug Fixes
