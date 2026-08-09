@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.0.24-beta] — 2026-08-09
+
+### Bug Fixes
+
+- **Scenes: Large plugin states (SSL Native, VMR, …) no longer lost across project reload**: Plugin state blobs (`vst_chunk`) were serialized into the project file as a single line of up to 200KB, but the scene parser read lines into a 4KB buffer — silently truncating and corrupting every blob over ~4KB when the project was reopened. On recall, the corrupt blob was applied, rejected by the plugin, and the plugin kept its previous settings (the "SSL/VMR settings not recalled" report — an in-session re-save appeared to fix it only because the in-memory copy was still intact). Blobs are now written as a length-prefixed multi-line `FXCHUNKSTART`/`FXCHUNKEND` block (256 chars per line) and verified against the declared length on load; a blob that fails verification is discarded (recall then falls back to param values) rather than kept corrupt. Legacy single-line `FXCHUNK` scenes still load (now via a 1MB read buffer); a legacy blob detected as truncated is discarded. **Existing projects: re-save each scene once with this build to migrate it to the safe format.**
+
+- **Scenes: "Recall by chunk on instant path" setting now actually honored**: Since v0.0.19 the instant recall path applied the chunk for *every* plugin whenever one was captured, ignoring the checkbox and never touching the correctly-captured per-param values. The documented contract is restored: chunk recall on the instant path only when the setting is ON or the plugin is in the Chunk Recall list; param-based recall otherwise. All chunk writes (instant and timed paths) now also check the API return value and fall back to per-param recall on failure instead of leaving the plugin untouched.
+
+- **Scenes: Warning when a Chunk Recall plugin's state cannot be captured**: Saving a scene now retries the `vst_chunk` read with escalating buffers (512KB → 2MB → 8MB) and, if a Chunk-Recall-list plugin still yields no state, shows a warning naming the plugin — previously the scene saved silently with nothing captured, and recall would silently do nothing for that plugin.
+
+- **Scenes: Shadow VST3 param map no longer trusts stale values**: The shadow map (used to skip redundant param writes on instant recall) was only updated by control-surface notifications and only cleared on project load, so external state changes (e.g. an SWS Snapshot recall) could cause subsequent scene recalls to skip param writes that were actually needed. The map is now invalidated per-plugin after every chunk write, and cleared entirely when the project state change count shows something external modified the project since the last recall.
+
+### Changes
+
+- **Chunk Recall defaults**: "SSL Native" added to the default Chunk Recall plugin list (covers SSL Native Channel Strip 2, Bus Compressor 2, etc., whose state is not fully parameter-exposed). Note: projects that have already saved Live Tools settings keep their own persisted list — add "SSL Native" via Global Settings → Chunk Recall Plugins, then re-save affected scenes.
+
+---
+
 ## [v0.0.23-beta] — 2026-07-27
 
 ### Bug Fixes

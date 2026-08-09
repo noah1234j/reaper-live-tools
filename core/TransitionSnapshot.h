@@ -111,8 +111,12 @@ struct FXState
     //       recall uses vst_chunk only.
     //   (b) All other plugins — vst_chunk captured alongside normVals
     //       so g_chunkAllInstant is a pure recall-time switch (no re-save needed).
-    // Instant path uses vst_chunk when g_chunkAllInstant is on (or normVals empty).
+    // Instant path uses vst_chunk when g_chunkAllInstant is on (or normVals empty),
+    // and falls back to normVals if the chunk write fails.
     // Timed path ignores fxChunk when normVals is populated (lerps via params).
+    // Persisted as a FXCHUNKSTART/FXCHUNKEND multi-line block (see Serialize);
+    // a blob whose reassembled length mismatches the header is discarded on
+    // load rather than kept corrupt.
     std::string fxChunk;
 };
 

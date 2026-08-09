@@ -154,6 +154,13 @@ void TransitionEngine::ShadowClear()
     m_shadow.clear();
 }
 
+void TransitionEngine::ShadowInvalidate(const GUID& guid, const char* fxIdent)
+{
+    auto it = m_shadow.find(guid);
+    if (it == m_shadow.end()) return;
+    it->second.erase(fxIdent);
+}
+
 void TransitionEngine::ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val)
 {
     if (paramIdx < 0 || paramIdx > 8192) return; // sanity guard
@@ -518,7 +525,14 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             }
             // Set state on the live plugin (new or existing).
             TrackFX_SetEnabled(tr, slot, fxs.enabled);
-            if (!fxs.fxChunk.empty())
+            // Contract (TransitionSnapshot.h): chunk on the instant path only
+            // when g_chunkAllInstant is on, or the plugin is chunk-only
+            // (ChunkRecallList -> normVals empty). If the chunk write fails,
+            // fall back to normVals rather than leaving the plugin untouched.
+            const bool wantChunk = !fxs.fxChunk.empty()
+                                && (g_chunkAllInstant || fxs.normVals.empty());
+            bool chunkOk = false;
+            if (wantChunk)
             {
                 // Chunk recall: SetNamedConfigParm("vst_chunk") MUST be called while the
                 // plugin is online. REAPER routes it directly to VST setChunk(), the same
@@ -529,17 +543,19 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 if (out_fxOps)
                 {
                     double t0 = QpcMs();
-                    TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                    chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
                     opT.setChunk_ms = QpcMs() - t0;
                 }
                 else
                 {
-                    TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+                    chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
                 }
-                int wi = TrackFX_GetParamFromIdent(tr, slot, ":wet");
-                if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
+                // A chunk write changes params without CSURF notifications —
+                // the shadow map entries for this plugin are now stale.
+                if (chunkOk)
+                    TransitionEngine::Get().ShadowInvalidate(ts.guid, fxs.fxIdent);
             }
-            else
+            if (!chunkOk && !fxs.normVals.empty())
             {
                 // Opt B: for existing (not newly added) plugins, skip params that
                 // already match the saved value to avoid redundant API calls.
@@ -600,8 +616,11 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                             TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                 }
-                // REAPER's :wet index is typically above paramCount and therefore not
-                // covered by the normVals loop — apply it explicitly.
+            }
+            // REAPER's :wet index is typically above paramCount and therefore not
+            // covered by the normVals loop — apply it explicitly, after either
+            // the chunk or the param path (a chunk write may also reset it).
+            {
                 int wi = TrackFX_GetParamFromIdent(tr, slot, ":wet");
                 if (wi >= 0) TrackFX_SetParamNormalized(tr, slot, wi, fxs.wetVal);
             }
@@ -650,29 +669,32 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
 
             TrackFX_SetEnabled(tr, i, target->enabled);
 
-            if (!target->fxChunk.empty())
+            int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
+            // Zero wet before writing state so the plugin is silent during init
+            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
+
+            // Chunk only for chunk-only plugins (ChunkRecallList → normVals
+            // empty); the timed path otherwise writes normVals so transitions
+            // stay smooth. Fall back to params if the chunk write fails.
+            bool chunkOk = false;
+            if (!target->fxChunk.empty() && target->normVals.empty())
             {
                 // Plugin is now online (post-resume) — apply vst_chunk directly.
                 // See site-1 comment: must NOT be wrapped in an offline sandwich.
-                TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
-                int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
-                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
-                if (target->enabled && wetIdx >= 0)
-                    wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
+                chunkOk = TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
+                if (chunkOk)
+                    TransitionEngine::Get().ShadowInvalidate(ts.guid, target->fxIdent);
             }
-            else
+            if (!chunkOk)
             {
-                int wetIdx = TrackFX_GetParamFromIdent(tr, i, ":wet");
-                // Zero wet before writing params so the plugin is silent during init
-                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
                 for (int p = 0; p < (int)target->normVals.size(); ++p)
                     TrackFX_SetParamNormalized(tr, i, p, target->normVals[p]);
-                // Re-enforce wet=0 (the normVals loop may have restored it)
-                if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
-                // Fade in from silence
-                if (target->enabled && wetIdx >= 0)
-                    wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
             }
+            // Re-enforce wet=0 (the chunk/normVals writes may have restored it)
+            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
+            // Fade in from silence
+            if (target->enabled && wetIdx >= 0)
+                wetLerps.push_back({ tr, i, wetIdx, 0.0, target->wetVal, false, false });
         }
         else
         {
@@ -706,7 +728,8 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 {
                     // Chunk-only plugin: apply vst_chunk directly on the online plugin.
                     // Wet lerp handled normally by BuildLerpLists (current→target).
-                    TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
+                    if (TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str()))
+                        TransitionEngine::Get().ShadowInvalidate(ts.guid, target->fxIdent);
                 }
                 // BuildLerpLists will add a normal ParamLerp from current wet → target.wetVal.
             }
@@ -742,39 +765,41 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         // All writes below are on a fully-live, post-resume plugin.
         TrackFX_SetEnabled(tr, slot, fxs.enabled);
 
-        if (!fxs.fxChunk.empty())
+        // Resolve the wet-param index on the live plugin (correct after resume).
+        int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
+
+        // Zero wet so the plugin is silent while we load state.
+        if (wetIdx >= 0)
+            TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+
+        // Chunk only for chunk-only plugins (ChunkRecallList → normVals empty);
+        // otherwise write the saved params. Fall back to params if the chunk
+        // write fails.
+        bool chunkOk = false;
+        if (!fxs.fxChunk.empty() && fxs.normVals.empty())
         {
             // Plugin is online post-resume — apply vst_chunk directly.
-            TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
-            int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
-            if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
-            if (fxs.enabled && wetIdx >= 0)
-                wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
+            chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
+            if (chunkOk)
+                TransitionEngine::Get().ShadowInvalidate(ts.guid, fxs.fxIdent);
         }
-        else
+        if (!chunkOk)
         {
-            // Resolve the wet-param index on the live plugin (correct after resume).
-            int wetIdx = TrackFX_GetParamFromIdent(tr, slot, ":wet");
-
-            // Zero wet so the plugin is silent while we load params.
-            if (wetIdx >= 0)
-                TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
-
             // Write all saved params to the live plugin — they will stick.
             for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                 TrackFX_SetParamNormalized(tr, slot, p, fxs.normVals[p]);
-
-            // Re-enforce wet=0: if wetIdx is within normVals range the loop above
-            // just restored it to the saved (non-zero) value — put it back to 0.
-            if (wetIdx >= 0)
-                TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
-
-            // Fade wet in from 0 to the saved value.
-            // BuildLerpLists will see cur==tgt for every other param → no ParamLerps
-            // are added, so only the wet knob animates during the transition.
-            if (fxs.enabled && wetIdx >= 0)
-                wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
         }
+
+        // Re-enforce wet=0: if wetIdx is within normVals range the loop above
+        // (or the chunk write) just restored it — put it back to 0.
+        if (wetIdx >= 0)
+            TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
+
+        // Fade wet in from 0 to the saved value.
+        // BuildLerpLists will see cur==tgt for every other param → no ParamLerps
+        // are added, so only the wet knob animates during the transition.
+        if (fxs.enabled && wetIdx >= 0)
+            wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
     }
     EnforceFXOrder(tr, ts.fx);
 }
@@ -1525,6 +1550,14 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
 {
     if (!snap) return;
 
+    // Shadow map trust check: if anything changed the project since our last
+    // recall completed (SWS snapshot, preset load, ...), CSURF notifications
+    // may not have covered it — drop the map rather than skip param writes
+    // based on stale values.
+    if (g_shadowParams
+        && GetProjectStateChangeCount(nullptr) != m_shadowStateCount)
+        ShadowClear();
+
     lastTimings = RecallTimings{};  // reset
     double tRecallStart = QpcMs();
 
@@ -1576,6 +1609,9 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         lastTimings.total = QpcMs() - tRecallStart;
 
         m_active = false;
+        // Our own writes bumped the state count; record it so the next recall
+        // doesn't mistake them for an external change.
+        m_shadowStateCount = GetProjectStateChangeCount(nullptr);
         if (onTransitionComplete) onTransitionComplete();
         return;
     }
@@ -1951,6 +1987,9 @@ void TransitionEngine::TimerCallback()
 
         plugin_register("-timer", (void*)&TransitionEngine::TimerCallback);
         eng.m_active = false;
+        // Our own writes bumped the state count; record it so the next recall
+        // doesn't mistake them for an external change.
+        eng.m_shadowStateCount = GetProjectStateChangeCount(nullptr);
         snprintf(eng.m_statusBuf, sizeof(eng.m_statusBuf), "Done %s", eng.m_targetSceneName.c_str());
         if (eng.onTransitionComplete) eng.onTransitionComplete();
     }

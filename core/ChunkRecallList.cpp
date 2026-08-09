@@ -12,6 +12,10 @@ static const std::vector<std::string>& BuildDefaults()
         "StudioRack",        // Waves StudioRack (same architecture)
         "Scheps Omni",       // Scheps Omni Channel (rack-style fixed slots)
         "ML4000",            // McDSP ML4000 (multi-module dynamics rack)
+        "SSL Native",        // SSL Native Channel Strip / Bus Comp (state not fully param-exposed)
+        // NOTE: projects that ever saved settings persist their own
+        // LTCHUNKPLUGIN list, which replaces these defaults on load —
+        // existing projects must add new keywords via the dialog.
     };
     return k_defaults;
 }

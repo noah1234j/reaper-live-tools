@@ -46,6 +46,39 @@ static GUID StringToGuid(const char* s)
 }
 
 // ---------------------------------------------------------------------------
+// Helper: read vst_chunk with escalating buffers.
+// GetNamedConfigParm's behavior when the buffer is too small is undocumented
+// (it may fail OR silently truncate), so a near-full result is treated as
+// suspect and retried with a bigger buffer. Returns false if the plugin
+// exposes no chunk (e.g. JSFX) or every attempt failed.
+// ---------------------------------------------------------------------------
+static bool GetVstChunkRetry(MediaTrack* tr, int fx, std::string& out)
+{
+    static const size_t kSizes[] = { 512 * 1024, 2 * 1024 * 1024, 8 * 1024 * 1024 };
+    for (size_t sz : kSizes)
+    {
+        std::vector<char> buf(sz, '\0');
+        if (TrackFX_GetNamedConfigParm(tr, fx, "vst_chunk", buf.data(), (int)sz))
+        {
+            size_t len = strnlen(buf.data(), sz);
+            if (len == 0) return false;   // plugin has no chunk to give
+            if (len < sz - 2)             // fits with headroom — trust it
+            {
+                out.assign(buf.data(), len);
+                // Strip stray CR/LF so Serialize's fixed-width line math holds.
+                out.erase(std::remove_if(out.begin(), out.end(),
+                          [](char c) { return c == '\r' || c == '\n'; }),
+                          out.end());
+                return true;
+            }
+            // suspiciously full — escalate
+        }
+        // false may also mean "buffer too small" on some builds — escalate
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Capture
 // ---------------------------------------------------------------------------
 void TransitionSnapshot::Capture(int mask)
@@ -180,15 +213,10 @@ void TransitionSnapshot::Capture(int mask)
                     // Capture full VST state blob instead of per-param values.
                     // This is required for rack-style plugins (e.g. Waves VMR) where
                     // module swaps change param semantics while count stays constant.
-                    // Use a large heap buffer – VMR chunks can be 50-200 KB.
-                    std::vector<char> chunkBuf(512 * 1024, '\0');
-                    if (TrackFX_GetNamedConfigParm(tr, fx, "vst_chunk",
-                                                   chunkBuf.data(), (int)chunkBuf.size()))
-                    {
-                        fs.fxChunk = chunkBuf.data();
-                    }
+                    GetVstChunkRetry(tr, fx, fs.fxChunk);
                     // normVals stays empty; paramCount stays 0.
-                    // (chunk is the sole source of truth for these plugins)
+                    // (chunk is the sole source of truth for these plugins —
+                    //  an empty fxChunk here triggers the save warning below)
                 }
                 else
                 {
@@ -201,14 +229,7 @@ void TransitionSnapshot::Capture(int mask)
                     // This makes g_chunkAllInstant a pure recall-time switch:
                     // no need to re-save scenes after changing the setting.
                     // normVals is kept so timed transitions can still lerp params.
-                    {
-                        std::vector<char> chunkBuf(512 * 1024, '\0');
-                        if (TrackFX_GetNamedConfigParm(tr, fx, "vst_chunk",
-                                                       chunkBuf.data(), (int)chunkBuf.size()))
-                        {
-                            fs.fxChunk = chunkBuf.data();
-                        }
-                    }
+                    GetVstChunkRetry(tr, fx, fs.fxChunk);
                 }
 
                 ts.fx.push_back(std::move(fs));
@@ -297,6 +318,28 @@ void TransitionSnapshot::Capture(int mask)
                 cl.tracks.push_back(clt);
             }
             m_layers.push_back(cl);
+        }
+    }
+
+    // --- Save warning (always on) -------------------------------------------
+    // A chunk-list plugin whose blob could not be captured means the scene
+    // will recall NOTHING for that plugin. A scene silently missing state is
+    // the worst outcome for a live operator — always tell them at save time,
+    // when re-saving is still cheap.
+    {
+        std::string missing;
+        for (const auto& trk : m_tracks)
+            for (const auto& fx : trk.fx)
+                if (IsChunkRecallPlugin(fx.name) && fx.fxChunk.empty())
+                    missing += std::string("  ") + fx.name + "\n";
+        if (!missing.empty())
+        {
+            std::string full =
+                "WARNING: scene was saved WITHOUT plugin state for:\n" + missing +
+                "\nRecall will not change these plugins. Try saving the scene "
+                "again, or check the Chunk Recall Plugins list.";
+            MessageBoxA(GetMainHwnd(), full.c_str(),
+                        "Live Tools - Scene Save", MB_OK | MB_ICONWARNING);
         }
     }
 
@@ -486,11 +529,29 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
 
             if (!fx.fxChunk.empty())
             {
-                // Chunk recall plugin: write full vst_chunk blob, skip P lines.
-                // Use pre-built string to avoid vsnprintf length limit on large blobs.
-                std::string chunkLine = "FXCHUNK ";
-                chunkLine += fx.fxChunk;
-                ctx->AddLine("%s", chunkLine.c_str());
+                // Chunk blob: write as a fixed-width multi-line block. The old
+                // single-line "FXCHUNK <blob>" format was truncated at 4KB by
+                // Deserialize's line buffer on project reload, silently
+                // corrupting any large blob (VMR chunks are 50-200KB).
+                // 256 chars/line matches REAPER's own <VST block convention.
+                // The declared length is the authoritative terminator: the
+                // payload is base64 (never '>' or whitespace), but "FXCHUNKEND"
+                // itself is valid base64, so length — not the marker alone —
+                // is what makes reassembly unambiguous.
+                ctx->AddLine("FXCHUNKSTART %d", (int)fx.fxChunk.size());
+                const char* cp = fx.fxChunk.c_str();
+                size_t rem = fx.fxChunk.size();
+                char lb[260];
+                while (rem)
+                {
+                    size_t n = rem < 256 ? rem : 256;
+                    memcpy(lb, cp, n);
+                    lb[n] = '\0';
+                    ctx->AddLine("%s", lb);
+                    cp += n;
+                    rem -= n;
+                }
+                ctx->AddLine("FXCHUNKEND");
             }
             else
             {
@@ -581,14 +642,23 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
     ss->m_time   = ts_time;
 
     // ---- Parse child lines ------------------------------------------------
-    char line[4096];
+    // Heap line buffer: legacy single-line FXCHUNK blobs (old scenes) can be
+    // hundreds of KB; a 4KB stack buffer truncated them and corrupted the
+    // blob. 1MB covers every observed plugin; new-format lines are <=256 chars.
+    // Load-time only — no live-path cost.
+    std::vector<char> lineBuf(1024 * 1024);
+    char* line = lineBuf.data();
+    const int lineCap = (int)lineBuf.size();
     TrackState  curTrack;
     bool        inTrack = false;
     FXState     curFX;
     bool        inFX    = false;
     bool        inChunk = false;
+    bool        inFxChunk       = false;  // inside FXCHUNKSTART..FXCHUNKEND
+    size_t      fxChunkDeclared = 0;      // length from FXCHUNKSTART header
+    std::string fxChunkAccum;             // reassembly buffer
 
-    while (ctx->GetLine(line, sizeof(line)) == 0)
+    while (ctx->GetLine(line, lineCap) == 0)
     {
         // Trim leading whitespace
         char* trimmed = line;
@@ -605,6 +675,40 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                 curTrack.fxChainChunk += '\n';
             }
             continue;
+        }
+
+        // FX chunk blob: absorb payload lines until FXCHUNKEND (see Serialize
+        // for the format). The declared length is authoritative — commit only
+        // on an exact match; a corrupt blob is worse than an empty one
+        // (recall falls back to normVals / does nothing, never applies garbage).
+        if (inFxChunk)
+        {
+            if (strcmp(trimmed, "FXCHUNKEND") == 0)
+            {
+                if (fxChunkAccum.size() == fxChunkDeclared)
+                    curFX.fxChunk = fxChunkAccum;
+                else
+                    curFX.fxChunk.clear();
+                inFxChunk = false;
+                fxChunkAccum.clear();
+                continue;
+            }
+            if (strcmp(trimmed, ">") == 0)
+            {
+                // Malformed block ran into the snapshot terminator — discard.
+                curFX.fxChunk.clear();
+                inFxChunk = false;
+                break;
+            }
+            if (fxChunkAccum.size() < fxChunkDeclared)
+            {
+                fxChunkAccum += trimmed;
+                continue;
+            }
+            // Accumulator is full but this line isn't FXCHUNKEND: malformed.
+            // Discard the blob and reparse this line as a normal keyword.
+            inFxChunk = false;
+            fxChunkAccum.clear();
         }
 
         if (strcmp(trimmed, ">") == 0)
@@ -779,9 +883,27 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             strncpy(curFX.fxIdent, trimmed + 8, (int)sizeof(curFX.fxIdent) - 1);
             curFX.fxIdent[sizeof(curFX.fxIdent) - 1] = '\0';
         }
+        else if (strncmp(trimmed, "FXCHUNKSTART ", 13) == 0)
+        {
+            long len = atol(trimmed + 13);
+            // Sanity cap: a corrupt header must not allocate gigabytes.
+            // len 0 = absorb-and-discard until FXCHUNKEND.
+            if (len < 0 || len > 32 * 1024 * 1024) len = 0;
+            inFxChunk       = true;
+            fxChunkDeclared = (size_t)len;
+            fxChunkAccum.clear();
+            fxChunkAccum.reserve(fxChunkDeclared);
+        }
         else if (strncmp(trimmed, "FXCHUNK ", 8) == 0)
         {
+            // Legacy single-line format (pre-multi-line scenes) — best effort.
             curFX.fxChunk = trimmed + 8;
+            // A line that filled the read buffer was almost certainly
+            // truncated by GetLine; a truncated blob is corrupt — discard
+            // rather than apply garbage at recall. (GetLine returns the
+            // remainder as junk lines that match no keyword and are ignored.)
+            if ((int)strlen(line) >= lineCap - 3)
+                curFX.fxChunk.clear();
         }
         else if (strncmp(trimmed, "FXWET ", 6) == 0)
         {

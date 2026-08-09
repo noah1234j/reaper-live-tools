@@ -155,6 +155,10 @@ public:
     void ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val);
     bool ShadowGet  (const GUID& guid, const char* fxIdent, int paramIdx, double& outVal) const;
     void ShadowClear();
+    // Drop all entries for one plugin instance. Needed after a vst_chunk
+    // write: it changes params without CSURF notifications, so the plugin's
+    // shadow entries are provably stale.
+    void ShadowInvalidate(const GUID& guid, const char* fxIdent);
 
     // Register / unregister the internal CSURF surface that feeds the shadow map.
     // Called from ReaperPluginEntry on load and unload.
@@ -286,4 +290,12 @@ private:
     using ShadowTrackMap = std::unordered_map<GUID, ShadowFXMap, GUIDHash, GUIDEqual>;
     ShadowTrackMap m_shadow;
     static constexpr double kShadowEmpty = -1e308;
+
+    // Project state change count observed when the last recall finished.
+    // If it differs at the next recall's entry, something external (SWS
+    // snapshot, preset load, manual edit REAPER didn't notify us about)
+    // touched the project — the shadow map can no longer be trusted and is
+    // cleared. Trade-off: any external edit costs one unoptimized recall;
+    // back-to-back scene recalls (the optimization's target) keep the map.
+    int m_shadowStateCount = -1;
 };
