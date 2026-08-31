@@ -9,6 +9,7 @@
 #include "MeterBridgeWnd.h"
 #include "resource.h"
 #include "api.h"
+#include "LiveTheme.h"
 #include "TransitionEngine.h"
 #include "TransitionSnapshot.h"
 #include "TransitionWnd.h"
@@ -131,6 +132,59 @@ static COLORREF MeterColor(double db)
     if (db >= -6.0) return RGB(220,  20,  20);  // red
     if (db >= -18.0) return RGB(220, 180,   0); // yellow
     return                  RGB( 20, 160,  20); // green
+}
+
+// ---------------------------------------------------------------------------
+// Palette – structural colors for both theme modes.
+// Dark values replicate the REAPER Default 7.0 mixer (decoded from the
+// .ReaperTheme file):
+//   col_mixerbg=RGB(51,51,51)  col_tr1_bg=RGB(66,66,66)  col_tr2_bg=RGB(69,69,69)
+//   col_vuintcol=RGB(32,32,32) col_tcp_text≈RGB(185,185,185)
+// Light values are hand-tuned equivalents; LiveTheme_IsLight() picks the
+// variant.  Accent colors (VU gradient, clip, LED on-colors, TS_* dot
+// colors, MeterColor grades, per-track colors) are identical in both modes.
+// ---------------------------------------------------------------------------
+static COLORREF s_colMixerBg      = RGB(51, 51, 51);    // window bg (col_mixerbg)
+static COLORREF s_colStripOdd     = RGB(66, 66, 66);    // odd-strip bg (col_tr1_bg)
+static COLORREF s_colStripEven    = RGB(60, 60, 60);    // even-strip bg
+static COLORREF s_colTrackText    = RGB(185, 185, 185); // track name (col_tcp_text)
+static COLORREF s_colTrackTextMut = RGB(80, 80, 80);    // track name when muted
+static COLORREF s_colStripSep     = RGB(30, 30, 30);    // right strip separator
+static COLORREF s_colLedDiv       = RGB(28, 28, 28);    // divider between M/S/R rows
+static COLORREF s_colLedOffText   = RGB(85, 85, 85);    // M/S/R label when inactive
+static COLORREF s_colMeterBg      = RGB(32, 32, 32);    // unlit meter bg (col_vuintcol)
+static COLORREF s_colMeterOffHot  = RGB(24, 5, 0);      // unlit tint, clip zone
+static COLORREF s_colMeterOffCool = RGB(0, 25, 20);     // unlit tint, teal zone
+static COLORREF s_colPeakHold     = RGB(210, 210, 210); // peak-hold line (non-clip)
+static COLORREF s_colDotsBg       = RGB(32, 32, 32);    // safe-dot row bg
+
+static void MB_RefreshPalette()
+{
+    const bool light = LiveTheme_IsLight();
+    s_colMixerBg      = light ? RGB(235, 235, 235) : RGB(51, 51, 51);
+    s_colStripOdd     = light ? RGB(214, 214, 214) : RGB(66, 66, 66);
+    s_colStripEven    = light ? RGB(220, 220, 220) : RGB(60, 60, 60);
+    s_colTrackText    = light ? RGB(40, 40, 40)    : RGB(185, 185, 185);
+    s_colTrackTextMut = light ? RGB(150, 150, 150) : RGB(80, 80, 80);
+    s_colStripSep     = light ? RGB(190, 190, 190) : RGB(30, 30, 30);
+    s_colLedDiv       = light ? RGB(190, 190, 190) : RGB(28, 28, 28);
+    s_colLedOffText   = light ? RGB(150, 150, 150) : RGB(85, 85, 85);
+    s_colMeterBg      = light ? RGB(210, 214, 214) : RGB(32, 32, 32);
+    s_colMeterOffHot  = light ? RGB(226, 203, 197) : RGB(24, 5, 0);
+    s_colMeterOffCool = light ? RGB(196, 216, 211) : RGB(0, 25, 20);
+    s_colPeakHold     = light ? RGB(60, 60, 60)    : RGB(210, 210, 210);
+    s_colDotsBg       = light ? RGB(222, 222, 222) : RGB(32, 32, 32);
+}
+
+// Runs on the main thread after the REAPER theme flips light<->dark
+static void MB_OnThemeChanged()
+{
+    MB_RefreshPalette();
+    if (g_wnd && IsWindow(g_wnd))
+    {
+        LiveTheme_ApplyDialog(g_wnd);  // restyle title bar + scrollbar child
+        InvalidateRect(g_wnd, nullptr, TRUE);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,11 +321,8 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     const int _mh         = clientH - kColorBandH - kNameH - kStatusH - kSafeH;
     const int kMeterH     = _mh > 4 ? _mh : 4;
 
-    // ── REAPER Default 7.0 palette (values decoded from .ReaperTheme file) ──
-    // col_mixerbg=RGB(51,51,51)  col_tr1_bg=RGB(66,66,66)  col_tr2_bg=RGB(69,69,69)
-    // col_vuintcol=RGB(32,32,32) col_vutop=RGB(0,254,149)   col_vubot=RGB(0,191,191)
-    // col_vuclip=RGB(187,37,0)
-    const COLORREF kStripBg = (stripIdx & 1) ? RGB(66, 66, 66) : RGB(60, 60, 60);
+    // Alternating strip background from the mode-dependent palette
+    const COLORREF kStripBg = (stripIdx & 1) ? s_colStripOdd : s_colStripEven;
 
     // ── 0. Full strip background ─────────────────────────────────────────────
     {
@@ -323,8 +374,8 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
         HFONT hRot    = CreateFontIndirectA(&lf);
         HFONT hOldFnt = (HFONT)SelectObject(hdc, hRot);
 
-        // col_tcp_text ≈ RGB(185,185,185) for mixer context; dim when muted
-        SetTextColor(hdc, s.mute ? RGB(80, 80, 80) : RGB(185, 185, 185));
+        // col_tcp_text for mixer context; dim when muted
+        SetTextColor(hdc, s.mute ? s_colTrackTextMut : s_colTrackText);
         SetBkMode(hdc, TRANSPARENT);
         TextOutA(hdc, x + W / 2 - 4, y + kNameH - 3,
                  s.name, (int)strlen(s.name));
@@ -341,10 +392,10 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     // REAPER's authentic VU colors are NOT green-yellow-red.
     // The meter uses a teal (col_vubot=RGB(0,191,191)) → mint-green
     // (col_vutop=RGB(0,254,149)) gradient, with orange-red ONLY at clip
-    // (col_vuclip=RGB(187,37,0)).  Unlit area: col_vuintcol=RGB(32,32,32).
+    // (col_vuclip=RGB(187,37,0)).  Unlit area: palette col_vuintcol variant.
     {
         RECT rcBg = { x + 1, y, x + W - 1, y + kMeterH };
-        HBRUSH hbg = CreateSolidBrush(RGB(32, 32, 32));   // col_vuintcol
+        HBRUSH hbg = CreateSolidBrush(s_colMeterBg);      // col_vuintcol
         FillRect(hdc, &rcBg, hbg);
         DeleteObject(hbg);
 
@@ -379,9 +430,9 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             }
             else
             {
-                // Unlit: very dark tint matching the lit zone color family
-                col = (segDb >= 0.0) ? RGB(24, 5, 0)    // dark orange-red
-                                     : RGB(0, 25, 20);   // dark teal
+                // Unlit: faint tint matching the lit zone color family
+                col = (segDb >= 0.0) ? s_colMeterOffHot   // orange-red family
+                                     : s_colMeterOffCool; // teal family
             }
 
             const int sy = y + 1 + si * kStep;
@@ -391,7 +442,7 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             DeleteObject(hbr);
         }
 
-        // Peak hold: light gray normally; col_vuclip orange-red at clip
+        // Peak hold: neutral gray normally; col_vuclip orange-red at clip
         if (!s.mute && s.peakHoldDb > k_MeterMin && nSegs > 1)
         {
             const double hf = DbToFrac(s.peakHoldDb);
@@ -399,7 +450,7 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             if (hy >= y + 1 && hy < y + totalPx)
             {
                 COLORREF hcol = (s.peakHoldDb >= 0.0) ? RGB(187, 37, 0)
-                                                       : RGB(210, 210, 210);
+                                                       : s_colPeakHold;
                 RECT hl = { x + 1, hy, x + 1 + barW, hy + 1 };
                 HBRUSH hbr = CreateSolidBrush(hcol);
                 FillRect(hdc, &hl, hbr);
@@ -445,12 +496,12 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
             if (li < 2)
             {
                 RECT sp = { x, ry + kRowH - 1, x + W - 1, ry + kRowH };
-                HBRUSH hs = CreateSolidBrush(RGB(28, 28, 28));
+                HBRUSH hs = CreateSolidBrush(s_colLedDiv);
                 FillRect(hdc, &sp, hs);
                 DeleteObject(hs);
             }
 
-            SetTextColor(hdc, leds[li].on ? RGB(255, 255, 255) : RGB(85, 85, 85));
+            SetTextColor(hdc, leds[li].on ? RGB(255, 255, 255) : s_colLedOffText);
             SetBkMode(hdc, TRANSPARENT);
             DrawTextA(hdc, leds[li].lbl, -1, &lr,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
@@ -463,7 +514,7 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
     // ── 5. Safe indicator dots ────────────────────────────────────────────────
     {
         RECT rcBg = { x, y, x + W - 1, y + kSafeH };
-        HBRUSH hbg = CreateSolidBrush(RGB(32, 32, 32));
+        HBRUSH hbg = CreateSolidBrush(s_colDotsBg);
         FillRect(hdc, &rcBg, hbg);
         DeleteObject(hbg);
 
@@ -490,10 +541,10 @@ static void DrawStrip(HDC hdc, int x, int clientH, int stripIdx)
         }
     }
 
-    // ── Right separator: 1 px, near-black (col_tr1_divline ≈ RGB(38,38,38)) ──
+    // ── Right separator: 1 px (col_tr1_divline family) ───────────────────────
     {
         RECT rl = { x + W - 1, 0, x + W, clientH };
-        HBRUSH hbr = CreateSolidBrush(RGB(30, 30, 30));
+        HBRUSH hbr = CreateSolidBrush(s_colStripSep);
         FillRect(hdc, &rl, hbr);
         DeleteObject(hbr);
     }
@@ -544,8 +595,14 @@ static INT_PTR CALLBACK MeterBridgeSettingsDlgProc(HWND hwnd, UINT msg,
         setupSpin(IDC_MB_NAME_H,     IDC_MB_NAME_H_SPIN,    g_mb_NameH,         10,200);
         setupSpin(IDC_MB_PEAKHOLD,   IDC_MB_PEAKHOLD_SPIN,  g_mb_PeakHoldTicks,  0,300);
         setupSpin(IDC_MB_FPS,        IDC_MB_FPS_SPIN,       g_mb_Fps,            1, 60);
+        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
+
+    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+        if (INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam)) return r;
+        break;
 
     case WM_COMMAND:
         if (LOWORD(wParam) == IDOK)
@@ -636,6 +693,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
                                     g_hInst, nullptr);
 
         SetTimer(hwnd, k_TimerID, (UINT)(1000 / (g_mb_Fps > 0 ? g_mb_Fps : 1)), nullptr);
+        LiveTheme_ApplyDialog(hwnd);  // title bar + scrollbar child theming
         return TRUE;
     }
 
@@ -696,7 +754,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
 
         // Background
         RECT rcAll = { 0, 0, clientW, clientH };
-        HBRUSH hbgBrush = CreateSolidBrush(RGB(51, 51, 51));  // col_mixerbg
+        HBRUSH hbgBrush = CreateSolidBrush(s_colMixerBg);     // col_mixerbg
         FillRect(hdcMem, &rcAll, hbgBrush);
         DeleteObject(hbgBrush);
 
@@ -722,7 +780,7 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
         // "No tracks" message
         if (s_strips.empty())
         {
-            SetTextColor(hdcMem, RGB(80, 80, 80));
+            SetTextColor(hdcMem, s_colTrackTextMut);
             DrawTextA(hdcMem, "No tracks in project", -1, &rcAll,
                       DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         }
@@ -866,6 +924,8 @@ static INT_PTR CALLBACK MeterBridgeDlgProc(HWND hwnd, UINT msg,
 void MeterBridgeWnd_Init(HINSTANCE hInst)
 {
     g_hInst = hInst;
+    MB_RefreshPalette();
+    LiveTheme_RegisterCallback(MB_OnThemeChanged);
     // Window is created lazily on first ShowHide call
 }
 

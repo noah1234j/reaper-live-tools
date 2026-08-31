@@ -16,6 +16,7 @@
 #include "LiveLockEngine.h"
 #include "api.h"
 #include "resource.h"
+#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <windowsx.h>
@@ -45,17 +46,48 @@ static RECT s_gearZone = {};
 enum { CTX_DOCK_TOGGLE = 200, CTX_SETTINGS, CTX_CLOSE };
 
 // ---------------------------------------------------------------------------
-// Colours
+// Colours – dark/light palette selected by the active REAPER theme
 // ---------------------------------------------------------------------------
-static const COLORREF k_BgDark      = RGB( 28,  28,  28);
-static const COLORREF k_BgGear      = RGB( 40,  40,  50);
-static const COLORREF k_Divider     = RGB( 55,  55,  60);
-static const COLORREF k_LockOn      = RGB(  0, 140,  30);
-static const COLORREF k_LockOff     = RGB(158,  28,  28);
-static const COLORREF k_TextBright  = RGB(220, 220, 220);
-static const COLORREF k_TextMid     = RGB(155, 155, 165);
-static const COLORREF k_TextDim     = RGB( 90,  90, 100);
-static const COLORREF k_GearSymbol  = RGB(140, 140, 165);
+static COLORREF k_BgDark      = RGB( 28,  28,  28);
+static COLORREF k_BgGear      = RGB( 40,  40,  50);
+static COLORREF k_Divider     = RGB( 55,  55,  60);
+static COLORREF k_LockOn      = RGB(  0, 140,  30);
+static COLORREF k_LockOff     = RGB(158,  28,  28);
+static COLORREF k_TextBright  = RGB(220, 220, 220);
+static COLORREF k_TextMid     = RGB(155, 155, 165);
+static COLORREF k_TextDim     = RGB( 90,  90, 100);
+static COLORREF k_GearSymbol  = RGB(140, 140, 165);
+static COLORREF k_LockEdge    = RGB(  0,   0,   0);
+
+static void RefreshPalette()
+{
+    if (!LiveTheme_IsLight())
+    {
+        k_BgDark      = RGB( 28,  28,  28);
+        k_BgGear      = RGB( 40,  40,  50);
+        k_Divider     = RGB( 55,  55,  60);
+        k_LockOn      = RGB(  0, 140,  30);
+        k_LockOff     = RGB(158,  28,  28);
+        k_TextBright  = RGB(220, 220, 220);
+        k_TextMid     = RGB(155, 155, 165);
+        k_TextDim     = RGB( 90,  90, 100);
+        k_GearSymbol  = RGB(140, 140, 165);
+        k_LockEdge    = RGB(  0,   0,   0);
+    }
+    else
+    {
+        k_BgDark      = RGB(243, 243, 243);
+        k_BgGear      = RGB(226, 229, 236);
+        k_Divider     = RGB(205, 205, 210);
+        k_LockOn      = RGB(  0, 125,  28);   // darker green for contrast on light bg
+        k_LockOff     = RGB(140,  22,  22);   // darker red for contrast on light bg
+        k_TextBright  = RGB( 25,  25,  30);
+        k_TextMid     = RGB( 95,  95, 105);
+        k_TextDim     = RGB(145, 145, 155);
+        k_GearSymbol  = RGB( 70,  75,  95);
+        k_LockEdge    = RGB(120, 120, 120);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Custom painting
@@ -126,7 +158,7 @@ static void OnPaint(HWND hwnd)
     DeleteObject(hbrLock);
 
     // 1px dark edge on right of lock zone
-    HBRUSH hbrEdge = CreateSolidBrush(RGB(0, 0, 0));
+    HBRUSH hbrEdge = CreateSolidBrush(k_LockEdge);
     RECT rEdge = { kLockW, 0, kLockW + 1, H };
     FillRect(hdcMem, &rEdge, hbrEdge);
     DeleteObject(hbrEdge);
@@ -235,7 +267,20 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPAR
         SendMessage(hSpin, UDM_SETBUDDY,  (WPARAM)hEdit, 0);
         SendMessage(hSpin, UDM_SETRANGE32, (WPARAM)50, (LPARAM)2000);
         SendMessage(hSpin, UDM_SETPOS32,   0, (LPARAM)s.intervalMs);
+
+        LiveTheme_ApplyDialog(hDlg);
         return TRUE;
+    }
+
+    case WM_CTLCOLORDLG:
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN:
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX:
+    {
+        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
+        if (r) return (INT_PTR)r;
+        break;
     }
 
     case WM_COMMAND:
@@ -304,6 +349,7 @@ static INT_PTR CALLBACK LiveLockDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     {
     case WM_INITDIALOG:
         SetTimer(hwnd, k_TimerID, k_TimerMs, nullptr);
+        LiveTheme_ApplyDialog(hwnd);
         InvalidateRect(hwnd, nullptr, FALSE);
         return TRUE;
 
@@ -381,11 +427,27 @@ static INT_PTR CALLBACK LiveLockDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 }
 
 // ---------------------------------------------------------------------------
+// Theme change – re-pick the palette and restyle the open panel
+// ---------------------------------------------------------------------------
+static void OnThemeChanged()
+{
+    RefreshPalette();
+    // All GDI objects are created per-paint, so nothing cached to free
+    if (s_hwnd && IsWindow(s_hwnd))
+    {
+        LiveTheme_ApplyDialog(s_hwnd);
+        InvalidateRect(s_hwnd, nullptr, TRUE);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 void LiveLockWnd_Init(HINSTANCE hInst)
 {
     s_hInst = hInst;
+    RefreshPalette();
+    LiveTheme_RegisterCallback(OnThemeChanged);
 }
 
 void LiveLockWnd_Cleanup()

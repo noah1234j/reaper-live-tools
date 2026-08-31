@@ -13,6 +13,7 @@
 #include "MuteGroup.h"
 #include "api.h"
 #include "resource.h"
+#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <commctrl.h>
@@ -64,6 +65,19 @@ static int  GetSelectedTrackIndex(HWND hwnd);
 static void SelectGroupRow(HWND hwnd, int idx);
 
 // ---------------------------------------------------------------------------
+// Theme-change callback – restyle the open window to the active REAPER theme
+// ---------------------------------------------------------------------------
+static void OnThemeChanged()
+{
+    if (g_hwnd && IsWindow(g_hwnd))
+    {
+        LiveTheme_ApplyDialog(g_hwnd);
+        if (g_hGroupList)
+            ListView_SetInsertMarkColor(g_hGroupList, LiveTheme_Colors().hlBg);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 void MuteGroupsWnd_Init(HINSTANCE hInst)
@@ -71,6 +85,7 @@ void MuteGroupsWnd_Init(HINSTANCE hInst)
     g_hInst = hInst;
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
     InitCommonControlsEx(&icc);
+    LiveTheme_RegisterCallback(OnThemeChanged);
 }
 
 void MuteGroupsWnd_Cleanup()
@@ -286,7 +301,7 @@ static INT_PTR CALLBACK MuteGroupsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 
             // Use the highlight colour for the drag-insert indicator
-            ListView_SetInsertMarkColor(g_hGroupList, GetSysColor(COLOR_HIGHLIGHT));
+            ListView_SetInsertMarkColor(g_hGroupList, LiveTheme_Colors().hlBg);
 
             LVCOLUMNA col = {};
             col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
@@ -297,6 +312,8 @@ static INT_PTR CALLBACK MuteGroupsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 col.fmt     = (c == GC_NAME) ? LVCFMT_LEFT : LVCFMT_CENTER;
                 ListView_InsertColumn(g_hGroupList, c, &col);
             }
+
+            LiveTheme_ApplyListView(g_hGroupList);
         }
 
         // ---- Tracks ListView (right panel) --------------------------------
@@ -327,11 +344,23 @@ static INT_PTR CALLBACK MuteGroupsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 col.fmt     = LVCFMT_LEFT;
                 ListView_InsertColumn(g_hTrackList, c, &col);
             }
+
+            LiveTheme_ApplyListView(g_hTrackList);
         }
 
         RefreshGroupList(hwnd);
         SetStatus(hwnd, "Ready");
+        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
+    }
+
+    // -----------------------------------------------------------------------
+    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+    {
+        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
+        if (r) return r;
+        break;
     }
 
     // -----------------------------------------------------------------------

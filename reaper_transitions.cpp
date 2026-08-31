@@ -8,6 +8,7 @@
 #include "api.h"
 #include "resource.h"
 
+#include "LiveTheme.h"
 #include "TransitionSnapshot.h"
 #include "TransitionEngine.h"
 #include "TransitionWnd.h"
@@ -30,8 +31,11 @@
 
 #include <memory>
 #include <vector>
+#include <map>
+#include <string>
 #include <cstring>
 #include <cstdio>
+#include <cstdarg>
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -42,6 +46,7 @@ static void SaveExtensionConfig(ProjectStateContext* ctx, bool isUndo,
                                 struct project_config_extension_t*);
 static void BeginLoadProjectState(bool isUndo,
                                   struct project_config_extension_t*);
+static void ProjectTabTimerCallback();
 
 static bool RunCommand(int cmd, int);
 static int  ToggleAction(int cmd);
@@ -108,11 +113,91 @@ static project_config_extension_t g_projectconfig =
 
 // ---------------------------------------------------------------------------
 // Project state persistence
+//
+// All engine state lives in process-wide globals, but REAPER keeps every
+// project tab loaded at once and only fires the projectconfig callbacks on
+// load/save/undo — never on a tab switch. So the globals only ever represent
+// ONE project (g_stateProj); every other open tab's state is kept serialized
+// in g_tabStash, keyed by ReaProject*. A timer detects active-tab changes and
+// swaps the globals in/out through the same Serialize/ProcessLine code the
+// .RPP save/load path uses.
 // ---------------------------------------------------------------------------
 
-// Called once before REAPER starts feeding lines for a project load/undo.
-static void BeginLoadProjectState(bool isUndo,
-                                  struct project_config_extension_t*)
+// In-memory ProjectStateContext: SaveStateToCtx() writes into it to stash a
+// project, and RestoreStateForActiveProject() reads it back line by line.
+class MemProjectStateContext : public ProjectStateContext
+{
+public:
+    std::vector<std::string> m_lines;
+    size_t m_pos = 0;
+
+    MemProjectStateContext() {}
+    explicit MemProjectStateContext(std::vector<std::string>&& lines)
+        : m_lines(std::move(lines)) {}
+
+    void AddLine(const char* fmt, ...) override
+    {
+        char buf[8192];
+        va_list ap; va_start(ap, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, ap);
+        va_end(ap);
+        m_lines.emplace_back(buf);
+    }
+    int GetLine(char* buf, int buflen) override
+    {
+        if (m_pos >= m_lines.size()) return -1;
+        if (buflen > 0)
+        {
+            size_t n = m_lines[m_pos].size();
+            if (n > (size_t)buflen - 1) n = (size_t)buflen - 1;
+            memcpy(buf, m_lines[m_pos].data(), n);
+            buf[n] = '\0';
+        }
+        ++m_pos;
+        return 0;
+    }
+    INT64 GetOutputSize() override { return 0; }
+    int   GetTempFlag()   override { return 0; }
+    void  SetTempFlag(int) override {}
+};
+
+static ReaProject* g_stateProj = nullptr;  // project the globals currently represent
+static std::map<ReaProject*, std::vector<std::string>> g_tabStash;
+
+static bool ProjectIsOpen(ReaProject* proj)
+{
+    if (!proj || !EnumProjects) return false;
+    for (int i = 0; ; i++)
+    {
+        ReaProject* p = EnumProjects(i, nullptr, 0);
+        if (!p) return false;
+        if (p == proj) return true;
+    }
+}
+
+static void SaveStateToCtx(ProjectStateContext* ctx)
+{
+    for (const auto& ss : g_snapshots)
+        ss->Serialize(ctx);
+    MuteGroupsEngine::Get().SaveConfig(ctx);
+    for (const auto& dca : g_dcaGroups)
+        dca->Serialize(ctx);
+    TransitionWnd_SaveCueList(ctx);
+    TransitionWnd_SaveSettings(ctx);
+    LayersEngine::Get().SaveConfig(ctx);
+    LiveLockEngine::Get().SaveConfig(ctx);
+    DcaWnd_SaveSettings(ctx);
+    SafesWnd_SaveConfig(ctx);
+}
+
+static void StashProjectState(ReaProject* proj)
+{
+    MemProjectStateContext ctx;
+    SaveStateToCtx(&ctx);
+    g_tabStash[proj] = std::move(ctx.m_lines);
+}
+
+static void ResetProjectState(bool isUndo)
 {
     TransitionEngine::Get().StopAndReset();
     g_snapshots.clear();
@@ -138,6 +223,82 @@ static void BeginLoadProjectState(bool isUndo,
     // left the ListView showing the previous project's stale rows, since it's only synced
     // on demand rather than driven directly off g_snapshots.
     TransitionWnd_RefreshList();
+}
+
+// Clear the globals and replay the given project's stashed lines through
+// ProcessExtensionLine, mimicking what REAPER does on a real project load.
+static void RestoreStateForActiveProject(ReaProject* proj)
+{
+    ResetProjectState(false);
+    auto it = g_tabStash.find(proj);
+    if (it == g_tabStash.end()) return;
+    MemProjectStateContext ctx(std::move(it->second));
+    g_tabStash.erase(it);
+
+    char line[8192];
+    while (ctx.GetLine(line, sizeof(line)) == 0)
+    {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p) continue;
+        if (!ProcessExtensionLine(line, &ctx, false, nullptr) && *p == '<')
+        {
+            // Unconsumed block: skip to its matching '>' like REAPER does,
+            // so a partially-read block can't desync the following lines.
+            int depth = 1;
+            char skip[8192];
+            while (depth > 0 && ctx.GetLine(skip, sizeof(skip)) == 0)
+            {
+                const char* q = skip;
+                while (*q == ' ' || *q == '\t') ++q;
+                if (*q == '<') ++depth;
+                else if (*q == '>') --depth;
+            }
+        }
+    }
+}
+
+// Timer: detect active project-tab changes (REAPER has no callback for them)
+// and swap the outgoing tab's state into the stash / the incoming tab's out.
+static void ProjectTabTimerCallback()
+{
+    if (!EnumProjects) return;
+
+    // Drop stashed state for tabs that have closed. ReaProject* values can be
+    // reused by REAPER for future projects, so stale entries must not linger.
+    for (auto it = g_tabStash.begin(); it != g_tabStash.end(); )
+    {
+        if (!ProjectIsOpen(it->first)) it = g_tabStash.erase(it);
+        else ++it;
+    }
+
+    ReaProject* active = EnumProjects(-1, nullptr, 0);
+    if (!active || active == g_stateProj) return;
+
+    if (g_stateProj && ProjectIsOpen(g_stateProj))
+        StashProjectState(g_stateProj);
+    g_stateProj = active;
+    RestoreStateForActiveProject(active);
+}
+
+// Called once before REAPER starts feeding lines for a project load/undo.
+static void BeginLoadProjectState(bool isUndo,
+                                  struct project_config_extension_t*)
+{
+    ReaProject* target = GetCurrentProjectInLoadSave ? GetCurrentProjectInLoadSave() : nullptr;
+    if (!target && EnumProjects) target = EnumProjects(-1, nullptr, 0);
+
+    // Opening a project in a new/other tab wipes the globals before the tab
+    // timer ever runs, so preserve the outgoing tab's state here first.
+    if (!isUndo && target && g_stateProj && target != g_stateProj && ProjectIsOpen(g_stateProj))
+        StashProjectState(g_stateProj);
+
+    if (target)
+    {
+        g_tabStash.erase(target);  // superseded by the fresh load
+        g_stateProj = target;
+    }
+    ResetProjectState(isUndo);
 }
 
 // Called for each unrecognised extension line in the .RPP file.
@@ -204,17 +365,19 @@ static void SaveExtensionConfig(ProjectStateContext* ctx,
                                 bool /*isUndo*/,
                                 struct project_config_extension_t*)
 {
-    for (const auto& ss : g_snapshots)
-        ss->Serialize(ctx);
-    MuteGroupsEngine::Get().SaveConfig(ctx);
-    for (const auto& dca : g_dcaGroups)
-        dca->Serialize(ctx);
-    TransitionWnd_SaveCueList(ctx);
-    TransitionWnd_SaveSettings(ctx);
-    LayersEngine::Get().SaveConfig(ctx);
-    LiveLockEngine::Get().SaveConfig(ctx);
-    DcaWnd_SaveSettings(ctx);
-    SafesWnd_SaveConfig(ctx);
+    // "Save all projects" (and similar) calls this for background tabs too;
+    // the globals hold the ACTIVE tab's state, so a background tab must be
+    // written from its stash — never from the globals.
+    ReaProject* target = GetCurrentProjectInLoadSave ? GetCurrentProjectInLoadSave() : nullptr;
+    if (target && g_stateProj && target != g_stateProj)
+    {
+        auto it = g_tabStash.find(target);
+        if (it != g_tabStash.end())
+            for (const std::string& line : it->second)
+                ctx->AddLine("%s", line.c_str());
+        return;
+    }
+    SaveStateToCtx(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +458,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("-timer",          (void*)LiveLockEngine::TimerCallback);
         TransitionEngine::UnregisterShadowSurface();
         plugin_register("-timer",          (void*)&TransitionEngine::TimerCallback);
+        plugin_register("-timer",          (void*)ProjectTabTimerCallback);
         plugin_register("-projectconfig",  &g_projectconfig);
         plugin_register("-hookcustommenu", (void*)MenuHook);
         // Unregister per-scene actions
@@ -338,6 +502,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     plugin_register("toggleaction",   (void*)ToggleAction);
     plugin_register("projectconfig",  &g_projectconfig);
     plugin_register("hookcustommenu", (void*)MenuHook);
+    plugin_register("timer",          (void*)ProjectTabTimerCallback);  // project-tab switch detection
 
     // ---- Register Live Monitor command ------------------------------------
     g_cmdShowMonitor = plugin_register("command_id", (void*)"LT_MONITOR");
@@ -513,6 +678,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     }
 
     // ---- Init UI -----------------------------------------------------------
+    LiveTheme_Init();   // must precede the window inits (they read theme colors)
     TransitionWnd_Init(hInstance);
     SafesWnd_Init(hInstance);
     MonitorWnd_Init(hInstance);

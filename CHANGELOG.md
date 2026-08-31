@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.0.25-beta] — 2026-08-31
+
+### New Features
+
+- **Layers: choose whether layers control the MCP or TCP**: New "Layers control" option in Layers Settings — layer visibility can now target either the mixer (MCP, the previous behavior) or the track panel (TCP), with "Also hide in the other panel" applying to whichever panel is not the target.
+
+- **All windows now follow the REAPER theme (light/dark)**: A shared LiveTheme module reads the active REAPER theme's colors and classifies it as light or dark by background luminance, polling ~1×/second so open windows restyle live when the theme is switched. The custom-painted windows (DCA Groups, LiveLock, Live Monitor, Meter Bridge) previously hardcoded dark palettes; each now carries a hand-tuned light variant (dark rendering is unchanged). The standard dialogs (Scenes and all its child dialogs, Safes, Layers, Mute Groups, Live Optimizer) previously used fixed system colors; they now draw with the REAPER theme's colors — including list views, headers, and (on Windows 10 20H1+) dark title bars and dark-mode button/scrollbar/combo styling. Status and accent colors (VU meters, clip, M/S/R LEDs, traffic-light grades, status dots, per-track colors) are intentionally identical in both modes.
+
+---
+
 ## [v0.0.24-beta] — 2026-08-09
 
 ### Bug Fixes
