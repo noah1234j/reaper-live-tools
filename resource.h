@@ -247,6 +247,8 @@
 #define IDC_LYR_SET_REORDER      2826
 #define IDC_LYR_SET_RESTORE      2827
 #define IDC_LYR_SET_TRIGGERMCP   2828
+#define IDC_LYR_SET_TARGET_MCP   2829
+#define IDC_LYR_SET_TARGET_TCP   2830
 
 // ---- Button Map window ---------------------------------------------------
 #define IDD_BTN_MAP              218

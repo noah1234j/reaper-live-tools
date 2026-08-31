@@ -17,6 +17,7 @@
 #include "LayersEngine.h"
 #include "api.h"
 #include "resource.h"
+#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <windowsx.h>
@@ -31,6 +32,7 @@
 // ---------------------------------------------------------------------------
 static HINSTANCE s_hInst  = nullptr;
 static HWND      s_hwnd   = nullptr;
+static HWND      s_hSettingsDlg = nullptr;  // settings modal while it is open
 static int       s_selLayer = 0;   // index of layer selected in list (0-based)
 
 // Drag state – layer list
@@ -87,6 +89,15 @@ static void RemoveSelectedTrack(HWND hwnd);
 void LayersWnd_Init(HINSTANCE hInst)
 {
     s_hInst = hInst;
+
+    // Restyle open windows when the REAPER theme changes
+    LiveTheme_RegisterCallback([]()
+    {
+        if (s_hwnd && IsWindow(s_hwnd))
+            LiveTheme_ApplyDialog(s_hwnd);
+        if (s_hSettingsDlg && IsWindow(s_hSettingsDlg))
+            LiveTheme_ApplyDialog(s_hSettingsDlg);
+    });
 }
 
 void LayersWnd_Cleanup()
@@ -457,6 +468,8 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_INITDIALOG:
     {
         const LayersSettings& cfg = LayersEngine::Get().GetSettings();
+        CheckRadioButton(hwnd, IDC_LYR_SET_TARGET_MCP, IDC_LYR_SET_TARGET_TCP,
+                         cfg.targetTcp ? IDC_LYR_SET_TARGET_TCP : IDC_LYR_SET_TARGET_MCP);
         CheckDlgButton(hwnd, IDC_LYR_SET_MCPVIS,  cfg.applyMcpVisibility  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_HIDETCP,  cfg.hideTcpToo          ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,  cfg.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
@@ -473,8 +486,23 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             }
         }
         SetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, cfg.globalMaxChannels, FALSE);
+
+        s_hSettingsDlg = hwnd;
+        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
+
+    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+    {
+        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
+        if (r) return r;
+        break;
+    }
+
+    case WM_DESTROY:
+        s_hSettingsDlg = nullptr;
+        break;
 
     case WM_COMMAND:
         switch (LOWORD(wParam))
@@ -482,6 +510,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case IDOK:
         {
             LayersSettings cfg;
+            cfg.targetTcp           = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TARGET_TCP) == BST_CHECKED);
             cfg.applyMcpVisibility  = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_MCPVIS)  == BST_CHECKED);
             cfg.hideTcpToo          = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_HIDETCP)  == BST_CHECKED);
             cfg.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)  == BST_CHECKED);
@@ -771,6 +800,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, 0, &col);
                 col.cx = 40;  col.pszText = const_cast<char*>("Trks");
                 ListView_InsertColumn(hList, 1, &col);
+                LiveTheme_ApplyListView(hList);
                 s_origLayerListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)LayerListSubclassProc);
             }
@@ -801,6 +831,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, 0, &col);
                 col.cx = 200; col.pszText = const_cast<char*>("Track Name");
                 ListView_InsertColumn(hList, 1, &col);
+                LiveTheme_ApplyListView(hList);
                 s_origTrackListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)TrackListSubclassProc);
             }
@@ -816,7 +847,18 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RefreshTrackList(hwnd);
         UpdateStatus(hwnd);
 
+        LiveTheme_ApplyDialog(hwnd);
+
         return TRUE;
+    }
+
+    // -----------------------------------------------------------------------
+    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
+    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+    {
+        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
+        if (r) return r;
+        break;
     }
 
     // -----------------------------------------------------------------------
@@ -970,7 +1012,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
                     bool vis = false;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
+                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
                     if (pv) vis = *pv;
                     int spacerVal = 0;
                     int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
@@ -1015,7 +1058,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
                     bool vis = true;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
+                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
                     if (pv) vis = *pv;
                     if (!vis) continue;
                     GUID* tg = GetTrackGUID(tr);
@@ -1234,7 +1278,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
                     bool vis = true;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr);
+                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
+                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
                     if (pv) vis = *pv;
                     if (!vis) continue;
                     GUID* tg = GetTrackGUID(tr);

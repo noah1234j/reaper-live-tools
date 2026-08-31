@@ -198,6 +198,8 @@ void LayersEngine::DoApplyLayer(int idx)
     if (cfg.applyMcpVisibility)
     {
         // ----- MCP/TCP visibility — O(numTracks) with O(1) map lookup -----
+        const char* primaryAttr = cfg.targetTcp ? "B_SHOWINTCP"   : "B_SHOWINMIXER";
+        const char* otherAttr   = cfg.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP";
         int numTracks = CountTracks(0);
         for (int t = 0; t < numTracks; t++)
         {
@@ -209,13 +211,13 @@ void LayersEngine::DoApplyLayer(int idx)
             auto it = layerSlotMap.find(*tg);
             const bool inLayer = (it != layerSlotMap.end());
 
-            bool showMixer = inLayer;
-            GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMixer);
+            bool showPrimary = inLayer;
+            GetSetMediaTrackInfo(track, primaryAttr, &showPrimary);
 
             if (cfg.hideTcpToo)
             {
-                bool showTcp = inLayer;
-                GetSetMediaTrackInfo(track, "B_SHOWINTCP", &showTcp);
+                bool showOther = inLayer;
+                GetSetMediaTrackInfo(track, otherAttr, &showOther);
             }
 
             // Restore folder open/closed state — no second scan needed
@@ -359,9 +361,9 @@ void LayersEngine::RestoreAllVisible()
         MediaTrack* track = GetTrack(0, t);
         if (!track) continue;
         bool show = true;
-        GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &show);
+        GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", &show);
         if (m_settings.hideTcpToo)
-            GetSetMediaTrackInfo(track, "B_SHOWINTCP", &show);
+            GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP", &show);
         GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
     }
     TrackList_AdjustWindows(false);
@@ -400,8 +402,25 @@ void LayersEngine::MoveLayer(int from, int to)
 // ---------------------------------------------------------------------------
 void LayersEngine::SetSettings(const LayersSettings& s)
 {
+    const bool targetChanged = (s.targetTcp != m_settings.targetTcp);
     m_settings = s;
     m_settings.Save();
+    if (targetChanged)
+    {
+        // Un-hide everything in the previously-targeted panel so tracks don't
+        // stay hidden in a panel layers no longer control. (DoApplyLayer will
+        // re-hide it right after if "also hide other panel" is on.)
+        const char* oldAttr = s.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP";
+        int n = CountTracks(0);
+        for (int t = 0; t < n; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            if (!tr) continue;
+            bool show = true;
+            GetSetMediaTrackInfo(tr, oldAttr, &show);
+        }
+        TrackList_AdjustWindows(false);
+    }
     // Re-apply if active
     if (m_activeLayer >= 0)
         DoApplyLayer(m_activeLayer);
@@ -1078,14 +1097,15 @@ void LayersEngine::ResetForProject()
 //   >
 void LayersEngine::SaveConfig(ProjectStateContext* ctx)
 {
-    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d",
+    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d",
                  m_nextUid, m_activeLayer,
                  m_settings.applyMcpVisibility  ? 1 : 0,
                  m_settings.hideTcpToo          ? 1 : 0,
                  m_settings.reorderTracks       ? 1 : 0,
                  m_settings.restoreOnDeactivate ? 1 : 0,
                  m_settings.globalMaxChannels,
-                 m_settings.triggerMcpSelect    ? 1 : 0);
+                 m_settings.triggerMcpSelect    ? 1 : 0,
+                 m_settings.targetTcp           ? 1 : 0);
 
     for (const auto& ld : m_layers)
     {
@@ -1126,9 +1146,9 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
 {
     if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
 
-    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0, trigmcpsel = 0;
-    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d",
-           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel);
+    int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0, trigmcpsel = 0, targettcp = 0;
+    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d",
+           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel, &targettcp);
 
     m_nextUid = (nextuid >= 1) ? nextuid : 1;
     m_settings.applyMcpVisibility  = (mcpvis  != 0);
@@ -1137,6 +1157,7 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     m_settings.restoreOnDeactivate = (restore != 0);
     m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
     m_settings.triggerMcpSelect    = (trigmcpsel != 0);
+    m_settings.targetTcp           = (targettcp != 0);
     m_layers.clear();
 
     char subline[4096];

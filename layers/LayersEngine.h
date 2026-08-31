@@ -38,8 +38,9 @@ struct LayerDef
 // ---------------------------------------------------------------------------
 struct LayersSettings
 {
+    bool targetTcp           = false; // false = layers control MCP (mixer), true = TCP (track panel)
     bool applyMcpVisibility  = true;
-    bool hideTcpToo          = false;
+    bool hideTcpToo          = false; // also apply visibility to the non-target panel
     bool reorderTracks       = false;
     bool restoreOnDeactivate = true;
     int  globalMaxChannels   = 0;   // 0 = unlimited; applies to all layers
