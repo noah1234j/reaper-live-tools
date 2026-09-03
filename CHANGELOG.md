@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.0.26-beta] — 2026-09-03
 
 ### New Features
 
@@ -9,6 +9,10 @@
   Support is probed once per session via `GetTrackNumSends(tr, 0x10000001)`; on REAPER older than v7.75 nothing is captured, the Slots safe is disabled, and behavior is unchanged. Scenes saved before this build, and scenes saved on a pre-7.75 build, carry no slot data and are left alone on recall rather than clearing slots you placed by hand — **re-save a scene once on v7.75+ to start capturing its slot layout.** Duplicate slot claims within one scene resolve first-come-first-served. Slot positions are purely visual: they are applied instantly on both the instant and timed paths, and no audio parameter is touched.
 
   Not covered: Layouts snapshots (they intentionally never enumerate FX or sends), and the master track's MIDI hardware-output slot (`I_MIDIHWOUT_SLOT`), which Live Tools does not capture.
+
+### Bug Fixes
+
+- **macOS: dialogs were missing controls added since v0.0.23-beta**: The SWELL dialog resources for the Apple build are generated from `reaper_transitions.rc` into a checked-in `.rc_mac_dlg` file, and that file had not been regenerated since the Layers MCP/TCP option was added. The macOS build was therefore missing the "Layers control" radio group and the resized Layers Settings dialog. Regenerated, which also picks up the new Slots safe checkbox. Windows was unaffected (it compiles the `.rc` directly).
 
 ---
 
