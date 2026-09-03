@@ -116,6 +116,7 @@
 #define IDC_GSAFE_ORDER          2220
 #define IDC_GSAFE_LAYERS         2221
 #define IDC_GSAFE_ALL            2222
+#define IDC_GSAFE_SLOTS          2224
 
 // ---- Duration debug checkbox (Global Settings) ---------------------------
 #define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox

@@ -68,7 +68,8 @@ static const int k_colWidth[COL_COUNT] = {
 static const int k_allBits =
     TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
     TS_FXPARAMS | TS_FXCHAIN | TS_VIS | TS_SELECTION |
-    TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_LAYERS;
+    TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_LAYERS |
+    TS_FXSLOTS;
 
 // ---------------------------------------------------------------------------
 // Per-track ListView columns: subset that omits Vis / Sel / Height / Order.
@@ -490,6 +491,11 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (g_globalSafeMask & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (g_globalSafeMask & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS) ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  (g_globalSafeMask & TS_FXSLOTS)     ? BST_CHECKED : BST_UNCHECKED);
+        // Slot positions only exist on REAPER v7.75+; disable rather than hide
+        // so the control keeps its place in the row on older builds.
+        if (!LT_SlotHintsSupported())
+            EnableWindow(GetDlgItem(hDlg, IDC_GSAFE_SLOTS), FALSE);
 
         // "All Tracks" checkbox – checked if every track row has all per-track bits set
         {
@@ -530,7 +536,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         static const int k_gsIds[] = {
             IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO, IDC_GSAFE_PHASE,
             IDC_GSAFE_FX,  IDC_GSAFE_VIS, IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT,
-            IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_ALL
+            IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS, IDC_GSAFE_ALL
         };
         static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1, 2,2,2 };
         static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4, 0,1,2 };
@@ -590,6 +596,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, BST_UNCHECKED);
+            CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_ALL,    BST_UNCHECKED);
             if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
             MarkProjectDirty(nullptr);
@@ -608,6 +615,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         case IDC_GSAFE_HEIGHT: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_HEIGHT) == BST_CHECKED) g_globalSafeMask |= TS_TRACKHEIGHT; else g_globalSafeMask &= ~TS_TRACKHEIGHT; MarkProjectDirty(nullptr); break;
         case IDC_GSAFE_ORDER:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ORDER)  == BST_CHECKED) g_globalSafeMask |= TS_TRACKORDER;  else g_globalSafeMask &= ~TS_TRACKORDER;  MarkProjectDirty(nullptr); break;
         case IDC_GSAFE_LAYERS: if (IsDlgButtonChecked(hDlg, IDC_GSAFE_LAYERS) == BST_CHECKED) g_globalSafeMask |= TS_LAYERS;      else g_globalSafeMask &= ~TS_LAYERS;      MarkProjectDirty(nullptr); break;
+        case IDC_GSAFE_SLOTS:  if (IsDlgButtonChecked(hDlg, IDC_GSAFE_SLOTS)  == BST_CHECKED) g_globalSafeMask |= TS_FXSLOTS;    else g_globalSafeMask &= ~TS_FXSLOTS;    MarkProjectDirty(nullptr); break;
 
         case IDC_GSAFE_ALL:
             if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ALL) == BST_CHECKED)

@@ -51,13 +51,30 @@ static const int TS_TRACKCOLOR  = 0x1000; // track colour (I_CUSTOMCOLOR)
 static const int TS_TRACKHEIGHT = 0x2000; // TCP height override
 static const int TS_TRACKORDER  = 0x4000; // track order within the project
 static const int TS_LAYERS      = 0x8000; // active layer (LayersEngine)
+static const int TS_FXSLOTS     = 0x10000;// TCP/MCP empty-slot positions for FX and sends
+                                          // (REAPER v7.75+; purely visual, applied instantly)
 
 // Convenience presets
 static const int TS_MIX    = (TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_FXPARAMS | TS_PHASE);
-static const int TS_LAYOUT = (TS_VIS | TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER);
+static const int TS_LAYOUT = (TS_VIS | TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_FXSLOTS);
 
 // Default mask used when capturing a new snapshot (everything useful, live-safe)
 static const int TS_CAPTURE_ALL = (TS_MIX | TS_FXCHAIN | TS_LAYOUT | TS_SENDS);
+
+// ---------------------------------------------------------------------------
+// Slot-hint capability probe (REAPER v7.75+)
+//
+// REAPER v7.75 added "allow empty slots in TCP/MCP FX/send lists": FX and sends
+// keep a *slot* position independent of their (still dense) chain/send index.
+// GetTrackNumSends(tr, 0x10000001) returns 0x10000000 on builds that support
+// UI-ordered lists and 0 on older ones, which is a cheaper and more reliable
+// probe than parsing GetAppVersion(). Result is cached after the first call.
+//
+// Writing slot_hint / I_SLOT_HINT on an older build is harmless (the parameter
+// is simply not recognised), so this gates UI affordances and pointless work
+// rather than protecting against a crash.
+// ---------------------------------------------------------------------------
+bool LT_SlotHintsSupported();
 
 // ---------------------------------------------------------------------------
 // Taper laws for timed transitions
@@ -86,6 +103,11 @@ struct SendState
     double pan       = 0.0;    // D_PAN
     bool   mute      = false;  // B_MUTE
     int    sendMode  = 0;      // I_SENDMODE (0=post-fader, 1=pre-fx, 3=pre-fader)
+
+    // TCP/MCP slot position (I_SLOT_HINT, REAPER v7.75+). -1 = unhinted, which is
+    // also what pre-7.75 REAPER and pre-slot-support snapshots yield. Track sends
+    // and hardware outputs share ONE slot space in the panel list.
+    int    slotHint  = -1;
 };
 
 // ---------------------------------------------------------------------------
@@ -95,7 +117,13 @@ struct FXState
 {
     char   name[256]  = {};  // display name (fallback identity for old snapshots)
     char   fxIdent[512] = {}; // precise plugin identity e.g. "VST3:{GUID}:Name"
-    int    slotIndex  = 0;   // captured slot index (fast-path hint)
+    int    slotIndex  = 0;   // captured chain index (fast-path identity hint)
+
+    // TCP/MCP slot position ("slot_hint", REAPER v7.75+). Distinct from slotIndex:
+    // the chain index stays dense, the slot is where the plugin sits in the panel
+    // grid when "allow empty slots" is on. -1 = unhinted (also the value for
+    // pre-7.75 REAPER and snapshots saved before slot support).
+    int    slotHint   = -1;
     int    paramCount = 0;   // identity key (fallback, with name)
     bool   enabled    = true;// FX bypass state
 

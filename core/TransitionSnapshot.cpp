@@ -22,6 +22,28 @@ TransitionSnapshot::TransitionSnapshot(int slot, const char* name)
 }
 
 // ---------------------------------------------------------------------------
+// LT_SlotHintsSupported – see TransitionSnapshot.h
+//
+// 0x10000001 is a query, not a real category: REAPER v7.75+ answers 0x10000000
+// (the UI-ordered-list category), older builds fall through their category
+// switch and answer 0. Probed against the master track, which always exists.
+// ---------------------------------------------------------------------------
+bool LT_SlotHintsSupported()
+{
+    static int s_cached = -1;   // -1 = not probed yet
+    if (s_cached < 0)
+    {
+        if (!GetMasterTrack || !GetTrackNumSends) return false;
+        MediaTrack* mt = GetMasterTrack(nullptr);
+        // No project yet (very early init): answer false but do NOT cache it,
+        // or the whole session would be stuck reporting "unsupported".
+        if (!mt) return false;
+        s_cached = (GetTrackNumSends(mt, 0x10000001) == 0x10000000) ? 1 : 0;
+    }
+    return s_cached == 1;
+}
+
+// ---------------------------------------------------------------------------
 // Helpers: GUID <-> string (Windows-only, no WDL required)
 // ---------------------------------------------------------------------------
 static std::string GuidToString(const GUID& g)
@@ -85,6 +107,10 @@ void TransitionSnapshot::Capture(int mask)
 {
     m_mask = mask;
     m_tracks.clear();
+
+    // TCP/MCP slot positions (REAPER v7.75+). Probed once; on older builds the
+    // reads below would just fail per-item, so skip them entirely.
+    const bool captureSlots = (mask & TS_FXSLOTS) && LT_SlotHintsSupported();
 
     const int numTracks = GetNumTracks();
     m_tracks.reserve(numTracks);
@@ -203,6 +229,18 @@ void TransitionSnapshot::Capture(int mask)
                 TrackFX_GetNamedConfigParm(tr, fx, "fx_ident", fs.fxIdent, (int)sizeof(fs.fxIdent));
                 fs.slotIndex  = fx;
                 fs.enabled    = TrackFX_GetEnabled(tr, fx);
+                if (captureSlots)
+                {
+                    // "slot_hint" is absent (call fails) when the plugin has no
+                    // explicit slot; leave slotHint at -1 in that case. Parse
+                    // strictly, so an unexpected non-numeric reply cannot be
+                    // mistaken for a claim on slot 0.
+                    char sh[64] = {};
+                    int  shv = -1;
+                    if (TrackFX_GetNamedConfigParm(tr, fx, "slot_hint", sh, (int)sizeof(sh))
+                        && sscanf(sh, "%d", &shv) == 1)
+                        fs.slotHint = (shv >= 0) ? shv : -1;
+                }
                 {
                     int wi = TrackFX_GetParamFromIdent(tr, fx, ":wet");
                     fs.wetVal = (wi >= 0) ? TrackFX_GetParamNormalized(tr, fx, wi) : 1.0;
@@ -272,6 +310,11 @@ void TransitionSnapshot::Capture(int mask)
                 if (ps) ss.sendMode = *ps;
                 if (psc) ss.srcChan = *psc;
                 if (pdc) ss.dstChan = *pdc;
+                if (captureSlots)
+                {
+                    int* psh = (int*)GetSetTrackSendInfo(tr, 0, si, "I_SLOT_HINT", nullptr);
+                    if (psh) ss.slotHint = *psh;
+                }
                 ts.sends.push_back(ss);
             }
             // Hardware outputs (category 1)
@@ -290,6 +333,11 @@ void TransitionSnapshot::Capture(int mask)
                 if (pv) ss.vol       = *pv;
                 if (pp) ss.pan       = *pp;
                 if (pm) ss.mute      = *pm;
+                if (captureSlots)
+                {
+                    int* psh = (int*)GetSetTrackSendInfo(tr, 1, si, "I_SLOT_HINT", nullptr);
+                    if (psh) ss.slotHint = *psh;
+                }
                 ts.sends.push_back(ss);
             }
         }
@@ -526,6 +574,10 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                          safeFxName.c_str());
             if (fx.fxIdent[0])
                 ctx->AddLine("FXIDENT %s", fx.fxIdent);
+            // Slot hint is written only when set, so scenes captured on
+            // pre-7.75 REAPER stay byte-identical to the old format.
+            if (fx.slotHint >= 0)
+                ctx->AddLine("FXSLOT %d", fx.slotHint);
 
             if (!fx.fxChunk.empty())
             {
@@ -589,20 +641,22 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
             ctx->AddLine("FXCHAINEND");
         }
 
-        // Sends: SEND {guid} vol pan mute sendMode srcChan dstChan  /  SEND_HW dstchan vol pan mute srcChan
+        // Sends: SEND {guid} vol pan mute sendMode srcChan dstChan slotHint
+        //     /  SEND_HW dstchan vol pan mute srcChan slotHint
         for (const auto& ss : ts.sends)
         {
             if (ss.isHW)
             {
-                ctx->AddLine("SEND_HW %d %.17g %.17g %d %d",
-                             ss.hwDstChan, ss.vol, ss.pan, (int)ss.mute, ss.hwSrcChan);
+                ctx->AddLine("SEND_HW %d %.17g %.17g %d %d %d",
+                             ss.hwDstChan, ss.vol, ss.pan, (int)ss.mute, ss.hwSrcChan,
+                             ss.slotHint);
             }
             else
             {
                 std::string sg = GuidToString(ss.destGuid);
-                ctx->AddLine("SEND %s %.17g %.17g %d %d %d %d",
+                ctx->AddLine("SEND %s %.17g %.17g %d %d %d %d %d",
                              sg.c_str(), ss.vol, ss.pan, (int)ss.mute, ss.sendMode,
-                             ss.srcChan, ss.dstChan);
+                             ss.srcChan, ss.dstChan, ss.slotHint);
             }
         }
 
@@ -878,6 +932,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                 p += consumed;
             }
         }
+        else if (strncmp(trimmed, "FXSLOT ", 7) == 0)
+        {
+            int sh = -1;
+            sscanf(trimmed + 7, "%d", &sh);
+            curFX.slotHint = (sh >= 0) ? sh : -1;
+        }
         else if (strncmp(trimmed, "FXIDENT ", 8) == 0)
         {
             strncpy(curFX.fxIdent, trimmed + 8, (int)sizeof(curFX.fxIdent) - 1);
@@ -920,25 +980,30 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         }
         else if (strncmp(trimmed, "SEND ", 5) == 0 && !isdigit((unsigned char)trimmed[5]) && trimmed[5] != '-')
         {
-            // "SEND {guid} vol pan mute sendMode [srcChan dstChan]" (srcChan/dstChan added later; default 0 for old snapshots)
+            // "SEND {guid} vol pan mute sendMode [srcChan dstChan] [slotHint]"
+            // (trailing fields added in later versions; absent ones keep their
+            //  SendState defaults — 0 for channels, -1 for slotHint)
             SendState ss;
             ss.isHW = false;
             char sguid[64] = "";
             int mute = 0;
-            sscanf(trimmed + 5, "%63s %lf %lf %d %d %d %d",
-                   sguid, &ss.vol, &ss.pan, &mute, &ss.sendMode, &ss.srcChan, &ss.dstChan);
+            sscanf(trimmed + 5, "%63s %lf %lf %d %d %d %d %d",
+                   sguid, &ss.vol, &ss.pan, &mute, &ss.sendMode, &ss.srcChan, &ss.dstChan,
+                   &ss.slotHint);
             ss.mute     = (mute != 0);
             ss.destGuid = StringToGuid(sguid);
             curTrack.sends.push_back(ss);
         }
         else if (strncmp(trimmed, "SEND_HW ", 8) == 0)
         {
-            // "SEND_HW dstchan vol pan mute [srcChan]" (srcChan added later; default 0 for old snapshots)
+            // "SEND_HW dstchan vol pan mute [srcChan] [slotHint]"
+            // (trailing fields added in later versions; absent ones keep their
+            //  SendState defaults — 0 for srcChan, -1 for slotHint)
             SendState ss;
             ss.isHW = true;
             int mute = 0;
-            sscanf(trimmed + 8, "%d %lf %lf %d %d",
-                   &ss.hwDstChan, &ss.vol, &ss.pan, &mute, &ss.hwSrcChan);
+            sscanf(trimmed + 8, "%d %lf %lf %d %d %d",
+                   &ss.hwDstChan, &ss.vol, &ss.pan, &mute, &ss.hwSrcChan, &ss.slotHint);
             ss.mute = (mute != 0);
             curTrack.sends.push_back(ss);
         }

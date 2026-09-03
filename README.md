@@ -37,9 +37,10 @@ The core feature. Scenes are full-project mix snapshots — every track's volume
 |---|---|
 | **Timed transitions** | Fade smoothly between scenes over a configurable time (0 = instant). Runs on REAPER's main-thread timer — no audio interruptions or dropouts. |
 | **Taper laws** | Linear, S-curve (default), Log, Exp, or Custom power-law exponent configured per scene. |
-| **Per-parameter mask** | Choose exactly which parameter types a scene contains: Vol, Pan, Mute, Solo, Phase, FX Params, FX Chain, Visibility, Selection, Track Order, Track Name, Track Color, Height. |
+| **Per-parameter mask** | Choose exactly which parameter types a scene contains: Vol, Pan, Mute, Solo, Phase, FX Params, FX Chain, Visibility, Selection, Track Order, Track Name, Track Color, Height, Slots. |
 | **30 assignable action slots** | Recall or overwrite any scene slot directly from a key, MIDI, or OSC event without touching the UI. |
 | **Safes** | Global or per-track protection masks prevent specific parameters from being touched during recall, even mid-transition. |
+| **Empty slot positions** | On REAPER v7.75+, scenes remember where each FX and send sits in the TCP/MCP panel grid ("allow empty slots"), so a recall that adds or swaps a plugin puts it back in its authored slot instead of collapsing your layout. Safe it with the **Slots** checkbox. |
 | **Persisted in the project** | Scenes are written inside the `.RPP` file — no sidecar files to lose. |
 
 ---

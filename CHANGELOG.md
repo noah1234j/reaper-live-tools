@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- **Scenes: honor REAPER's empty FX/send slots (v7.75+)**: REAPER v7.75 added "allow empty slots in TCP/MCP FX lists" and the equivalent for sends, giving every FX and send a *slot* position in the panel grid that is independent of its (still dense) chain or send index. Scenes previously knew nothing about it: any recall that added, swapped or recreated a plugin or send appended it, silently collapsing a deliberately laid-out grid — the limiter parked in slot 10 would jump up behind whatever was added. Scenes now capture each FX's `slot_hint` and each send's `I_SLOT_HINT` and restore them after the chain and routing have settled, under a new **Slots** mask bit (included in the default capture mask, and safe-able from Global Safes).
+
+  Support is probed once per session via `GetTrackNumSends(tr, 0x10000001)`; on REAPER older than v7.75 nothing is captured, the Slots safe is disabled, and behavior is unchanged. Scenes saved before this build, and scenes saved on a pre-7.75 build, carry no slot data and are left alone on recall rather than clearing slots you placed by hand — **re-save a scene once on v7.75+ to start capturing its slot layout.** Duplicate slot claims within one scene resolve first-come-first-served. Slot positions are purely visual: they are applied instantly on both the instant and timed paths, and no audio parameter is touched.
+
+  Not covered: Layouts snapshots (they intentionally never enumerate FX or sends), and the master track's MIDI hardware-output slot (`I_MIDIHWOUT_SLOT`), which Live Tools does not capture.
+
+---
+
 ## [v0.0.25-beta] — 2026-08-31
 
 ### New Features

@@ -259,6 +259,7 @@ BEGIN
     CONTROL "Height", IDC_GSAFE_HEIGHT, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 132, 34, 52, 10
     CONTROL "Order",  IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 196, 34, 48, 10
     CONTROL "Layers", IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 256, 34, 48, 10
+    CONTROL "Slots",  IDC_GSAFE_SLOTS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 316, 34, 48, 10
 
     // ---- Per-track safes -------------------------------------------------
     CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",

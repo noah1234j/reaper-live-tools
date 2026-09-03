@@ -359,6 +359,147 @@ static void EnforceFXOrder(MediaTrack* tr,
 }
 
 // ---------------------------------------------------------------------------
+// Slot hints (REAPER v7.75+, "allow empty slots in TCP/MCP FX/send lists")
+//
+// A slot is where an FX or send sits in the track/mixer panel grid; it is
+// independent of the chain index (FX) or send index, both of which stay dense.
+// Restoring it is therefore purely visual — no audio path is touched — but it
+// matters live: an engineer who parks EQ in slot 1 and a limiter in slot 10
+// expects a scene recall to put them back there, not to collapse the grid.
+//
+// Both helpers are no-ops unless the snapshot actually carries slot data. That
+// matters for scenes captured on a pre-7.75 build: TS_FXSLOTS is in their mask
+// (it rides in TS_CAPTURE_ALL) but every hint is -1, and clearing the user's
+// hand-placed slots off the back of a scene that never recorded any would be
+// worse than doing nothing.
+// ---------------------------------------------------------------------------
+
+// Write slot_hint, clamping duplicates away. REAPER accepts at most one FX per
+// slot; a snapshot can contain collisions after partial recalls, plugin
+// substitutions or hand-edited projects, so first-in-snapshot-order wins.
+static bool ClaimSlot(std::vector<int>& claimed, int slot)
+{
+    if (slot < 0) return true;   // "no hint" never collides
+    if (std::find(claimed.begin(), claimed.end(), slot) != claimed.end())
+        return false;
+    claimed.push_back(slot);
+    return true;
+}
+
+static void ApplyFXSlotHints(MediaTrack* tr, const std::vector<FXState>& targetFX)
+{
+    if (!LT_SlotHintsSupported()) return;
+
+    bool hasAny = false;
+    for (const auto& fxs : targetFX)
+        if (fxs.slotHint >= 0) { hasAny = true; break; }
+    if (!hasAny) return;
+
+    // Resolve snapshot entries against the live chain by identity, not by index:
+    // SyncFXChain/EnforceFXOrder have just run, but parked-offline plugins held
+    // for other scenes sit in the chain too and shift everything after them.
+    const int nLive = TrackFX_GetCount(tr);
+    std::unordered_map<std::string, int> byIdent;
+    std::unordered_map<std::string, int> byNameCount;
+    for (int i = 0; i < nLive; ++i)
+    {
+        char ident[512] = {}, name[256] = {};
+        TrackFX_GetNamedConfigParm(tr, i, "fx_ident", ident, (int)sizeof(ident));
+        TrackFX_GetFXName(tr, i, name, (int)sizeof(name));
+        if (ident[0]) byIdent.emplace(ident, i);
+        char key[768];
+        snprintf(key, sizeof(key), "%s\x01%d", name, TrackFX_GetNumParams(tr, i));
+        byNameCount.emplace(key, i);
+    }
+
+    std::vector<int> claimed;
+    claimed.reserve(targetFX.size());
+    for (const auto& fxs : targetFX)
+    {
+        int idx = -1;
+        if (fxs.fxIdent[0])
+        {
+            auto it = byIdent.find(fxs.fxIdent);
+            if (it != byIdent.end()) idx = it->second;
+        }
+        if (idx < 0)
+        {
+            char key[768];
+            snprintf(key, sizeof(key), "%s\x01%d", fxs.name, fxs.paramCount);
+            auto it = byNameCount.find(key);
+            if (it != byNameCount.end()) idx = it->second;
+        }
+        if (idx < 0) continue;               // plugin not present (not installed?)
+        if (!ClaimSlot(claimed, fxs.slotHint)) continue;
+
+        // A captured hint of -1 is written through deliberately: the scene
+        // recorded this plugin as unslotted, so recall un-slots it. (Reaching
+        // here at all means the scene carries real slot data — see hasAny.)
+        char val[32];
+        snprintf(val, sizeof(val), "%d", fxs.slotHint);
+        TrackFX_SetNamedConfigParm(tr, idx, "slot_hint", val);
+    }
+}
+
+static void ApplySendSlotHints(MediaTrack* tr, const std::vector<SendState>& sends)
+{
+    if (!LT_SlotHintsSupported()) return;
+
+    bool hasAny = false;
+    for (const auto& ss : sends)
+        if (ss.slotHint >= 0) { hasAny = true; break; }
+    if (!hasAny) return;
+
+    // Track sends and hardware outputs are separate API categories but share a
+    // single slot space in the panel list, so both are resolved up front and
+    // collisions are checked across the two.
+    std::map<GUID, int, GUIDLess> liveSends;
+    {
+        const int n = GetTrackNumSends(tr, 0);
+        for (int si = 0; si < n; ++si)
+        {
+            MediaTrack* dest = (MediaTrack*)GetSetTrackSendInfo(tr, 0, si, "P_DESTTRACK", nullptr);
+            if (!dest) continue;
+            GUID* pg = (GUID*)GetSetMediaTrackInfo(dest, "GUID", nullptr);
+            if (pg) liveSends.emplace(*pg, si);
+        }
+    }
+    std::map<int, int> liveHWSends;
+    {
+        const int n = GetTrackNumSends(tr, 1);
+        for (int si = 0; si < n; ++si)
+        {
+            int* pc = (int*)GetSetTrackSendInfo(tr, 1, si, "I_DSTCHAN", nullptr);
+            if (pc) liveHWSends.emplace(*pc, si);
+        }
+    }
+
+    std::vector<int> claimed;
+    claimed.reserve(sends.size());
+    for (const auto& ss : sends)
+    {
+        const int cat = ss.isHW ? 1 : 0;
+        int si = -1;
+        if (ss.isHW)
+        {
+            auto it = liveHWSends.find(ss.hwDstChan);
+            if (it != liveHWSends.end()) si = it->second;
+        }
+        else
+        {
+            auto it = liveSends.find(ss.destGuid);
+            if (it != liveSends.end()) si = it->second;
+        }
+        if (si < 0) continue;                // send absent (dest track gone?)
+        if (!ClaimSlot(claimed, ss.slotHint)) continue;
+
+        // As above: -1 is a meaningful captured value, not "skip".
+        int sh = ss.slotHint;
+        GetSetTrackSendInfo(tr, cat, si, "I_SLOT_HINT", &sh);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SyncFXChain – align the track's FX chain to match the snapshot.
 //
 // timed=false (instant): add/remove/enable immediately.
@@ -941,6 +1082,11 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 TrackFX_SetNamedConfigParm(tr, fx, "chain_bypass_delta", "0");
         }
 
+        // TCP/MCP slot positions – after the chain is final, so identity lookups
+        // see the plugins this scene actually wants.
+        if (effMask & TS_FXSLOTS)
+            ApplyFXSlotHints(tr, ts.fx);
+
         // Whole-chain FX bypass (master bypass button), distinct from per-plugin bypass above
         if (effMask & TS_FXPARAMS)
         {
@@ -1106,6 +1252,11 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             }
             if (g_durationDebug) lastTimings.i_sends += QpcMs() - tSend0;
         }
+
+        // Send slot positions – after adds and removals, so every surviving
+        // send is present and resolvable by identity.
+        if (effMask & TS_FXSLOTS)
+            ApplySendSlotHints(tr, ts.sends);
     }
 
     // Track reordering – must happen after all per-track property updates
@@ -1694,6 +1845,10 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         double tfx0 = QpcMs();
         if (effMask & (TS_FXPARAMS | TS_FXCHAIN))
             SyncFXChain(tr, ts, true /*timed*/, m_wetLerps);
+        // Slot positions are visual, so they land at t=0 like every other
+        // layout property rather than being animated.
+        if (effMask & TS_FXSLOTS)
+            ApplyFXSlotHints(tr, ts.fx);
         tFXChain += QpcMs() - tfx0;
 
         // Sends routing – apply at t=0 (same guard as TS_FXCHAIN)
@@ -1805,6 +1960,13 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
 
             // Removal of sends absent from snapshot is deferred to BuildLerpLists (pendingRemove SendLerps).
         }
+
+        // Send slot positions. Unlike the instant path this runs while sends
+        // that are still fading out are present; that is harmless, because a
+        // slot hint is an attribute of a send rather than a position in a
+        // dense list, so a later removal does not disturb the hints we set.
+        if (effMask & TS_FXSLOTS)
+            ApplySendSlotHints(tr, ts.sends);
         tSends += QpcMs() - ts0;
     } // end per-track timed loop
 
