@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.0.27-beta] — 2026-09-05
+
+### Bug Fixes
+
+- **Reverted the REAPER-theme light/dark UI theming (v0.0.25-beta)**: The shared LiveTheme module recolored every window from the active REAPER theme, and in the Scenes window it left the scene list wrong — rows, text and spacer separators no longer read correctly against the list background. Rather than patch around it, the whole theming change is backed out: LiveTheme is removed and every window (Scenes and its child dialogs, Safes, Layers, Mute Groups, Live Optimizer, DCA Groups, LiveLock, Live Monitor, Meter Bridge) renders exactly as it did in v0.0.24-beta, with its previous fixed palette. Nothing else from v0.0.25 or v0.0.26 is affected — the Layers MCP/TCP option, the multi-project-tab state handling, and the v7.75 FX/send slot support all remain.
+
+---
+
 ## [v0.0.26-beta] — 2026-09-03
 
 ### New Features

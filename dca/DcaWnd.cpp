@@ -22,7 +22,6 @@
 #include "api.h"
 #include "DcaEngine.h"
 #include "DcaGroup.h"
-#include "LiveTheme.h"
 #include "resource.h"
 
 #ifdef _WIN32
@@ -164,8 +163,6 @@ static int       s_hotZone  = kRH_None;  // zone within hot row
 
 static LRESULT CALLBACK ListWndProc(HWND, UINT, WPARAM, LPARAM);
 static INT_PTR CALLBACK DcaDlgProc(HWND, UINT, WPARAM, LPARAM);
-static void RefreshPalette();
-static void OnThemeChanged();
 static void CreateListArea(HWND dlg);
 static void RepositionListArea(HWND dlg);
 static void UpdateScrollInfo();
@@ -186,9 +183,6 @@ void DcaWnd_Init(HINSTANCE hInstance)
 {
     g_hInst = hInstance;
     DcaWnd_ResetSettings();  // defaults; actual values loaded per-project via ProcessLine
-
-    RefreshPalette();
-    LiveTheme_RegisterCallback(OnThemeChanged);
 
 #ifdef _WIN32
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
@@ -414,160 +408,48 @@ static RowHit HitTestRow(int mouseX, int mouseY, int& outRow)
 // Drawing helpers
 // ---------------------------------------------------------------------------
 
-// Hand-tuned palette; RefreshPalette() fills these with the dark or light
-// variant per LiveTheme_IsLight(), on init and on every theme switch.
+// REAPER-palette neutral darks
+static const COLORREF kC_BgMain    = RGB(26,  26,  26);   // main background
+static const COLORREF kC_BgEven    = RGB(32,  32,  32);   // even row
+static const COLORREF kC_BgOdd     = RGB(37,  37,  37);   // odd row
+static const COLORREF kC_BgHot     = RGB(44,  54,  68);   // hover (muted blue-gray)
+static const COLORREF kC_BgHdr     = RGB(46,  46,  46);   // column header strip
+static const COLORREF kC_BgToolbar = RGB(52,  52,  52);   // top toolbar
 
-// Neutral backgrounds
-static COLORREF kC_BgMain;     // main background
-static COLORREF kC_BgEven;     // even row
-static COLORREF kC_BgOdd;      // odd row
-static COLORREF kC_BgHot;      // hover (muted blue tint)
-static COLORREF kC_BgHdr;      // column header strip
-static COLORREF kC_BgToolbar;  // top toolbar
-
-static COLORREF kC_TextMain;   // primary text
-static COLORREF kC_TextLight;  // alias
-static COLORREF kC_TextDim;    // secondary text
-static COLORREF kC_TextHdr;    // column header labels
+static const COLORREF kC_TextMain  = RGB(220, 220, 220);  // primary text
+static const COLORREF kC_TextLight = RGB(220, 220, 220);  // alias
+static const COLORREF kC_TextDim   = RGB(128, 128, 128);  // secondary text
+static const COLORREF kC_TextHdr   = RGB(158, 158, 158);  // column header labels
 
 // Flat button palette
-static COLORREF kC_BtnBorder;  // button border
-static COLORREF kC_BtnNorm;    // normal button fill
-static COLORREF kC_BtnHot;     // hover button fill
+static const COLORREF kC_BtnBorder = RGB(18,  18,  18);   // button border
+static const COLORREF kC_BtnNorm   = RGB(52,  52,  52);   // normal button fill
+static const COLORREF kC_BtnHot    = RGB(66,  66,  66);   // hover button fill
 
 // Flag toggle states
-static COLORREF kC_FlagOnBg;   // lit fill (blue-gray)
-static COLORREF kC_FlagOnTc;   // lit text
-static COLORREF kC_FlagOffBg;  // unlit fill
-static COLORREF kC_FlagOffTc;  // unlit text
-static COLORREF kC_FlagOn;     // legacy alias
-static COLORREF kC_FlagOff;    // legacy alias
+static const COLORREF kC_FlagOnBg  = RGB(72,  82,  96);   // lit fill (blue-gray)
+static const COLORREF kC_FlagOnTc  = RGB(236, 236, 236);  // lit text
+static const COLORREF kC_FlagOffBg = RGB(42,  42,  42);   // unlit fill
+static const COLORREF kC_FlagOffTc = RGB(100, 100, 100);  // unlit text
+static const COLORREF kC_FlagOn    = RGB(72,  82,  96);   // legacy alias
+static const COLORREF kC_FlagOff   = RGB(42,  42,  42);   // legacy alias
 
 // Action button states
-static COLORREF kC_AssignBg;   // assign normal fill
-static COLORREF kC_AssignTc;   // assign text
-static COLORREF kC_SpillOnBg;  // spill active fill
-static COLORREF kC_SpillOnTc;  // spill active text
-static COLORREF kC_SpillOffTc; // spill inactive text
-static COLORREF kC_SpillOn;    // legacy alias
-static COLORREF kC_SpillOff;   // legacy alias
-static COLORREF kC_DelTc;      // delete text
-static COLORREF kC_DelHotBg;   // delete hover fill
-static COLORREF kC_DelHotTc;   // delete hover text
-static COLORREF kC_DelBg;      // legacy alias
+static const COLORREF kC_AssignBg  = RGB(48,  50,  58);   // assign normal fill
+static const COLORREF kC_AssignTc  = RGB(180, 200, 240);  // assign text
+static const COLORREF kC_SpillOnBg = RGB(88,  66,  12);   // spill active fill
+static const COLORREF kC_SpillOnTc = RGB(248, 196, 50);   // spill active text
+static const COLORREF kC_SpillOffTc= RGB(108, 100, 56);   // spill inactive text
+static const COLORREF kC_SpillOn   = RGB(88,  66,  12);   // legacy alias
+static const COLORREF kC_SpillOff  = RGB(108, 100, 56);   // legacy alias
+static const COLORREF kC_DelTc     = RGB(165, 75,  75);   // delete text
+static const COLORREF kC_DelHotBg  = RGB(100, 28,  28);   // delete hover fill
+static const COLORREF kC_DelHotTc  = RGB(255, 165, 165);  // delete hover text
+static const COLORREF kC_DelBg     = RGB(52,  52,  52);   // legacy alias
 
 // Structure
-static COLORREF kC_NameBg;     // name field inset
-static COLORREF kC_GridLine;   // row separator
-
-// Cached brush for the inline name edit; freed here so it rebuilds from the
-// current kC_NameBg on next use (see WM_CTLCOLOREDIT in ListWndProc).
-static HBRUSH s_hbrNameEdit = nullptr;
-
-static void RefreshPalette()
-{
-    if (s_hbrNameEdit)
-    {
-        DeleteObject(s_hbrNameEdit);
-        s_hbrNameEdit = nullptr;
-    }
-
-    if (!LiveTheme_IsLight())
-    {
-        // REAPER-palette neutral darks
-        kC_BgMain    = RGB(26,  26,  26);   // main background
-        kC_BgEven    = RGB(32,  32,  32);   // even row
-        kC_BgOdd     = RGB(37,  37,  37);   // odd row
-        kC_BgHot     = RGB(44,  54,  68);   // hover (muted blue-gray)
-        kC_BgHdr     = RGB(46,  46,  46);   // column header strip
-        kC_BgToolbar = RGB(52,  52,  52);   // top toolbar
-
-        kC_TextMain  = RGB(220, 220, 220);  // primary text
-        kC_TextLight = RGB(220, 220, 220);  // alias
-        kC_TextDim   = RGB(128, 128, 128);  // secondary text
-        kC_TextHdr   = RGB(158, 158, 158);  // column header labels
-
-        kC_BtnBorder = RGB(18,  18,  18);   // button border
-        kC_BtnNorm   = RGB(52,  52,  52);   // normal button fill
-        kC_BtnHot    = RGB(66,  66,  66);   // hover button fill
-
-        kC_FlagOnBg  = RGB(72,  82,  96);   // lit fill (blue-gray)
-        kC_FlagOnTc  = RGB(236, 236, 236);  // lit text
-        kC_FlagOffBg = RGB(42,  42,  42);   // unlit fill
-        kC_FlagOffTc = RGB(100, 100, 100);  // unlit text
-        kC_FlagOn    = RGB(72,  82,  96);   // legacy alias
-        kC_FlagOff   = RGB(42,  42,  42);   // legacy alias
-
-        kC_AssignBg  = RGB(48,  50,  58);   // assign normal fill
-        kC_AssignTc  = RGB(180, 200, 240);  // assign text
-        kC_SpillOnBg = RGB(88,  66,  12);   // spill active fill
-        kC_SpillOnTc = RGB(248, 196, 50);   // spill active text
-        kC_SpillOffTc= RGB(108, 100, 56);   // spill inactive text
-        kC_SpillOn   = RGB(88,  66,  12);   // legacy alias
-        kC_SpillOff  = RGB(108, 100, 56);   // legacy alias
-        kC_DelTc     = RGB(165, 75,  75);   // delete text
-        kC_DelHotBg  = RGB(100, 28,  28);   // delete hover fill
-        kC_DelHotTc  = RGB(255, 165, 165);  // delete hover text
-        kC_DelBg     = RGB(52,  52,  52);   // legacy alias
-
-        kC_NameBg    = RGB(22,  22,  22);   // name field inset
-        kC_GridLine  = RGB(18,  18,  18);   // row separator
-    }
-    else
-    {
-        // Light counterparts: same roles, accents keep their hue but shift
-        // lightness so they read on a pale background
-        kC_BgMain    = RGB(243, 243, 243);  // main background
-        kC_BgEven    = RGB(255, 255, 255);  // even row
-        kC_BgOdd     = RGB(248, 248, 248);  // odd row
-        kC_BgHot     = RGB(215, 227, 240);  // hover (muted blue tint)
-        kC_BgHdr     = RGB(230, 230, 230);  // column header strip
-        kC_BgToolbar = RGB(235, 235, 235);  // top toolbar
-
-        kC_TextMain  = RGB(25,  25,  25);   // primary text
-        kC_TextLight = RGB(25,  25,  25);   // alias
-        kC_TextDim   = RGB(110, 110, 110);  // secondary text
-        kC_TextHdr   = RGB(96,  96,  96);   // column header labels
-
-        kC_BtnBorder = RGB(176, 176, 176);  // button border
-        kC_BtnNorm   = RGB(232, 232, 232);  // normal button fill
-        kC_BtnHot    = RGB(218, 218, 218);  // hover button fill
-
-        kC_FlagOnBg  = RGB(190, 205, 225);  // lit fill (blue-gray)
-        kC_FlagOnTc  = RGB(24,  42,  72);   // lit text
-        kC_FlagOffBg = RGB(238, 238, 238);  // unlit fill
-        kC_FlagOffTc = RGB(158, 158, 158);  // unlit text
-        kC_FlagOn    = RGB(190, 205, 225);  // legacy alias
-        kC_FlagOff   = RGB(238, 238, 238);  // legacy alias
-
-        kC_AssignBg  = RGB(226, 230, 240);  // assign normal fill
-        kC_AssignTc  = RGB(40,  70,  140);  // assign text
-        kC_SpillOnBg = RGB(250, 232, 180);  // spill active fill
-        kC_SpillOnTc = RGB(140, 96,  10);   // spill active text
-        kC_SpillOffTc= RGB(150, 124, 52);   // spill inactive text
-        kC_SpillOn   = RGB(250, 232, 180);  // legacy alias
-        kC_SpillOff  = RGB(150, 124, 52);   // legacy alias
-        kC_DelTc     = RGB(178, 52,  52);   // delete text
-        kC_DelHotBg  = RGB(240, 200, 200);  // delete hover fill
-        kC_DelHotTc  = RGB(150, 20,  20);   // delete hover text
-        kC_DelBg     = RGB(232, 232, 232);  // legacy alias
-
-        kC_NameBg    = RGB(255, 255, 255);  // name field inset
-        kC_GridLine  = RGB(200, 200, 200);  // row separator
-    }
-}
-
-// Restyle open windows when the REAPER theme flips light<->dark.
-static void OnThemeChanged()
-{
-    RefreshPalette();
-    if (g_dlg && IsWindow(g_dlg))
-    {
-        LiveTheme_ApplyDialog(g_dlg);
-        if (g_listWnd && IsWindow(g_listWnd))
-            InvalidateRect(g_listWnd, nullptr, TRUE);
-    }
-}
+static const COLORREF kC_NameBg    = RGB(22,  22,  22);   // name field inset
+static const COLORREF kC_GridLine  = RGB(18,  18,  18);   // row separator
 
 static void FillRc(HDC hdc, int x, int y, int w, int h, COLORREF c)
 {
@@ -1016,11 +898,10 @@ static LRESULT CALLBACK ListWndProc(HWND hwnd, UINT msg,
     case WM_CTLCOLOREDIT:
     {
         // Style the inline name-edit box to match the REAPER theme
-        // (s_hbrNameEdit lives at file scope; RefreshPalette frees it on
-        // theme change so it rebuilds from the current kC_NameBg)
         HDC hdcEdit = (HDC)wParam;
         SetTextColor(hdcEdit, kC_TextMain);
         SetBkColor(hdcEdit, kC_NameBg);
+        static HBRUSH s_hbrNameEdit = nullptr;
         if (!s_hbrNameEdit) s_hbrNameEdit = CreateSolidBrush(kC_NameBg);
         return (LRESULT)s_hbrNameEdit;
     }
@@ -1281,25 +1162,9 @@ static INT_PTR CALLBACK DcaDlgProc(HWND hwnd, UINT msg,
                 ListView_InsertColumn(g_listWnd, c, &col);
             }
 
-            LiveTheme_ApplyListView(g_listWnd);
-
             RefreshListView(hwnd);
         }
-
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
-    }
-
-    case WM_CTLCOLORDLG:
-    case WM_CTLCOLORSTATIC:
-    case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT:
-    case WM_CTLCOLORLISTBOX:
-    {
-        // Themed brushes for the toolbar strip and standard child controls
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
     }
 
     case WM_SIZE:

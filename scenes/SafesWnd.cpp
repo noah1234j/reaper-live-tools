@@ -3,7 +3,6 @@
 #include "TransitionSnapshot.h"  // TS_* bit flags
 #include "api.h"                 // GetNumTracks, GetTrack, GetSetMediaTrackInfo, etc.
 #include "resource.h"
-#include "LiveTheme.h"
 
 extern bool g_trackSafesEnabled;
 
@@ -246,10 +245,8 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
 
         RECT rcClient;
         GetClientRect(hHdr, &rcClient);
-        // Fill background with the themed dialog color
-        HBRUSH hBgBrush = CreateSolidBrush(LiveTheme_Colors().dlgBg);
-        FillRect(hdc, &rcClient, hBgBrush);
-        DeleteObject(hBgBrush);
+        // Fill background
+        FillRect(hdc, &rcClient, (HBRUSH)(COLOR_BTNFACE + 1));
 
         int itemCount = Header_GetItemCount(hHdr);
 
@@ -264,7 +261,7 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
         HFONT hNormFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, LiveTheme_Colors().dlgText);
+        SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
 
         for (int i = 0; i < itemCount; ++i)
         {
@@ -272,7 +269,7 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
             Header_GetItemRect(hHdr, i, &rcItem);
 
             // Draw separator line
-            HPEN hPen = CreatePen(PS_SOLID, 1, LiveTheme_Colors().listGrid);
+            HPEN hPen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
             HPEN hOld = (HPEN)SelectObject(hdc, hPen);
             MoveToEx(hdc, rcItem.right - 1, rcItem.top, nullptr);
             LineTo(hdc, rcItem.right - 1, rcItem.bottom);
@@ -418,14 +415,6 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
     {
         // Create the ListView dynamically (same pattern as TransitionWnd)
@@ -475,9 +464,6 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         // Subclass the ListView itself for drag-to-check
         SetWindowSubclass(g_hList, SafesListSubclassProc, 2, 0);
 
-        // Themed colors for the dynamically created list view
-        LiveTheme_ApplyListView(g_hList);
-
         // Initialize global safe param checkboxes from g_globalSafeMask
         CheckDlgButton(hDlg, IDC_GSAFE_VOL,    (g_globalSafeMask & TS_VOL)   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_GSAFE_PAN,    (g_globalSafeMask & TS_PAN)   ? BST_CHECKED : BST_UNCHECKED);
@@ -509,7 +495,6 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
             g_trackSafesEnabled ? BST_CHECKED : BST_UNCHECKED);
 
-        LiveTheme_ApplyDialog(hDlg);
         return TRUE;
     }
 
@@ -702,7 +687,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 
                 // Fill background
                 const bool isSelected = (ListView_GetItemState(g_hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-                COLORREF bg = isSelected ? LiveTheme_Colors().hlBg : LiveTheme_Colors().listBg;
+                COLORREF bg = isSelected ? GetSysColor(COLOR_HIGHLIGHT) : GetSysColor(COLOR_WINDOW);
                 SetBkColor(hdc, bg);
                 ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
 
@@ -748,11 +733,6 @@ void SafesWnd_Init(HINSTANCE hInstance)
     g_hDlg  = CreateDialogParamA(hInstance, MAKEINTRESOURCEA(IDD_SAFES),
                                   nullptr, SafesDlgProc, 0);
     if (g_hDlg) SetWindowTextA(g_hDlg, "Live Tools - Safes");
-
-    // Restyle the window whenever the REAPER theme changes while it's open
-    LiveTheme_RegisterCallback([]() {
-        if (g_hDlg && IsWindow(g_hDlg)) LiveTheme_ApplyDialog(g_hDlg);
-    });
 }
 
 void SafesWnd_Cleanup()

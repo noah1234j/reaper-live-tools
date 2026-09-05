@@ -8,7 +8,6 @@
 #include "MonitorWnd.h"
 #include "api.h"
 #include "resource.h"
-#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <windowsx.h>
@@ -323,40 +322,6 @@ static void PollMetrics()
 }
 
 // ---------------------------------------------------------------------------
-// Palette – structural colors for both theme modes.  Dark values are the
-// original hand-tuned colors; light values are their hand-tuned equivalents.
-// LiveTheme_IsLight() picks the variant.  Grade colors (ColorGrade) are
-// traffic-light status colors and stay the same in both modes.
-// ---------------------------------------------------------------------------
-static COLORREF s_colBg      = RGB(30, 30, 30);     // panel background
-static COLORREF s_colSep     = RGB(48, 48, 48);     // row separator lines
-static COLORREF s_colRowFill = RGB(40, 40, 48);     // settings-row fill
-static COLORREF s_colGear    = RGB(140, 140, 165);  // gear glyph
-static COLORREF s_colInfo    = RGB(115, 115, 130);  // device info text
-static COLORREF s_colLabel   = RGB(190, 190, 190);  // metric label text
-static COLORREF s_colValue   = RGB(255, 255, 255);  // metric value text
-
-static void RefreshPalette()
-{
-    const bool light = LiveTheme_IsLight();
-    s_colBg      = light ? RGB(243, 243, 243) : RGB(30, 30, 30);
-    s_colSep     = light ? RGB(210, 210, 210) : RGB(48, 48, 48);
-    s_colRowFill = light ? RGB(228, 228, 236) : RGB(40, 40, 48);
-    s_colGear    = light ? RGB(100, 100, 130) : RGB(140, 140, 165);
-    s_colInfo    = light ? RGB(120, 120, 135) : RGB(115, 115, 130);
-    s_colLabel   = light ? RGB(90, 90, 105)   : RGB(190, 190, 190);
-    s_colValue   = light ? RGB(25, 25, 25)    : RGB(255, 255, 255);
-}
-
-// Runs on the main thread after the REAPER theme flips light<->dark
-static void OnThemeChanged()
-{
-    RefreshPalette();
-    if (s_hwnd && IsWindow(s_hwnd))
-        InvalidateRect(s_hwnd, nullptr, TRUE);
-}
-
-// ---------------------------------------------------------------------------
 // Color helpers
 // ---------------------------------------------------------------------------
 static COLORREF ColorGrade(double v, double y, double o, double r)
@@ -376,11 +341,11 @@ static void DrawRow(HDC hdc, RECT rc, int strip, COLORREF color,
     DeleteObject(hbr);
 
     RECT rLabel = { rc.left + strip + 3, rc.top, rc.right, rc.bottom };
-    SetTextColor(hdc, s_colLabel);
+    SetTextColor(hdc, RGB(190, 190, 190));
     DrawTextA(hdc, label, -1, &rLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
     RECT rVal = { rc.left + strip + 3, rc.top, rc.right - 3, rc.bottom };
-    SetTextColor(hdc, s_colValue);
+    SetTextColor(hdc, RGB(255, 255, 255));
     DrawTextA(hdc, value, -1, &rVal, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 }
 
@@ -401,7 +366,7 @@ static void OnPaint(HWND hwnd)
     HBITMAP hbm    = CreateCompatibleBitmap(hdc, W, H);
     HBITMAP hbmOld = (HBITMAP)SelectObject(hdcMem, hbm);
 
-    HBRUSH hbrBg = CreateSolidBrush(s_colBg);
+    HBRUSH hbrBg = CreateSolidBrush(RGB(30, 30, 30));
     FillRect(hdcMem, &rcClient, hbrBg);
     DeleteObject(hbrBg);
 
@@ -418,7 +383,7 @@ static void OnPaint(HWND hwnd)
     const int rowH   = (H - kSep * (kN - 1)) / kN;
     auto rowY0 = [&](int i) { return i * (rowH + kSep); };
 
-    HBRUSH hbrSep = CreateSolidBrush(s_colSep);
+    HBRUSH hbrSep = CreateSolidBrush(RGB(48, 48, 48));
 
     char v0[24], v1[24], v2[24], v3[24], v4[24];
     snprintf(v0, sizeof(v0), "%.0f%%",  s_m.cpuFraction   * 100.0);
@@ -455,13 +420,13 @@ static void OnPaint(HWND hwnd)
         FillRect(hdcMem, &rs, hbrSep);
 
         RECT rRow = { 0, y0, W, y0 + rowH };
-        HBRUSH hbrRow = CreateSolidBrush(s_colRowFill);
+        HBRUSH hbrRow = CreateSolidBrush(RGB(40, 40, 48));
         FillRect(hdcMem, &rRow, hbrRow);
         DeleteObject(hbrRow);
 
         // Gear symbol (U+2699)
         RECT rGear = { 2, y0, 2 + rowH, y0 + rowH };
-        SetTextColor(hdcMem, s_colGear);
+        SetTextColor(hdcMem, RGB(140, 140, 165));
         DrawTextW(hdcMem, L"\u2699", -1, &rGear,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
@@ -474,7 +439,7 @@ static void OnPaint(HWND hwnd)
             snprintf(infoBuf, sizeof(infoBuf), "No device");
 
         RECT rInfo = { 2 + rowH + 3, y0, W - 3, y0 + rowH };
-        SetTextColor(hdcMem, s_colInfo);
+        SetTextColor(hdcMem, RGB(115, 115, 130));
         DrawTextA(hdcMem, infoBuf, -1, &rInfo,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
@@ -542,18 +507,13 @@ static void CommitSettingsDlg(HWND hDlg)
     SaveThresholds();
 }
 
-static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM)
 {
     switch (msg)
     {
     case WM_INITDIALOG:
         PopulateSettingsDlg(hwnd);
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-        if (INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam)) return r;
-        break;
     case WM_COMMAND:
         switch (LOWORD(wParam))
         {
@@ -684,8 +644,6 @@ static INT_PTR CALLBACK MonitorDlgProc(HWND hwnd, UINT msg,
 void MonitorWnd_Init(HINSTANCE hInst)
 {
     s_hInst = hInst;
-    RefreshPalette();
-    LiveTheme_RegisterCallback(OnThemeChanged);
     QueryPerformanceFrequency(&s_qpcFreq);
     s_audioHook.OnAudioBuffer = OnAudioBuffer;
     Audio_RegHardwareHook(true, &s_audioHook);

@@ -6,7 +6,6 @@
 #include "../layers/LayersWnd.h"
 #include "api.h"
 #include "resource.h"
-#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <commctrl.h>
@@ -164,12 +163,6 @@ void TransitionWnd_Init(HINSTANCE hInstance)
     g_hInstance = hInstance;
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_PROGRESS_CLASS };
     InitCommonControlsEx(&icc);
-
-    // Restyle the window whenever the REAPER theme changes while it's open.
-    // Child dialogs are modal, so re-applying to the main window is sufficient.
-    LiveTheme_RegisterCallback([]() {
-        if (g_wnd && IsWindow(g_wnd)) LiveTheme_ApplyDialog(g_wnd);
-    });
 }
 
 void TransitionWnd_Cleanup()
@@ -1344,14 +1337,6 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
     {
         SnapSettingsData* d = reinterpret_cast<SnapSettingsData*>(lParam);
@@ -1383,8 +1368,6 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
         EnableWindow(GetDlgItem(hwnd, IDC_TAPER),       !d->instant);
         EnableWindow(GetDlgItem(hwnd, IDC_TAPER_CUSTOM),
                      !d->instant && d->taper == TAPER_CUSTOM);
-
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
 
@@ -1471,22 +1454,14 @@ static void RefreshChunkRecallList(HWND hwnd)
 // ---------------------------------------------------------------------------
 static char s_newKeywordBuf[256] = {};
 
-static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
     case WM_INITDIALOG:
         s_newKeywordBuf[0] = '\0';
         SetDlgItemText(hwnd, IDC_AK_EDIT, "");
         SendDlgItemMessage(hwnd, IDC_AK_EDIT, EM_LIMITTEXT, (WPARAM)(sizeof(s_newKeywordBuf) - 1), 0);
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     case WM_COMMAND:
     {
@@ -1516,22 +1491,13 @@ static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 // ---------------------------------------------------------------------------
 // ChunkRecallPluginsDlgProc – IDD_CHUNK_RECALL_PLUGINS dialog
 // ---------------------------------------------------------------------------
-static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
         RefreshChunkRecallList(hwnd);
         CheckDlgButton(hwnd, IDC_CRP_NOTIFY, g_chunkRecallNotify ? BST_CHECKED : BST_UNCHECKED);
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
 
     case WM_COMMAND:
@@ -1601,14 +1567,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
     {
         // Populate taper combobox
@@ -1667,8 +1625,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER),       !instant);
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER_CUSTOM),
                      !instant && g_defaultTaper == TAPER_CUSTOM);
-
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
     case WM_COMMAND:
@@ -1996,14 +1952,6 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
     {
         s_cueEditList = reinterpret_cast<std::vector<int>*>(lParam);
@@ -2049,10 +1997,6 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             ListView_InsertColumn(s_cueRight, 1, &lvc);
         }
 
-        // Themed colors for the dynamically created list views
-        if (s_cueLeft)  LiveTheme_ApplyListView(s_cueLeft);
-        if (s_cueRight) LiveTheme_ApplyListView(s_cueRight);
-
         // Left list: permanent spacer entry at row 0, then all non-spacer scenes
         if (s_cueLeft)
         {
@@ -2094,7 +2038,6 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SetWindowLongPtr(s_cueRight, GWLP_WNDPROC, (LONG_PTR)CueLvSubclassProc);
         }
 
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
 
@@ -2582,14 +2525,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 {
     switch (msg)
     {
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
-
     case WM_INITDIALOG:
     {
         INITCOMMONCONTROLSEX icc;
@@ -2627,9 +2562,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             // Subclass the list for reliable drag-drop mouse tracking
             s_origListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                 hList, GWLP_WNDPROC, (LONG_PTR)ListSubclassProc);
-
-            // Themed colors for the dynamically created list view
-            LiveTheme_ApplyListView(hList);
         }
 
         // ---- Create ProgressBar dynamically --------------------------------
@@ -2707,8 +2639,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 hChild = GetWindow(hChild, GW_HWNDNEXT);
             }
         }
-
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
 
@@ -3004,9 +2934,8 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     if (itm >= 0 && itm < (int)g_snapshots.size() &&
                         g_snapshots[itm]->m_isSpacer)
                     {
-                        // Spacer rows: dialog background with muted separator-line text
-                        cd->clrTextBk = LiveTheme_Colors().dlgBg;
-                        cd->clrText   = LiveTheme_Colors().listGrid;
+                        cd->clrTextBk = GetSysColor(COLOR_BTNFACE);
+                        cd->clrText   = GetSysColor(COLOR_GRAYTEXT);
                         SetWindowLongPtr(hwnd, DWLP_MSGRESULT, CDRF_NEWFONT);
                         return TRUE;
                     }

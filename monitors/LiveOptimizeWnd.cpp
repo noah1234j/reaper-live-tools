@@ -12,7 +12,6 @@
 #include "LiveOptimizeWnd.h"
 #include "api.h"
 #include "resource.h"
-#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <commctrl.h>
@@ -1497,7 +1496,7 @@ static void DrawScoreBar(HWND hBar, HDC hdc)
     int h  = rc.bottom - rc.top;
 
     // Background
-    HBRUSH hBkBrush = CreateSolidBrush(LiveTheme_Colors().dlgBg);
+    HBRUSH hBkBrush = CreateSolidBrush(GetSysColor(COLOR_3DFACE));
     FillRect(hdc, &rc, hBkBrush);
     DeleteObject(hBkBrush);
 
@@ -1578,8 +1577,6 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
             ListView_InsertColumn(g_hList, i, &lvc);
         }
 
-        LiveTheme_ApplyListView(g_hList);
-
         // Run checks and populate
         RunChecks();
         PopulateList(hwnd);
@@ -1587,17 +1584,7 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
         // Start polling timer (every 3 seconds)
         SetTimer(hwnd, LO_TIMER_ID, 3000, nullptr);
 
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
-    }
-
-    // -----------------------------------------------------------------------
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
     }
 
     // -----------------------------------------------------------------------
@@ -1652,7 +1639,7 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
 
                 // Fill background
                 const bool isSel = (ListView_GetItemState(g_hList, idx, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-                COLORREF bg = isSel ? LiveTheme_Colors().hlBg : LiveTheme_Colors().listBg;
+                COLORREF bg = isSel ? GetSysColor(COLOR_HIGHLIGHT) : GetSysColor(COLOR_WINDOW);
                 SetBkColor(hdc, bg);
                 ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
 
@@ -1809,29 +1796,11 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
 }
 
 // ---------------------------------------------------------------------------
-// Theme-change callback – restyle the open window to the active REAPER theme
-// ---------------------------------------------------------------------------
-static void OnThemeChanged()
-{
-    if (g_wnd && IsWindow(g_wnd))
-        LiveTheme_ApplyDialog(g_wnd);
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 void LiveOptimizeWnd_Init(HINSTANCE hInstance)
 {
-    // Init may run again from ShowHide if the window was destroyed;
-    // the theme callback stays registered for the life of the plugin.
-    static bool s_themeCbRegistered = false;
-    if (!s_themeCbRegistered)
-    {
-        LiveTheme_RegisterCallback(OnThemeChanged);
-        s_themeCbRegistered = true;
-    }
-
     g_hInst = hInstance;
     HWND hMain = GetMainHwnd ? GetMainHwnd() : nullptr;
     g_wnd = CreateDialogParamA(hInstance,

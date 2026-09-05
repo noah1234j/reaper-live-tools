@@ -17,7 +17,6 @@
 #include "LayersEngine.h"
 #include "api.h"
 #include "resource.h"
-#include "LiveTheme.h"
 
 #ifdef _WIN32
 #  include <windowsx.h>
@@ -89,15 +88,6 @@ static void RemoveSelectedTrack(HWND hwnd);
 void LayersWnd_Init(HINSTANCE hInst)
 {
     s_hInst = hInst;
-
-    // Restyle open windows when the REAPER theme changes
-    LiveTheme_RegisterCallback([]()
-    {
-        if (s_hwnd && IsWindow(s_hwnd))
-            LiveTheme_ApplyDialog(s_hwnd);
-        if (s_hSettingsDlg && IsWindow(s_hSettingsDlg))
-            LiveTheme_ApplyDialog(s_hSettingsDlg);
-    });
 }
 
 void LayersWnd_Cleanup()
@@ -488,17 +478,9 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         SetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, cfg.globalMaxChannels, FALSE);
 
         s_hSettingsDlg = hwnd;
-        LiveTheme_ApplyDialog(hwnd);
         return TRUE;
     }
 
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
 
     case WM_DESTROY:
         s_hSettingsDlg = nullptr;
@@ -800,7 +782,6 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, 0, &col);
                 col.cx = 40;  col.pszText = const_cast<char*>("Trks");
                 ListView_InsertColumn(hList, 1, &col);
-                LiveTheme_ApplyListView(hList);
                 s_origLayerListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)LayerListSubclassProc);
             }
@@ -831,7 +812,6 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, 0, &col);
                 col.cx = 200; col.pszText = const_cast<char*>("Track Name");
                 ListView_InsertColumn(hList, 1, &col);
-                LiveTheme_ApplyListView(hList);
                 s_origTrackListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)TrackListSubclassProc);
             }
@@ -847,19 +827,11 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         RefreshTrackList(hwnd);
         UpdateStatus(hwnd);
 
-        LiveTheme_ApplyDialog(hwnd);
 
         return TRUE;
     }
 
     // -----------------------------------------------------------------------
-    case WM_CTLCOLORDLG: case WM_CTLCOLORSTATIC: case WM_CTLCOLORBTN:
-    case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
-    {
-        INT_PTR r = LiveTheme_CtlColor(msg, wParam, lParam);
-        if (r) return r;
-        break;
-    }
 
     // -----------------------------------------------------------------------
     case WM_COMMAND:

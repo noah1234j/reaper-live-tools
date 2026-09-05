@@ -8,7 +8,6 @@
 #include "api.h"
 #include "resource.h"
 
-#include "LiveTheme.h"
 #include "TransitionSnapshot.h"
 #include "TransitionEngine.h"
 #include "TransitionWnd.h"
@@ -678,7 +677,6 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     }
 
     // ---- Init UI -----------------------------------------------------------
-    LiveTheme_Init();   // must precede the window inits (they read theme colors)
     TransitionWnd_Init(hInstance);
     SafesWnd_Init(hInstance);
     MonitorWnd_Init(hInstance);
