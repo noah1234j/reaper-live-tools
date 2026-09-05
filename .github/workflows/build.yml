@@ -1,11 +1,18 @@
 name: Build
 
+# DISABLED 2026-09-05: automatic triggers are off while the CI builds are broken
+# (windows-latest no longer ships the "Visual Studio 17 2022" generator, and the
+# macOS build trips over the vendor/reaper-sdk swell.h forwarding stub).
+# Release binaries are built locally and attached by hand in the meantime.
+# Run this manually from the Actions tab, or re-enable by restoring the block below:
+#
+#   push:
+#     branches: [ main ]
+#     tags: [ 'v*' ]
+#   pull_request:
+#     branches: [ main ]
 on:
-  push:
-    branches: [ main ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   # -------------------------------------------------------------------------

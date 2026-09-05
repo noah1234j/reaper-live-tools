@@ -241,32 +241,34 @@ void TransitionSnapshot::Capture(int mask)
                         && sscanf(sh, "%d", &shv) == 1)
                         fs.slotHint = (shv >= 0) ? shv : -1;
                 }
+                if (!TrackFX_GetOffline(tr, fx))
                 {
                     int wi = TrackFX_GetParamFromIdent(tr, fx, ":wet");
                     fs.wetVal = (wi >= 0) ? TrackFX_GetParamNormalized(tr, fx, wi) : 1.0;
                 }
 
-                if (IsChunkRecallPlugin(fs.name))
+                // A plugin parked offline (primed for another scene) has been
+                // unloaded by REAPER: GetNumParams/GetParamNormalized report
+                // zeros and vst_chunk comes back empty. Capturing that would
+                // silently store an all-zero param set that slams every knob to
+                // the bottom on recall, so record the plugin's identity only and
+                // mark it, leaving normVals/fxChunk empty.
+                fs.offlineAtCapture = TrackFX_GetOffline(tr, fx);
+
+                if (!fs.offlineAtCapture)
                 {
-                    // Capture full VST state blob instead of per-param values.
-                    // This is required for rack-style plugins (e.g. Waves VMR) where
-                    // module swaps change param semantics while count stays constant.
-                    GetVstChunkRetry(tr, fx, fs.fxChunk);
-                    // normVals stays empty; paramCount stays 0.
-                    // (chunk is the sole source of truth for these plugins —
-                    //  an empty fxChunk here triggers the save warning below)
-                }
-                else
-                {
+                    // Capture BOTH per-param values and the full VST state blob
+                    // for every plugin, chunk-recall-listed or not. Storing both
+                    // is what makes the Chunk Recall list (and g_chunkAllInstant)
+                    // a pure recall-time switch - toggling either takes effect on
+                    // existing scenes with no re-save - and it gives chunk-listed
+                    // plugins params to lerp on the timed path and to fall back
+                    // to if a chunk write fails.
                     fs.paramCount = TrackFX_GetNumParams(tr, fx);
                     fs.normVals.resize(fs.paramCount);
                     for (int p = 0; p < fs.paramCount; p++)
                         fs.normVals[p] = TrackFX_GetParamNormalized(tr, fx, p);
 
-                    // Always capture vst_chunk alongside normVals.
-                    // This makes g_chunkAllInstant a pure recall-time switch:
-                    // no need to re-save scenes after changing the setting.
-                    // normVals is kept so timed transitions can still lerp params.
                     GetVstChunkRetry(tr, fx, fs.fxChunk);
                 }
 
@@ -378,7 +380,8 @@ void TransitionSnapshot::Capture(int mask)
         std::string missing;
         for (const auto& trk : m_tracks)
             for (const auto& fx : trk.fx)
-                if (IsChunkRecallPlugin(fx.name) && fx.fxChunk.empty())
+                if (IsChunkRecallPlugin(fx.name) && fx.fxChunk.empty()
+                    && !fx.offlineAtCapture)
                     missing += std::string("  ") + fx.name + "\n";
         if (!missing.empty())
         {
@@ -578,6 +581,10 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
             // pre-7.75 REAPER stay byte-identical to the old format.
             if (fx.slotHint >= 0)
                 ctx->AddLine("FXSLOT %d", fx.slotHint);
+            // Written only when set, so scenes with no offline plugins stay
+            // byte-identical to the old format.
+            if (fx.offlineAtCapture)
+                ctx->AddLine("FXOFFLINE 1");
 
             if (!fx.fxChunk.empty())
             {
@@ -942,6 +949,10 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         {
             strncpy(curFX.fxIdent, trimmed + 8, (int)sizeof(curFX.fxIdent) - 1);
             curFX.fxIdent[sizeof(curFX.fxIdent) - 1] = '\0';
+        }
+        else if (strncmp(trimmed, "FXOFFLINE ", 10) == 0)
+        {
+            curFX.offlineAtCapture = (atoi(trimmed + 10) != 0);
         }
         else if (strncmp(trimmed, "FXCHUNKSTART ", 13) == 0)
         {

@@ -128,24 +128,32 @@ struct FXState
     bool   enabled    = true;// FX bypass state
 
     // Normalized [0..1] parameter values; size == paramCount.
-    // Empty only for ChunkRecallList plugins (chunk is the sole source of state).
+    // Captured for every plugin, including ChunkRecallList ones, so the list is
+    // a pure recall-time switch. Empty only for snapshots written by builds
+    // before that change, or for a plugin that was offline at capture.
     std::vector<double> normVals;
 
     // Wet/dry mix (REAPER per-FX wet control, accessed via ":wet" ident)
     double wetVal = 1.0;
 
     // Full VST state blob (base64 vst_chunk). Non-empty for:
-    //   (a) ChunkRecallList plugins — normVals is always empty here;
-    //       recall uses vst_chunk only.
+    //   (a) ChunkRecallList plugins — recall prefers vst_chunk;
     //   (b) All other plugins — vst_chunk captured alongside normVals
     //       so g_chunkAllInstant is a pure recall-time switch (no re-save needed).
-    // Instant path uses vst_chunk when g_chunkAllInstant is on (or normVals empty),
-    // and falls back to normVals if the chunk write fails.
+    // Instant path uses vst_chunk when g_chunkAllInstant is on, when the plugin
+    // is on the ChunkRecallList *now* (not merely when the scene was saved), or
+    // when the scene carries no params; it falls back to normVals if the chunk
+    // write fails.
     // Timed path ignores fxChunk when normVals is populated (lerps via params).
     // Persisted as a FXCHUNKSTART/FXCHUNKEND multi-line block (see Serialize);
     // a blob whose reassembled length mismatches the header is discarded on
     // load rather than kept corrupt.
     std::string fxChunk;
+
+    // True when the plugin was parked offline at capture. REAPER reports zeroed
+    // params and no chunk for an offline plugin, so anything captured here is
+    // meaningless — recall must not write it back over a live plugin.
+    bool offlineAtCapture = false;
 };
 
 // ---------------------------------------------------------------------------

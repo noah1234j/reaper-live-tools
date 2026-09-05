@@ -1,5 +1,6 @@
 #include "TransitionEngine.h"
 #include "ChunkRecallList.h"
+#include "RecallLog.h"
 #include "api.h"
 
 #include <cmath>
@@ -311,50 +312,81 @@ int TransitionEngine::FindFX(MediaTrack* tr,
 // Parked-offline plugins (primed for other scenes) are skipped during the
 // search pass and naturally end up at the tail of the chain.
 // ---------------------------------------------------------------------------
+// Does live chain slot 'slot' hold the plugin described by 'want'?
+static bool FXSlotMatches(MediaTrack* tr, int slot, const FXState& want)
+{
+    char cur[512] = {};
+    if (want.fxIdent[0])
+    {
+        TrackFX_GetNamedConfigParm(tr, slot, "fx_ident", cur, (int)sizeof(cur));
+        return strcmp(cur, want.fxIdent) == 0;
+    }
+    TrackFX_GetFXName(tr, slot, cur, (int)sizeof(cur));
+    return strcmp(cur, want.name) == 0 &&
+           TrackFX_GetNumParams(tr, slot) == want.paramCount;
+}
+
+// Chain indices that ordering is allowed to touch: online slots only.
+// Plugins parked offline belong to other scenes but still occupy chain
+// indices, so they must be excluded from the position mapping - not merely
+// skipped while scanning.
+static void CollectOnlineSlots(MediaTrack* tr, std::vector<int>& out)
+{
+    out.clear();
+    const int n = TrackFX_GetCount(tr);
+    out.reserve(n);
+    for (int i = 0; i < n; ++i)
+        if (!TrackFX_GetOffline(tr, i)) out.push_back(i);
+}
+
+// Put the snapshot's plugins back in their captured order.
+//
+// This used to compare snapshot position i against raw chain slot i. Those two
+// only line up when the chain holds nothing but this scene's plugins: one
+// parked-offline plugin sitting earlier in the chain shifts every subsequent
+// index, so the comparison failed spuriously and the function moved plugins to
+// satisfy a mapping that was wrong. Since it runs at the very end of the
+// instant path - after params and chunks have been written - and since
+// TrackFX_CopyToTrack can make REAPER tear down and rebuild a heavy VST3
+// (which then comes back at its defaults), a spurious move silently threw away
+// a correct recall. Mapping over online slots only removes those false
+// mismatches, so a move now happens if and only if the order is really wrong.
 static void EnforceFXOrder(MediaTrack* tr,
                            const std::vector<FXState>& targetFX)
 {
     const int nSnap = (int)targetFX.size();
-    for (int i = 0; i < nSnap; ++i)
+    std::vector<int> online;
+    CollectOnlineSlots(tr, online);
+
+    for (int k = 0; k < nSnap && k < (int)online.size(); ++k)
     {
-        const FXState& want = targetFX[i];
-        // Check if it's already in the right slot
+        const FXState& want = targetFX[k];
+        const int dest = online[k];
+
+        if (FXSlotMatches(tr, dest, want)) continue;
+
+        // Search the remaining online slots only. Everything before position k
+        // is already placed, so a second instance of the same plugin can never
+        // be stolen back out of a finished position - which the old ident-only
+        // scan could do, since fx_ident identifies the plugin type, not the
+        // instance.
+        int src = -1;
+        for (int j = k + 1; j < (int)online.size(); ++j)
+            if (FXSlotMatches(tr, online[j], want)) { src = online[j]; break; }
+
+        if (src < 0)
         {
-            char cur[512] = {};
-            if (want.fxIdent[0])
-                TrackFX_GetNamedConfigParm(tr, i, "fx_ident", cur, (int)sizeof(cur));
-            else
-                TrackFX_GetFXName(tr, i, cur, (int)sizeof(cur));
-            const bool matches = want.fxIdent[0]
-                ? strcmp(cur, want.fxIdent) == 0
-                : (strcmp(cur, want.name) == 0 &&
-                   TrackFX_GetNumParams(tr, i) == want.paramCount);
-            if (matches) continue;
+            RecallLog_Printf("      REORDER  want \"%s\" at slot %d: not found "
+                             "on track, left as-is", want.name, dest);
+            continue;
         }
-        // Search from i+1 onward, skipping parked-offline slots
-        const int nFX = TrackFX_GetCount(tr);
-        for (int j = i + 1; j < nFX; ++j)
-        {
-            if (TrackFX_GetOffline(tr, j)) continue; // parked for another scene
-            char cand[512] = {};
-            bool hit = false;
-            if (want.fxIdent[0])
-            {
-                TrackFX_GetNamedConfigParm(tr, j, "fx_ident", cand, (int)sizeof(cand));
-                hit = strcmp(cand, want.fxIdent) == 0;
-            }
-            else
-            {
-                TrackFX_GetFXName(tr, j, cand, (int)sizeof(cand));
-                hit = strcmp(cand, want.name) == 0 &&
-                      TrackFX_GetNumParams(tr, j) == want.paramCount;
-            }
-            if (hit)
-            {
-                TrackFX_CopyToTrack(tr, j, tr, i, true /*move*/);
-                break;
-            }
-        }
+
+        RecallLog_Printf("      REORDER  move slot %d -> %d  (\"%s\")",
+                         src, dest, want.name);
+        TrackFX_CopyToTrack(tr, src, tr, dest, true /*move*/);
+
+        // The move renumbers every slot between dest and src.
+        CollectOnlineSlots(tr, online);
     }
 }
 
@@ -537,6 +569,30 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
     // Snapshot reverse maps (no API calls needed)
     std::unordered_map<std::string, const FXState*> snapByIdent;
     std::unordered_map<std::string, const FXState*> snapByNameCount;
+    if (RecallLog_Active())
+    {
+        const char* tn = (const char*)GetSetMediaTrackInfo(tr, "P_NAME", nullptr);
+        RecallLog_Printf("  TRACK \"%s\"  path=%s  live chain: %d fx, snapshot: %d fx",
+                         (tn && *tn) ? tn : "(unnamed)",
+                         timed ? "timed" : "instant", nLive, (int)ts.fx.size());
+        for (int i = 0; i < nLive; ++i)
+            RecallLog_Printf("    live[%d] %-40s params=%d%s", i,
+                             liveCache[i].name.c_str(), liveCache[i].paramCount,
+                             TrackFX_GetOffline(tr, i) ? "  [PARKED OFFLINE]" : "");
+        // fx_ident identifies the plugin type, not the instance, so two copies
+        // of one plugin on a track collapse to a single map entry. Worth seeing
+        // in the log when a chain misbehaves.
+        if ((int)liveSlotByIdent.size() + (int)liveSlotByNameCount.size() > 0)
+            for (int i = 0; i < nLive; ++i)
+                for (int j = i + 1; j < nLive; ++j)
+                    if (!liveCache[i].ident.empty() &&
+                        liveCache[i].ident == liveCache[j].ident)
+                        RecallLog_Printf("    WARNING duplicate plugin identity in "
+                                         "slots %d and %d (\"%s\") - identity "
+                                         "matching cannot tell them apart",
+                                         i, j, liveCache[i].name.c_str());
+    }
+
     for (const auto& fxs : ts.fx)
     {
         if (fxs.fxIdent[0]) snapByIdent[fxs.fxIdent] = &fxs;
@@ -603,6 +659,20 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             int slot = findFXCached(fxs);
             const bool isNewPlugin = (slot < 0);
 
+            RecallLog_Printf("    FX \"%s\"  slot=%d%s  ident=%s",
+                             fxs.name, slot, isNewPlugin ? " (NEW)" : "",
+                             fxs.fxIdent[0] ? fxs.fxIdent : "(none)");
+
+            // Captured while parked offline: REAPER reported zeros for every
+            // param and no chunk, so there is no valid state to write back.
+            // Writing it would slam the live plugin's knobs to the bottom.
+            if (fxs.offlineAtCapture && !isNewPlugin)
+            {
+                RecallLog_Printf("      SKIP  captured while offline - no valid "
+                                 "state stored, leaving plugin untouched");
+                continue;
+            }
+
             // Per-FX timing (only collected when caller wants it)
             RecallTimings::FXOpTiming opT;
             if (out_fxOps) opT.fxName = fxs.name;
@@ -666,12 +736,21 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             }
             // Set state on the live plugin (new or existing).
             TrackFX_SetEnabled(tr, slot, fxs.enabled);
-            // Contract (TransitionSnapshot.h): chunk on the instant path only
-            // when g_chunkAllInstant is on, or the plugin is chunk-only
-            // (ChunkRecallList -> normVals empty). If the chunk write fails,
-            // fall back to normVals rather than leaving the plugin untouched.
+            // Contract (TransitionSnapshot.h): chunk on the instant path when
+            // g_chunkAllInstant is on, when the plugin is on the Chunk Recall
+            // list, or when the scene stored no params. If the chunk write
+            // fails, fall back to normVals rather than leaving the plugin
+            // untouched.
+            // The Chunk Recall list is consulted HERE, at recall, not merely
+            // implied by the scene having no params. Scenes store both a chunk
+            // and per-param values, so adding or removing a plugin from the
+            // list now takes effect on already-saved scenes with no re-save.
+            // normVals.empty() remains as the fallback for scenes written by
+            // builds that only stored one or the other.
+            const bool chunkListed = IsChunkRecallPlugin(fxs.name);
             const bool wantChunk = !fxs.fxChunk.empty()
-                                && (g_chunkAllInstant || fxs.normVals.empty());
+                                && (g_chunkAllInstant || chunkListed
+                                    || fxs.normVals.empty());
             bool chunkOk = false;
             if (wantChunk)
             {
@@ -691,11 +770,28 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 {
                     chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
                 }
+                RecallLog_Printf("      CHUNK  %s  %zu bytes  (reason: %s)",
+                                 chunkOk ? "ok" : "FAILED",
+                                 fxs.fxChunk.size(),
+                                 g_chunkAllInstant ? "chunk-all-instant"
+                                 : chunkListed     ? "on chunk recall list"
+                                                   : "scene has no params");
+                if (!chunkOk)
+                    RecallLog_Printf("      CHUNK  falling back to %s",
+                                     fxs.normVals.empty()
+                                       ? "NOTHING - scene stored no params"
+                                       : "per-param recall");
                 // A chunk write changes params without CSURF notifications —
                 // the shadow map entries for this plugin are now stale.
                 if (chunkOk)
                     TransitionEngine::Get().ShadowInvalidate(ts.guid, fxs.fxIdent);
             }
+            else if (!fxs.fxChunk.empty())
+            {
+                RecallLog_Printf("      CHUNK  available (%zu bytes) but not used "
+                                 "- taking param path", fxs.fxChunk.size());
+            }
+            int nParamsWritten = 0;
             if (!chunkOk && !fxs.normVals.empty())
             {
                 // Opt B: for existing (not newly added) plugins, skip params that
@@ -727,6 +823,7 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                             }
                         }
                         TrackFX_SetParamNormalized(tr, slot, p, target);
+                        ++nParamsWritten;
                         if (isVST3 && g_shadowParams)
                             TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
@@ -753,11 +850,24 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                             }
                         }
                         TrackFX_SetParamNormalized(tr, slot, p, target);
+                        ++nParamsWritten;
                         if (isVST3 && g_shadowParams)
                             TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                 }
             }
+            if (!chunkOk)
+            {
+                if (fxs.normVals.empty())
+                    RecallLog_Printf("      PARAMS  none stored - plugin left at "
+                                     "whatever the previous scene set");
+                else
+                    RecallLog_Printf("      PARAMS  wrote %d of %zu%s",
+                                     nParamsWritten, fxs.normVals.size(),
+                                     (nParamsWritten < (int)fxs.normVals.size())
+                                       ? "  (rest skipped as already matching)" : "");
+            }
+
             // REAPER's :wet index is typically above paramCount and therefore not
             // covered by the normVals loop — apply it explicitly, after either
             // the chunk or the param path (a chunk write may also reset it).
@@ -814,11 +924,14 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             // Zero wet before writing state so the plugin is silent during init
             if (wetIdx >= 0) TrackFX_SetParamNormalized(tr, i, wetIdx, 0.0);
 
-            // Chunk only for chunk-only plugins (ChunkRecallList → normVals
-            // empty); the timed path otherwise writes normVals so transitions
-            // stay smooth. Fall back to params if the chunk write fails.
+            // Chunk for plugins the Chunk Recall list covers now, or for
+            // scenes that stored no params at all; the timed path otherwise
+            // writes normVals so transitions stay smooth. Falls back to params
+            // if the chunk write fails.
             bool chunkOk = false;
-            if (!target->fxChunk.empty() && target->normVals.empty())
+            const bool chunkOnly1 = IsChunkRecallPlugin(target->name)
+                                 || target->normVals.empty();
+            if (!target->fxChunk.empty() && chunkOnly1)
             {
                 // Plugin is now online (post-resume) — apply vst_chunk directly.
                 // See site-1 comment: must NOT be wrapped in an offline sandwich.
@@ -862,10 +975,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             else
             {
                 // No change in enabled state.
-                // Use chunk only when normVals is empty (true chunk-only plugin from
-                // ChunkRecallList). When normVals is also populated (g_chunkAllInstant
-                // snapshot), prefer lerping via normVals so smooth transitions work.
-                if (!target->fxChunk.empty() && target->normVals.empty())
+                // Use the chunk for plugins the Chunk Recall list covers now, or
+                // when the scene stored no params. Otherwise prefer lerping via
+                // normVals so smooth transitions work.
+                const bool chunkOnly2 = IsChunkRecallPlugin(target->name)
+                                     || target->normVals.empty();
+                if (!target->fxChunk.empty() && chunkOnly2)
                 {
                     // Chunk-only plugin: apply vst_chunk directly on the online plugin.
                     // Wet lerp handled normally by BuildLerpLists (current→target).
@@ -913,11 +1028,12 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         if (wetIdx >= 0)
             TrackFX_SetParamNormalized(tr, slot, wetIdx, 0.0);
 
-        // Chunk only for chunk-only plugins (ChunkRecallList → normVals empty);
-        // otherwise write the saved params. Fall back to params if the chunk
-        // write fails.
+        // Chunk for plugins the Chunk Recall list covers now, or when the scene
+        // stored no params; otherwise write the saved params. Falls back to
+        // params if the chunk write fails.
         bool chunkOk = false;
-        if (!fxs.fxChunk.empty() && fxs.normVals.empty())
+        const bool chunkOnly3 = IsChunkRecallPlugin(fxs.name) || fxs.normVals.empty();
+        if (!fxs.fxChunk.empty() && chunkOnly3)
         {
             // Plugin is online post-resume — apply vst_chunk directly.
             chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
@@ -1418,6 +1534,10 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                     }
                 }
                 if (slot < 0) continue;
+                // Captured while parked offline: normVals is empty and wetVal is
+                // the 1.0 default, not a real reading. Lerping to it would ramp
+                // a plugin's wet up to full on a scene that never measured it.
+                if (fxs.offlineAtCapture) continue;
 
                 // Find the wet param index for this FX slot if SyncFXChain
                 // already added a WetLerp for it (timed path). Skip that param
@@ -1700,6 +1820,20 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                                double duration)
 {
     if (!snap) return;
+
+    // Opens the recall trace when the "Write recall log to file" setting is on,
+    // and flushes it once on the way out - Recall() has several exit points, so
+    // the scope guard is what guarantees the file is written exactly once.
+    struct RecallLogScope
+    {
+        RecallLogScope(const char* n, int m, double d) { RecallLog_Begin(n, m, d); }
+        ~RecallLogScope()                              { RecallLog_End(); }
+    } recallLogScope(snap->m_name.c_str(), mask, duration);
+
+    RecallLog_Printf("settings: chunkAllInstant=%d shadowParams=%d "
+                     "skipUnchanged=%d preloadOffline=%d",
+                     g_chunkAllInstant ? 1 : 0, g_shadowParams ? 1 : 0,
+                     g_skipUnchangedParams ? 1 : 0, g_preloadOffline ? 1 : 0);
 
     // Shadow map trust check: if anything changed the project since our last
     // recall completed (SWS snapshot, preset load, ...), CSURF notifications

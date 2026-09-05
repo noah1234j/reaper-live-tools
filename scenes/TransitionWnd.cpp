@@ -86,6 +86,7 @@ bool g_skipUnchangedParams        = false;  // skip writing params that haven't 
 bool g_durationDebug              = false;  // print step-timing report to REAPER console on recall
 bool g_shadowParams               = false;  // maintain VST3 param shadow map for instant recall
 bool g_chunkAllInstant            = false;  // capture+restore all plugins by chunk on instant path
+bool g_recallLog                  = false;  // write a per-recall trace to live_tools_recall.log
 
 // Global default transition settings for newly created scenes
 static double g_defaultDuration = 0.0;
@@ -483,6 +484,7 @@ void TransitionWnd_ResetSettings()
     g_skipUnchangedParams = false;
     g_shadowParams        = false;
     g_chunkAllInstant     = false;
+    g_recallLog           = false;
     g_chunkRecallKeywords = GetChunkRecallDefaults();  // restore defaults on project reset
     g_chunkRecallNotify   = false;
     s_chunkPluginsLoadedFromProject = false;  // allow project list to replace defaults
@@ -535,6 +537,13 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         int val = 0;
         sscanf(line + 18, "%d", &val);
         g_chunkAllInstant = (val != 0);
+        return true;
+    }
+    if (strncmp(line, "LTRECALLLOG ", 12) == 0)
+    {
+        int val = 0;
+        sscanf(line + 12, "%d", &val);
+        g_recallLog = (val != 0);
         return true;
     }
     if (strncmp(line, "LTCHUNKPLUGIN ", 14) == 0)
@@ -603,6 +612,7 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
     ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
     ctx->AddLine("LTSHADOWPARAMS %d", g_shadowParams ? 1 : 0);
     ctx->AddLine("LTCHUNKALLINSTANT %d", g_chunkAllInstant ? 1 : 0);
+    ctx->AddLine("LTRECALLLOG %d", g_recallLog ? 1 : 0);
     for (const auto& kw : g_chunkRecallKeywords)
         ctx->AddLine("LTCHUNKPLUGIN %s", kw.c_str());
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
@@ -1589,6 +1599,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_DURATION_DEBUG,   g_durationDebug       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SHADOW_PARAMS,     g_shadowParams       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_CHUNK_ALL_INSTANT, g_chunkAllInstant    ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_RECALL_LOG,        g_recallLog          ? BST_CHECKED : BST_UNCHECKED);
 
         // Tooltip for the preload offline checkbox
         HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
@@ -1685,6 +1696,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_durationDebug       = (IsDlgButtonChecked(hwnd, IDC_GSET_DURATION_DEBUG)    == BST_CHECKED);
             g_shadowParams        = (IsDlgButtonChecked(hwnd, IDC_GSET_SHADOW_PARAMS)     == BST_CHECKED);
             g_chunkAllInstant     = (IsDlgButtonChecked(hwnd, IDC_GSET_CHUNK_ALL_INSTANT) == BST_CHECKED);
+            g_recallLog           = (IsDlgButtonChecked(hwnd, IDC_GSET_RECALL_LOG)        == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             EndDialog(hwnd, IDOK);

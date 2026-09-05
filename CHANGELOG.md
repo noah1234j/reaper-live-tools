@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.0.28-beta] — 2026-09-05
+
+### New Features
+
+- **Recall log**: New **"Write recall log to file"** option in Global Settings (off by default) writes a per-recall trace to `live_tools_recall.log` in the REAPER resource folder — the same folder as `reaper.ini`. For each track it records the live FX chain (including which plugins are parked offline), and for each plugin the slot it resolved to, whether it was newly added, which recall path was taken (chunk or per-param), the chunk size and whether the write succeeded, how many params were written versus skipped, and every reorder move. Nothing is written to disk while the recall is running — the trace is buffered in memory and flushed once the recall finishes — so leaving it on cannot add latency mid-transition. The file appends across sessions and rotates at 4 MB.
+
+### Bug Fixes
+
+- **Scenes: recalling one song scene directly after another could reset a plugin to its defaults**: `EnforceFXOrder` runs at the very end of the instant path, after params and chunks have been written, and compared snapshot position *i* against raw chain slot *i*. Those only line up when the chain contains nothing but the scene's own plugins — a plugin parked offline for another scene still occupies a chain index, so one sitting earlier in the chain shifted every index after it and the comparison failed spuriously. The function then "corrected" the order with `TrackFX_CopyToTrack`, which can make REAPER tear down and rebuild a heavyweight VST3 (SSL Native and similar) so it comes back at its defaults — silently discarding the correct state that had just been written. Ordering now maps over online slots only, so parked plugins can no longer shift the mapping and a move happens only when the order is genuinely wrong. Going to a scene from a base/"LIVE" scene tended to avoid this because the chain was already in the target order; going song-to-song did not, which is why it looked order-dependent.
+
+- **Scenes: the Chunk Recall list is now honored at recall, not only at save**: Recall decided between chunk and per-param by testing whether the scene happened to store no params, which was only ever a proxy for "this plugin was on the Chunk Recall list when the scene was saved". Adding or removing a plugin from the list therefore had no effect on any existing scene — in *either* direction — until every scene was re-saved. Scenes now capture per-param values **and** the chunk for every plugin, and recall consults the list itself, so toggling it takes effect immediately on scenes you already have. Chunk-recall plugins also gain a working per-param fallback if the chunk write fails, and can be lerped on the timed path. (Scenes written by older builds that stored only one of the two still recall exactly as before.)
+
+- **Scenes: plugins that were offline when a scene was saved no longer zero themselves on recall**: Capture walked every FX slot on the track, including plugins parked offline for another scene. REAPER has unloaded those, so `GetNumParams`/`GetParamNormalized` report zeros and `vst_chunk` comes back empty — the scene silently stored an all-zero parameter set, and recalling it drove every knob to the bottom. Such plugins are now recorded by identity only and flagged (`FXOFFLINE`), and recall leaves them untouched rather than writing meaningless state over a live plugin. The "could not capture plugin state" save warning no longer fires for them either.
+
+---
+
 ## [v0.0.27-beta] — 2026-09-05
 
 ### Bug Fixes
