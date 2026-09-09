@@ -216,6 +216,7 @@ void TransitionEngine::StopAndReset()
     m_active = false;
     m_volPanLerps.clear();
     m_paramLerps.clear();
+    m_finalWrites.clear();
     m_wetLerps.clear();
     m_sendLerps.clear();
 }
@@ -980,12 +981,30 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 // normVals so smooth transitions work.
                 const bool chunkOnly2 = IsChunkRecallPlugin(target->name)
                                      || target->normVals.empty();
+                bool chunkOk2 = false;
                 if (!target->fxChunk.empty() && chunkOnly2)
                 {
                     // Chunk-only plugin: apply vst_chunk directly on the online plugin.
                     // Wet lerp handled normally by BuildLerpLists (current→target).
-                    if (TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str()))
+                    chunkOk2 = TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
+                    if (chunkOk2)
                         TransitionEngine::Get().ShadowInvalidate(ts.guid, target->fxIdent);
+                    else
+                        RecallLog_Printf("    FX \"%s\"  CHUNK FAILED (%zu bytes) "
+                                         "- falling back to %s", target->name,
+                                         target->fxChunk.size(),
+                                         target->normVals.empty()
+                                           ? "NOTHING - scene stored no params"
+                                           : "per-param recall");
+                }
+                // Sites 1 and 3 already fell back to normVals on a failed chunk
+                // write; this site (online plugin, enabled state unchanged -
+                // the common case) did not, so a failure left the plugin with
+                // whatever the previous scene set.
+                if (!chunkOk2 && !target->fxChunk.empty() && chunkOnly2)
+                {
+                    for (int p = 0; p < (int)target->normVals.size(); ++p)
+                        TrackFX_SetParamNormalized(tr, i, p, target->normVals[p]);
                 }
                 // BuildLerpLists will add a normal ParamLerp from current wet → target.wetVal.
             }
@@ -1453,6 +1472,7 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                                        const TrackMap& tmap)
 {
     m_paramLerps.clear();
+    m_finalWrites.clear();
     m_volPanLerps.clear();
     m_sendLerps.clear();
 
@@ -1547,14 +1567,30 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                     if (wl.tr == tr && wl.fxSlot == slot)
                         { wetParamAlreadyLerped = wl.wetParamIdx; break; }
 
+                // Params that already match the target are not ramped - there
+                // is nothing to animate - but skipping the ramp must NOT mean
+                // skipping the write, which is what it used to mean: a skipped
+                // param never entered m_paramLerps and so never got a final
+                // value from SnapToEnd either. The skip is now gated on the
+                // Global Settings checkbox that names it, and the end-state
+                // guarantee is carried by m_finalWrites below instead.
                 for (int p = 0; p < (int)fxs.normVals.size(); p++)
                 {
                     if (p == wetParamAlreadyLerped) continue; // handled by WetLerp
                     double cur = TrackFX_GetParamNormalized(tr, slot, p);
                     double tgt = fxs.normVals[p];
-                    if (fabs(cur - tgt) < 1e-7) continue;
+                    if (fabs(cur - tgt) < 1e-7 && g_skipUnchangedParams) continue;
                     m_paramLerps.push_back({tr, slot, p, cur, tgt});
                 }
+
+                // Authoritative end-of-transition write. Mirrors the chunk
+                // decision SyncFXChain made for this plugin: if the chunk owns
+                // the plugin's state, params must not be written over it.
+                const bool chunkOwned = !fxs.fxChunk.empty()
+                                     && (IsChunkRecallPlugin(fxs.name)
+                                         || fxs.normVals.empty());
+                if (!chunkOwned && !fxs.normVals.empty())
+                    m_finalWrites.push_back({tr, slot, fxs.normVals});
 
                 // Wet/dry lerp: only if no WetLerp already owns this slot
                 if (wetParamAlreadyLerped < 0)
@@ -1713,6 +1749,18 @@ void TransitionEngine::SnapToEnd()
         TrackFX_SetParamNormalized(pl.tr, pl.fxIdx, pl.paramIdx, pl.endNorm);
     }
 
+    // Authoritative pass: write every stored param for each non-chunk-recalled
+    // plugin, whether or not it was ramped. Runs before the wet lerps are
+    // finalised (wet lives above paramCount, so it is not in normVals and gets
+    // its own final value below) and before any deletions, so the slot indices
+    // captured at build time are still valid.
+    for (const auto& fw : m_finalWrites)
+    {
+        if (!ValidatePtr2(nullptr, fw.tr, "MediaTrack*")) continue;
+        for (int p = 0; p < (int)fw.normVals.size(); ++p)
+            TrackFX_SetParamNormalized(fw.tr, fw.fxSlot, p, fw.normVals[p]);
+    }
+
     // Collect plugins to delete (must delete in descending slot order per track)
     struct DelEntry { MediaTrack* tr; int slot; };
     std::vector<DelEntry> toDelete;
@@ -1755,6 +1803,7 @@ void TransitionEngine::SnapToEnd()
 
     m_volPanLerps.clear();
     m_paramLerps.clear();
+    m_finalWrites.clear();
     m_wetLerps.clear();
 
     // Finalize send lerps: write exact end values, then remove pending sends

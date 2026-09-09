@@ -185,6 +185,28 @@ private:
         double endNorm;
     };
 
+    // Authoritative end-of-transition write for one plugin's full param set.
+    //
+    // The timed path only ramps params whose live value differed from the
+    // target at build time, and SnapToEnd only writes exact end values for
+    // entries in m_paramLerps. That leaves the skipped params with no final
+    // write at all - and a plugin whose params are interdependent (FabFilter
+    // Pro-Q, and rack-style plugins generally) recomputes them off the
+    // nonsensical intermediate states the ramp feeds it, moving params the
+    // build pass had discarded as "already correct". The result is a handful
+    // of parameters left wherever the plugin's own recompute pushed them,
+    // permanently, varying with ramp timing.
+    //
+    // So every non-chunk-recalled plugin gets its complete stored param set
+    // written once when the transition completes. Chunk-recalled plugins are
+    // deliberately excluded: their state was restored atomically by the
+    // vst_chunk write and writing params over it would fight that restore.
+    struct FinalParamWrite {
+        MediaTrack*         tr;
+        int                 fxSlot;
+        std::vector<double> normVals;
+    };
+
     // One interpolated vol/pan pair per track
     struct VolPanLerp {
         MediaTrack* tr;
@@ -274,6 +296,7 @@ private:
     double   m_taperExp    = 2.0;
 
     std::vector<ParamLerp>   m_paramLerps;
+    std::vector<FinalParamWrite> m_finalWrites;
     std::vector<VolPanLerp>  m_volPanLerps;
     std::vector<WetLerp>     m_wetLerps;
     std::vector<SendLerp>    m_sendLerps;

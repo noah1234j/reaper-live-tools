@@ -612,14 +612,23 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                 }
                 ctx->AddLine("FXCHUNKEND");
             }
-            else
+            // Per-param values are written for EVERY plugin, including those
+            // that also carry a chunk. Writing only one or the other (as
+            // builds through v0.0.28-beta did) silently dropped normVals for
+            // every plugin that handed back a chunk - which is nearly every
+            // VST - so a scene behaved differently before and after a project
+            // reload: with normVals gone, `normVals.empty()` forced the chunk
+            // path in SyncFXChain/BuildLerpLists regardless of the Chunk
+            // Recall list, and the per-param fallback had nothing to fall back
+            // to. Both are stored so the list stays a pure recall-time switch
+            // (see the contract in TransitionSnapshot.h).
+            // Deserialize already accepts P lines alongside a chunk - the
+            // chunk block is consumed by its declared length - so this format
+            // reads correctly on older builds too.
+            for (int p = 0; p < (int)fx.normVals.size(); p += 8)
             {
-                // Write normalized values in batches of 8
-                for (int p = 0; p < (int)fx.normVals.size(); p += 8)
-                {
-                    int pend = std::min(p + 8, (int)fx.normVals.size());
-                    WriteParamLine(ctx, fx.normVals, p, pend);
-                }
+                int pend = std::min(p + 8, (int)fx.normVals.size());
+                WriteParamLine(ctx, fx.normVals, p, pend);
             }
             ctx->AddLine("FXWET %.6f", fx.wetVal);
             ctx->AddLine("FXEND");
