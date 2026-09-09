@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.0.30-beta] — 2026-09-09
+
+### Bug Fixes
+
+- **Scenes: changing the order or number of plugins in a chain corrupted a few parameters on the plugins that moved**: `EnforceFXOrder` ran at the very end of `SyncFXChain`, *after* every chunk and parameter had been written, and it reorders the chain with `TrackFX_CopyToTrack` — which can make REAPER tear down and rebuild a plugin. v0.0.28-beta stopped that function from making *spurious* moves, but did nothing about the case where the order genuinely differs, which is precisely when a real move fires: change a scene's FX order or add or remove a plugin, and every plugin after the change point is moved, immediately after its state was written. The move serializes each plugin with `getChunk` and restores it at the destination, so parameters REAPER had already folded into the plugin's state survived and ones written moments earlier did not — per-parameter writes reach the plugin asynchronously, so the `getChunk` could capture the pre-write state. That is why it hit a handful of parameters rather than all of them, why it varied from recall to recall, and why it only affected plugins *not* on the Chunk Recall list: `SetNamedConfigParm("vst_chunk")` sets exactly the state the move round-trips, so chunk-recalled plugins were structurally immune. Chain membership and order are now settled first — missing plugins are added, then the chain is ordered, then the slot maps are rebuilt, and only then is any plugin state written — so a plugin rebuilt by a move receives its parameters afterwards instead of before.
+
+- **Scenes: wet/dry fades could be applied to the wrong plugin after a reorder**: On the timed path the wet lerp list is built during `SyncFXChain` and stores raw chain indices, but `EnforceFXOrder` ran afterwards and renumbers every slot between the source and destination of each move. Any fade recorded before the move was then applied to whichever plugin had landed on that index — so on a scene that reordered the chain, a plugin could be faded out while an unrelated one was left at the wrong wet level. Each pending fade's plugin identity is now captured before the move and its slot re-resolved after.
+
+- **Scenes: the live FX slot maps were not refreshed after plugins were deleted**: `SyncFXChain` built its identity→slot lookup once at entry, then removed plugins that the incoming scene does not contain. Every subsequent lookup used indices from before those deletions. The maps are now rebuilt after any operation that renumbers the chain — delete, add, or reorder.
+
+---
+
 ## [v0.0.29-beta] — 2026-09-09
 
 ### Bug Fixes

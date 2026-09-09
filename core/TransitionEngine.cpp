@@ -10,6 +10,7 @@ extern bool g_durationDebug;  // defined in scenes/TransitionWnd.cpp
 #include <cstdio>
 #include <algorithm>
 #include <cassert>
+#include <unordered_set>
 #include <string>
 #include <unordered_map>
 
@@ -552,21 +553,32 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         std::string name;
         int         paramCount;
     };
-    const int nLive = TrackFX_GetCount(tr);
-    std::vector<LiveFXInfo> liveCache(nLive);
+    int nLive = TrackFX_GetCount(tr);
+    std::vector<LiveFXInfo> liveCache;
     std::unordered_map<std::string, int> liveSlotByIdent;
     std::unordered_map<std::string, int> liveSlotByNameCount;
-    for (int i = 0; i < nLive; ++i)
-    {
-        char ident[512] = {}, name[256] = {};
-        TrackFX_GetNamedConfigParm(tr, i, "fx_ident", ident, (int)sizeof(ident));
-        TrackFX_GetFXName(tr, i, name, (int)sizeof(name));
-        int pc = TrackFX_GetNumParams(tr, i);
-        liveCache[i] = { ident, name, pc };
-        if (ident[0]) liveSlotByIdent[ident] = i;
-        char key[768]; snprintf(key, sizeof(key), "%s\x01%d", name, pc);
-        liveSlotByNameCount[key] = i;
-    }
+    // Rebuilt whenever the chain changes shape - an add, a delete, or a
+    // reorder move. Every chain index below is resolved through these maps,
+    // so they must be refreshed after anything that renumbers slots, or the
+    // writes land on the wrong plugin.
+    auto rebuildLiveCaches = [&]() {
+        nLive = TrackFX_GetCount(tr);
+        liveCache.assign(nLive, LiveFXInfo{});
+        liveSlotByIdent.clear();
+        liveSlotByNameCount.clear();
+        for (int i = 0; i < nLive; ++i)
+        {
+            char ident[512] = {}, name[256] = {};
+            TrackFX_GetNamedConfigParm(tr, i, "fx_ident", ident, (int)sizeof(ident));
+            TrackFX_GetFXName(tr, i, name, (int)sizeof(name));
+            int pc = TrackFX_GetNumParams(tr, i);
+            liveCache[i] = { ident, name, pc };
+            if (ident[0]) liveSlotByIdent[ident] = i;
+            char key[768]; snprintf(key, sizeof(key), "%s\x01%d", name, pc);
+            liveSlotByNameCount[key] = i;
+        }
+    };
+    rebuildLiveCaches();
     // Snapshot reverse maps (no API calls needed)
     std::unordered_map<std::string, const FXState*> snapByIdent;
     std::unordered_map<std::string, const FXState*> snapByNameCount;
@@ -655,10 +667,34 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 TrackFX_Delete(tr, i);
             }
         }
+        // Chain membership and order are settled BEFORE any plugin state is
+        // written. EnforceFXOrder moves plugins with TrackFX_CopyToTrack, which
+        // can make REAPER tear down and rebuild a heavy plugin; running it after
+        // the writes (as it used to) meant a legitimate move - one that happens
+        // exactly when the scene's FX order or count differs from the live chain
+        // - threw away parameters that had just been written. Per-param recall
+        // was the visible casualty: those writes reach the plugin asynchronously,
+        // so the getChunk taken during the move can capture the pre-write state.
+        // Chunk recall was immune because SetNamedConfigParm("vst_chunk") sets
+        // the state the move round-trips. Ordering first removes the race for
+        // both: a rebuilt plugin now gets its state written afterwards.
+        rebuildLiveCaches();   // the delete loop above renumbered the chain
+        std::unordered_set<const FXState*> newlyAdded;
+        for (const auto& fxs : ts.fx)
+        {
+            if (findFXCached(fxs) >= 0) continue;
+            const char* addName = fxs.fxIdent[0] ? fxs.fxIdent : fxs.name;
+            if (TrackFX_AddByName(tr, addName, false, -1000) < 0) continue;
+            newlyAdded.insert(&fxs);
+            rebuildLiveCaches();
+        }
+        EnforceFXOrder(tr, ts.fx);
+        rebuildLiveCaches();
+
         for (const auto& fxs : ts.fx)
         {
             int slot = findFXCached(fxs);
-            const bool isNewPlugin = (slot < 0);
+            const bool isNewPlugin = (newlyAdded.count(&fxs) != 0);
 
             RecallLog_Printf("    FX \"%s\"  slot=%d%s  ident=%s",
                              fxs.name, slot, isNewPlugin ? " (NEW)" : "",
@@ -678,21 +714,10 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             RecallTimings::FXOpTiming opT;
             if (out_fxOps) opT.fxName = fxs.name;
 
+            if (slot < 0) continue;   // not installed, or add failed in the pre-pass
             if (isNewPlugin)
             {
-                const char* addName = fxs.fxIdent[0] ? fxs.fxIdent : fxs.name;
-                if (out_fxOps)
-                {
-                    double t0 = QpcMs();
-                    slot = TrackFX_AddByName(tr, addName, false, -1000);
-                    opT.addByName_ms = QpcMs() - t0;
-                    opT.wasNew = true;
-                }
-                else
-                {
-                    slot = TrackFX_AddByName(tr, addName, false, -1000);
-                }
-                if (slot < 0) continue;
+                if (out_fxOps) opT.wasNew = true;
                 if (g_preloadOffline)
                 {
                     // Offline sandwich: briefly take offline so resume() fires
@@ -887,11 +912,17 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                     out_fxOps->push_back(std::move(opT));
             }
         }
-        EnforceFXOrder(tr, ts.fx);
+        // EnforceFXOrder already ran, before any state was written.
         return;
     }
 
     // ---- Timed path -------------------------------------------------------
+    // Wet lerps pushed below hold raw chain indices. EnforceFXOrder renumbers
+    // the chain, so anything recorded before it runs has to be re-resolved
+    // afterwards or the fade is applied to whichever plugin now sits at that
+    // index. Remember where this track's entries start.
+    const size_t wetLerpBase = wetLerps.size();
+
     // Step 1: for each FX currently on the track, decide fate
     for (int i = 0; i < nLive; ++i)
     {
@@ -1077,7 +1108,34 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         if (fxs.enabled && wetIdx >= 0)
             wetLerps.push_back({ tr, slot, wetIdx, 0.0, fxs.wetVal, false, false });
     }
+    // Capture each pending wet lerp's plugin identity before the move, then
+    // re-resolve its slot after: TrackFX_CopyToTrack renumbers every index
+    // between source and destination.
+    std::vector<std::string> wetIdents;
+    wetIdents.reserve(wetLerps.size() - wetLerpBase);
+    for (size_t w = wetLerpBase; w < wetLerps.size(); ++w)
+    {
+        char ident[512] = {};
+        if (wetLerps[w].fxSlot >= 0 && wetLerps[w].fxSlot < TrackFX_GetCount(tr))
+            TrackFX_GetNamedConfigParm(tr, wetLerps[w].fxSlot, "fx_ident",
+                                       ident, (int)sizeof(ident));
+        wetIdents.emplace_back(ident);
+    }
+
     EnforceFXOrder(tr, ts.fx);
+    rebuildLiveCaches();
+
+    for (size_t w = wetLerpBase; w < wetLerps.size(); ++w)
+    {
+        const std::string& id = wetIdents[w - wetLerpBase];
+        if (id.empty()) continue;                 // no identity - leave as-is
+        auto it = liveSlotByIdent.find(id);
+        if (it == liveSlotByIdent.end()) continue;
+        if (it->second == wetLerps[w].fxSlot) continue;
+        RecallLog_Printf("      REORDER  wet lerp slot %d -> %d",
+                         wetLerps[w].fxSlot, it->second);
+        wetLerps[w].fxSlot = it->second;
+    }
 }
 
 // ---------------------------------------------------------------------------
