@@ -927,7 +927,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 CTX_LYR_RENAME, "Rename\tF2");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_LYR_CAPTURE, "Capture Visible Tracks");
+                CTX_LYR_CAPTURE, "Update Layer (Capture Visible Tracks)");
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_CLEAR, "Clear Tracks");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -1023,6 +1023,17 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             {
                 if (item < 0 || item >= n) break;
                 LayerDef& ld = LayersEngine::Get().GetLayer(item);
+                // Right-clicking the wrong row here silently discards a track
+                // list, so confirm which layer is about to be replaced.
+                {
+                    char prompt[192];
+                    snprintf(prompt, sizeof(prompt),
+                        "Update \"%s\" to the currently visible tracks?\n\n"
+                        "The layer's existing track list will be replaced.",
+                        ld.name);
+                    if (MessageBoxA(hwnd, prompt, "Layers",
+                                    MB_YESNO | MB_ICONQUESTION) != IDYES) break;
+                }
                 ld.tracks.clear();
                 int numTracks = CountTracks(0);
                 for (int t = 0; t < numTracks; t++)
@@ -1058,8 +1069,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 RefreshTrackList(hwnd);
                 RefreshLayerList(hwnd);
                 {
-                    char status[64];
-                    snprintf(status, sizeof(status), "Captured %d tracks", (int)ld.tracks.size());
+                    char status[96];
+                    snprintf(status, sizeof(status), "Updated \"%s\" - %d tracks",
+                             ld.name, (int)ld.tracks.size());
                     SetDlgItemText(hwnd, IDC_LYR_STATUS, status);
                 }
                 break;

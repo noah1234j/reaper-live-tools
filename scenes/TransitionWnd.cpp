@@ -143,7 +143,7 @@ static void RefreshListView(HWND hwnd);
 static void DoRecall(HWND hwnd, int index);
 static void DoSave(HWND hwnd);
 static void ShowContextMenu(HWND hwnd, int item, POINT pt);
-static void LoadEditorFromSnapshot(HWND hwnd, const TransitionSnapshot* snap);
+static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap);
 static void ExportScene(HWND hwnd, int item);
 static void ImportScene(HWND hwnd);
 static void DoEndDrag(HWND hwnd);
@@ -152,7 +152,8 @@ static int  GetSelectedListIndex(HWND hwnd);
 static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK CueLvSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 static void RefillCueRightList(HWND hRight, const std::vector<int>& list);
-static void RestoreLayerState(const TransitionSnapshot* snap);
+static void RestoreLayerState(TransitionSnapshot* snap);
+static void EnsureLayerUids(TransitionSnapshot* snap);
 static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -296,7 +297,8 @@ void TransitionWnd_RefreshList()
 void TransitionWnd_RecallScene(int index)
 {
     if (index < 0 || index >= (int)g_snapshots.size()) return;
-    const TransitionSnapshot* snap = g_snapshots[index].get();
+    TransitionSnapshot* snap = g_snapshots[index].get();
+    EnsureLayerUids(snap);   // pre-uid scenes: resolve m_layerIdx to a uid once
     // m_duration == 0 means instant
     double duration = snap->m_duration;
     if (g_placeMarker)
@@ -310,7 +312,7 @@ void TransitionWnd_RecallScene(int index)
 
     // Strip TS_VIS when a layer is being recalled (layers manage visibility)
     int effectiveMask = snap->m_mask;
-    if (!snap->m_layers.empty() && snap->m_layerIdx >= 0)
+    if (!snap->m_layers.empty() && snap->m_layerUid > 0)
         effectiveMask &= ~TS_VIS;
     TransitionEngine::Get().Recall(snap, effectiveMask, duration);
     TransitionEngine::Get().SetCurrentSlot(index);
@@ -674,9 +676,85 @@ static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// CaptureLayersFromEngine – refresh a scene's stored layer set from the live
+// LayersEngine, leaving every other captured value alone. Layer definitions
+// are not performance state, so re-reading them is safe outside a full
+// Overwrite; this is what keeps a scene able to recall a layer created after
+// the scene was saved.
+// ---------------------------------------------------------------------------
+static void CaptureLayersFromEngine(TransitionSnapshot* snap)
+{
+    if (!snap) return;
+    LayersEngine& le = LayersEngine::Get();
+    snap->m_layers.clear();
+    for (int li = 0; li < le.GetLayerCount(); li++)
+    {
+        const LayerDef& ld = le.GetLayer(li);
+        CapturedLayer cl;
+        cl.name        = ld.name;
+        cl.maxChannels = ld.maxChannels;
+        cl.uid         = ld.uid;
+        for (const LayerTrack& lt : ld.tracks)
+        {
+            CapturedLayerTrack clt;
+            clt.guid     = lt.guid;
+            clt.isSpacer = lt.isSpacer;
+            cl.tracks.push_back(clt);
+        }
+        snap->m_layers.push_back(cl);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EnsureLayerUids – migrate a scene saved before layer uids existed. Every
+// captured layer gets a uid minted from the engine's counter, and the old
+// index-based m_layerIdx is resolved to the uid it pointed at, once. After
+// this the scene is referenced by uid only and survives renames/reordering.
+// ---------------------------------------------------------------------------
+static void EnsureLayerUids(TransitionSnapshot* snap)
+{
+    if (!snap || snap->m_layers.empty()) return;
+
+    bool changed = false;
+    for (auto& cl : snap->m_layers)
+    {
+        if (cl.uid <= 0)
+        {
+            cl.uid  = LayersEngine::Get().AllocUid();
+            changed = true;
+        }
+    }
+    if (snap->m_layerUid <= 0 &&
+        snap->m_layerIdx >= 0 && snap->m_layerIdx < (int)snap->m_layers.size())
+    {
+        snap->m_layerUid = snap->m_layers[snap->m_layerIdx].uid;
+        changed = true;
+    }
+    if (changed)
+    {
+        // AllocUid advanced the engine's uid counter. Persist it now: if the
+        // counter reverted, a later new layer would be handed a uid this scene
+        // already claims, and recall would resolve to the wrong layer.
+        LayersEngine::Get().SaveExtState();
+        MarkProjectDirty(nullptr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FindCapturedLayerByUid – index into snap->m_layers, or -1
+// ---------------------------------------------------------------------------
+static int FindCapturedLayerByUid(const TransitionSnapshot* snap, int uid)
+{
+    if (!snap || uid <= 0) return -1;
+    for (int i = 0; i < (int)snap->m_layers.size(); i++)
+        if (snap->m_layers[i].uid == uid) return i;
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // LoadEditorFromSnapshot – fill right-panel controls from a snapshot
 // ---------------------------------------------------------------------------
-static void LoadEditorFromSnapshot(HWND hwnd, const TransitionSnapshot* snap)
+static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
 {
     g_syncingEditor = true;
 
@@ -686,18 +764,42 @@ static void LoadEditorFromSnapshot(HWND hwnd, const TransitionSnapshot* snap)
     // Transition settings and notes are in the per-scene Settings popup.
     SetDlgItemText(hwnd, IDC_SNAPNOTES, snap ? snap->m_notes.c_str() : "");
 
-    // Per-scene layer selector: populate from the scene's captured layer list
+    // Per-scene layer selector. Listing the scene's *captured* layers here was
+    // the bug: a layer added or renamed after the scene was saved never showed
+    // up. The list is now driven by the live LayersEngine, with each entry
+    // carrying its layer uid as item data so the selection survives renames
+    // and reordering. Layers the scene captured that no longer exist are
+    // appended, so an existing assignment is never silently dropped.
     {
         HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
         g_syncingEditor = true;  // keep the guard while filling combobox
         SendMessage(hCb, CB_RESETCONTENT, 0, 0);
-        SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)"(no layer recall)");
+        int noneItem = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)"(no layer recall)");
+        SendMessage(hCb, CB_SETITEMDATA, (WPARAM)noneItem, (LPARAM)0);
         if (snap && !snap->m_isSpacer)
         {
+            EnsureLayerUids(snap);
+
+            LayersEngine& le = LayersEngine::Get();
+            int sel = 0;
+
+            for (int li = 0; li < le.GetLayerCount(); li++)
+            {
+                const LayerDef& ld = le.GetLayer(li);
+                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)ld.name);
+                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)ld.uid);
+                if (ld.uid > 0 && ld.uid == snap->m_layerUid) sel = item;
+            }
+
             for (const auto& cl : snap->m_layers)
-                SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)cl.name.c_str());
-            int sel = (snap->m_layerIdx >= 0 && snap->m_layerIdx < (int)snap->m_layers.size())
-                      ? snap->m_layerIdx + 1 : 0;
+            {
+                if (le.FindLayerByUid(cl.uid) >= 0) continue;  // already listed above
+                std::string label = cl.name + "  (not in Layers)";
+                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)label.c_str());
+                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)cl.uid);
+                if (cl.uid > 0 && cl.uid == snap->m_layerUid) sel = item;
+            }
+
             SendMessage(hCb, CB_SETCURSEL, (WPARAM)sel, 0);
             EnableWindow(hCb, TRUE);
         }
@@ -875,18 +977,22 @@ static void DoSave(HWND hwnd)
 // ---------------------------------------------------------------------------
 // RestoreLayerState – apply full layer state from a snapshot on recall.
 // Skipped when the TS_LAYERS safe bit is set, when no specific layer was
-// designated for recall (m_layerIdx < 0), or when the scene has no captured
+// designated for recall (m_layerUid <= 0), or when the scene has no captured
 // layer data (m_layers empty — e.g. old-format scenes).
 // ---------------------------------------------------------------------------
-static void RestoreLayerState(const TransitionSnapshot* snap)
+static void RestoreLayerState(TransitionSnapshot* snap)
 {
     if (!snap) return;
     if (g_globalSafeMask & TS_LAYERS) return;
+    if (snap->m_layers.empty()) return;
+
+    // Number any pre-uid layers so the reference below is by uid, not index.
+    EnsureLayerUids(snap);
 
     // If the scene has no layer to recall (user chose "(no layer recall)" or
     // the scene was saved before layer capture was introduced) leave the
     // current layer system untouched.
-    if (snap->m_layerIdx < 0 || snap->m_layers.empty()) return;
+    if (snap->m_layerUid <= 0) return;
 
     std::vector<LayerDef> newLayers;
     for (const auto& cl : snap->m_layers)
@@ -895,6 +1001,7 @@ static void RestoreLayerState(const TransitionSnapshot* snap)
         strncpy(ld.name, cl.name.c_str(), sizeof(ld.name) - 1);
         ld.name[sizeof(ld.name) - 1] = '\0';
         ld.maxChannels = cl.maxChannels;
+        ld.uid         = cl.uid;   // preserved across the replace
         for (const auto& clt : cl.tracks)
         {
             LayerTrack lt;
@@ -906,7 +1013,7 @@ static void RestoreLayerState(const TransitionSnapshot* snap)
         }
         newLayers.push_back(ld);
     }
-    LayersEngine::Get().ReplaceAllLayers(newLayers, snap->m_layerIdx);
+    LayersEngine::Get().ReplaceAllLayers(newLayers, snap->m_layerUid);
     LayersEngine::Get().RefreshAllTrackNames();
 }
 
@@ -948,7 +1055,8 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return;
     if (g_snapshots[snapIdx]->m_isSpacer) return;
 
-    const TransitionSnapshot* snap = g_snapshots[snapIdx].get();
+    TransitionSnapshot* snap = g_snapshots[snapIdx].get();
+    EnsureLayerUids(snap);   // pre-uid scenes: resolve m_layerIdx to a uid once
     // m_duration == 0 means instant (set via the Scene Settings popup)
     double duration = snap->m_duration;
 
@@ -966,7 +1074,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     // When a layer is being recalled, layers manage track visibility.
     // Strip TS_VIS from the engine mask so the two systems don't fight.
     int effectiveMask = snap->m_mask;
-    if (!snap->m_layers.empty() && snap->m_layerIdx >= 0)
+    if (!snap->m_layers.empty() && snap->m_layerUid > 0)
         effectiveMask &= ~TS_VIS;
 
     // --- Duration debug: record step timings if enabled ---
@@ -2796,8 +2904,21 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             int idx = GetSelectedListIndex(hwnd);
             if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
             {
+                TransitionSnapshot* snap = g_snapshots[idx].get();
                 int sel = (int)SendDlgItemMessage(hwnd, IDC_SNAP_LAYER, CB_GETCURSEL, 0, 0);
-                g_snapshots[idx]->m_layerIdx = sel - 1;  // index 0 = "no layer recall"
+                int uid = (sel < 0) ? 0
+                        : (int)SendDlgItemMessage(hwnd, IDC_SNAP_LAYER, CB_GETITEMDATA,
+                                                  (WPARAM)sel, 0);
+                if (uid < 0) uid = 0;   // CB_ERR
+
+                // Picking a layer the scene never captured (created after the
+                // scene was saved) means its stored layer set is out of date.
+                // Refresh it now, or recall would have nothing to apply.
+                if (uid > 0 && FindCapturedLayerByUid(snap, uid) < 0)
+                    CaptureLayersFromEngine(snap);
+
+                snap->m_layerUid = uid;
+                snap->m_layerIdx = FindCapturedLayerByUid(snap, uid);  // old-format compat
                 MarkProjectDirty(nullptr);
             }
             return TRUE;

@@ -238,6 +238,7 @@ struct CapturedLayer
     std::string                     name;
     std::vector<CapturedLayerTrack> tracks;
     int                             maxChannels = 0;
+    int                             uid         = 0;  // stable LayersEngine uid (0 = pre-uid scene)
 };
 
 // ---------------------------------------------------------------------------
@@ -269,8 +270,14 @@ public:
     int         m_taper    = TAPER_SCURVE;
     double      m_taperExp = 2.0;  // used when m_taper == TAPER_CUSTOM
 
-    // Layer assignment – active layer index at capture time (-1 = none)
+    // Layer assignment – active layer index at capture time (-1 = none).
+    // Kept only so scenes written before uids still recall; m_layerUid is the
+    // authoritative reference because indices shift when layers are added,
+    // removed or reordered.
     int         m_layerIdx = -1;
+
+    // Layer designated for recall, by stable uid (0 = none / pre-uid scene).
+    int         m_layerUid = 0;
 
     // Full layer state snapshot (all layers at capture time). When non-empty
     // this is used on recall instead of the bare m_layerIdx above.

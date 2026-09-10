@@ -937,7 +937,23 @@ void LayersEngine::RemoveLayer(int idx)
     SaveExtState();
 }
 
-void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int activeIdx)
+int LayersEngine::FindLayerByUid(int uid) const
+{
+    if (uid <= 0) return -1;
+    for (int i = 0; i < (int)m_layers.size(); i++)
+        if (m_layers[i].uid == uid) return i;
+    return -1;
+}
+
+bool LayersEngine::ActivateLayerByUid(int uid)
+{
+    int idx = FindLayerByUid(uid);
+    if (idx < 0) return false;
+    ActivateLayer(idx);
+    return true;
+}
+
+void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int activeUid)
 {
     // Unregister all existing layer actions
     for (auto& ld : m_layers)
@@ -946,11 +962,21 @@ void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int 
     m_layers.clear();
     m_activeLayer = -1;
 
-    // Add new layers (assigns UIDs, registers actions)
+    // Add new layers, preserving each incoming uid. Re-minting on every recall
+    // would orphan the layer's registered action and every scene reference to
+    // it, so a uid is only allocated for entries that arrive without one.
+    std::vector<int> seenUids;
     for (const LayerDef& src : newLayers)
     {
         LayerDef ld;
-        ld.uid = m_nextUid++;
+        ld.uid = src.uid;
+        // A missing or duplicated uid would make FindLayerByUid ambiguous.
+        if (ld.uid <= 0 ||
+            std::find(seenUids.begin(), seenUids.end(), ld.uid) != seenUids.end())
+            ld.uid = m_nextUid++;
+        seenUids.push_back(ld.uid);
+        if (ld.uid >= m_nextUid) m_nextUid = ld.uid + 1;
+
         strncpy(ld.name, src.name, sizeof(ld.name) - 1);
         ld.name[sizeof(ld.name) - 1] = '\0';
         ld.maxChannels = src.maxChannels;
@@ -963,8 +989,7 @@ void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int 
     SaveExtState();
 
     // Activate the requested layer (also calls DoApplyLayer)
-    if (activeIdx >= 0 && activeIdx < (int)m_layers.size())
-        ActivateLayer(activeIdx);
+    ActivateLayerByUid(activeUid);
 
     // Refresh the layers window to show the new state
     LayersWnd_Refresh();

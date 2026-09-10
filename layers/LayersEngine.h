@@ -67,6 +67,16 @@ public:
     int             GetLayerCount() const { return (int)m_layers.size(); }
     int             GetActiveLayer() const { return m_activeLayer; }
 
+    // --- Stable UID access ---
+    // Layer UIDs survive renames, reordering and scene recall. Prefer them
+    // over indices whenever a layer reference has to outlive the current
+    // in-memory layer list (scene recall, registered actions, persistence).
+    int  GetLayerUid(int idx) const
+    { return (idx >= 0 && idx < (int)m_layers.size()) ? m_layers[idx].uid : 0; }
+    int  FindLayerByUid(int uid) const;   // returns index, or -1
+    bool ActivateLayerByUid(int uid);     // returns false if uid is unknown
+    int  AllocUid() { return m_nextUid++; }  // mint a uid for an unnumbered layer
+
     // --- Activation ---
     void ActivateLayer(int idx);
     void Deactivate();
@@ -80,8 +90,11 @@ public:
     void MoveLayer(int from, int to);
 
     // Bulk-replace all layers (for scene recall). Rebuilds layer list from
-    // newLayers, activates activeIdx, saves ext state once.
-    void ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int activeIdx);
+    // newLayers, activates the layer whose uid is activeUid, saves ext state
+    // once. Each entry's uid is preserved when non-zero so action bindings
+    // and scene layer references survive the replace; entries with uid <= 0
+    // get a freshly minted one. Pass activeUid <= 0 for "activate nothing".
+    void ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int activeUid);
 
     // --- Dynamic action dispatch ---
     bool HandleLayerCommand(int cmdId);  // returns true if handled

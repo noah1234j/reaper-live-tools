@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.0.31-beta] — 2026-09-10
+
+### New Features
+
+- **Layers: "Update Layer" in the layer right-click menu**: The layer list's context menu item that re-captures the currently visible tracks is now named **Update Layer (Capture Visible Tracks)**, and it asks for confirmation naming the layer it is about to change. The action always replaced the layer's entire track list, but nothing said so and nothing said *which* layer — right-clicking one row while a different one was selected was enough to quietly discard a track list with no undo. The status line now reports the layer name along with the new track count.
+
+### Bug Fixes
+
+- **Scenes: the "select a layer to recall" list did not show layers created after the scene was saved**: The dropdown was populated from `snap->m_layers` — the copy of the layer set frozen into the scene at capture time — so a layer added or renamed afterwards never appeared in it, and the only way to refresh the list was a full **Overwrite** of the scene, which also discards its captured track and plugin state. The list is now built from the live layer set, so it always reflects the layers that exist right now. Choosing a layer the scene has never captured refreshes that scene's stored layer definitions from the current ones — layer definitions are not performance state, so this leaves everything else in the scene untouched. Layers the scene captured that no longer exist are still listed, marked *(not in Layers)*, so an existing assignment is never silently dropped.
+
+- **Layers: layer identity was rebuilt from scratch on every scene recall, breaking action bindings**: Each layer carries a stable uid, and its REAPER action is registered against that uid as `LT_LAYER_UID_NNNN`. `ReplaceAllLayers` — which runs on every scene recall that restores layer state — discarded the incoming uids and minted fresh ones for the whole set, so every recall unregistered each layer's action and registered a *differently named* one in its place. Any keyboard shortcut or control-surface binding pointing at a layer's Activate action therefore came loose the first time a scene was recalled, and pointed at nothing afterwards. Uids are now carried through the replace intact, and are only allocated for layers that genuinely arrive without one.
+
+- **Scenes: a scene's layer assignment broke when layers were reordered, renamed, added or deleted**: Scenes referenced their layer by position in the captured list (`LAYER n`). Any change to the layer set shifted those positions, so the scene silently recalled whichever layer had moved into that slot. Scenes now store the layer's stable uid (`LAYERUID`) and each captured layer records its own uid, so the reference survives renames and reordering. Scenes saved by older builds are migrated on first use — their existing index is resolved to a uid once and kept — and the old `LAYER` line is still written, so a scene saved by this build still loads on older builds.
+
+---
+
 ## [v0.0.30-beta] — 2026-09-09
 
 ### Bug Fixes

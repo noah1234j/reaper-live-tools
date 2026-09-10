@@ -353,6 +353,7 @@ void TransitionSnapshot::Capture(int mask)
     {
         LayersEngine& le = LayersEngine::Get();
         m_layerIdx = le.GetActiveLayer();
+        m_layerUid = le.GetLayerUid(m_layerIdx);
         m_layers.clear();
         for (int li = 0; li < le.GetLayerCount(); li++)
         {
@@ -360,6 +361,7 @@ void TransitionSnapshot::Capture(int mask)
             CapturedLayer cl;
             cl.name        = ld.name;
             cl.maxChannels = ld.maxChannels;
+            cl.uid         = ld.uid;
             for (const LayerTrack& lt : ld.tracks)
             {
                 CapturedLayerTrack clt;
@@ -506,6 +508,10 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
     if (m_layerIdx >= 0)
         ctx->AddLine("LAYER %d", m_layerIdx);
 
+    // Active layer by stable uid – what recall actually resolves against
+    if (m_layerUid > 0)
+        ctx->AddLine("LAYERUID %d", m_layerUid);
+
     // Full layer state (new format – supersedes bare LAYER on recall)
     if (!m_layers.empty())
     {
@@ -514,7 +520,8 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
         {
             std::string safeName = cl.name;
             for (char& c : safeName) if (c == '"') c = '\'';
-            ctx->AddLine("LAYERDEF \"%s\" %d", safeName.c_str(), cl.maxChannels);
+            // Trailing uid is optional on read, so older readers still parse this.
+            ctx->AddLine("LAYERDEF \"%s\" %d %d", safeName.c_str(), cl.maxChannels, cl.uid);
             for (const auto& clt : cl.tracks)
             {
                 if (clt.isSpacer)
@@ -790,6 +797,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             sscanf(trimmed + 6, "%d", &li);
             ss->m_layerIdx = li;
         }
+        else if (strncmp(trimmed, "LAYERUID ", 9) == 0)
+        {
+            int lu = 0;
+            sscanf(trimmed + 9, "%d", &lu);
+            ss->m_layerUid = (lu > 0) ? lu : 0;
+        }
         else if (strncmp(trimmed, "LAYERCOUNT ", 11) == 0)
         {
             // Just a count marker; actual data follows as LAYERDEF blocks.
@@ -807,11 +820,14 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                 while (*nq && *nq != '"' && ni < 63) nbuf[ni++] = *nq++;
                 nbuf[ni] = '\0';
                 cl.name = nbuf;
-                // maxChannels is after the closing quote
+                // maxChannels, then the optional uid, follow the closing quote.
+                // Scenes written before uids existed supply only maxChannels;
+                // those layers stay at uid 0 and get numbered on first recall.
                 const char* afterQ = (*nq == '"') ? nq + 1 : nq;
-                int mc = 0;
-                sscanf(afterQ, " %d", &mc);
+                int mc = 0, uid = 0;
+                if (sscanf(afterQ, " %d %d", &mc, &uid) < 2) uid = 0;
                 cl.maxChannels = mc;
+                cl.uid         = (uid > 0) ? uid : 0;
             }
             // Read sub-lines until LAYERDEFEND
             char subLine[4096];
