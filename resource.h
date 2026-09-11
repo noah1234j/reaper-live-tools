@@ -76,7 +76,7 @@
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
-#define LT_VERSION_STR           "v0.0.39-beta"
+#define LT_VERSION_STR           "v0.0.40-beta"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213
@@ -132,6 +132,7 @@
 #define IDC_GSET_SHADOW_PARAMS      2255   // "Shadow VST3 params" checkbox
 #define IDC_GSET_CHUNK_ALL_INSTANT  2256   // "Chunk all on instant path" checkbox
 #define IDC_GSET_RECALL_LOG         2259   // "Write recall log to file" checkbox
+#define IDC_GSET_STORE_LAYER        2260   // "Store currently active layer on scene store"
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 // (2145-2147 now used – see IDC_SNAPNAME etc. above)

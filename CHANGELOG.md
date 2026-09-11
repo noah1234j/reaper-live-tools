@@ -1,5 +1,29 @@
 # Changelog
 
+## [v0.0.40-beta] — 2026-09-11
+
+### New Features
+
+- **Scenes: several scenes can be selected and deleted at once**: The scene list was `LVS_SINGLESEL`, so a multi-row selection was not possible at all. Click a scene and shift-click another to select the range. Right-clicking a multi-selection offers a single item — **Delete N Scenes**, with a confirmation — because Recall, Rename, Overwrite, Copy, Export and Scene Settings each act on exactly one scene, and quietly applying them to the first of a selection would be worse than not offering them. A single selection still gets the full menu.
+
+  Right-clicking now keeps an existing selection when the click lands inside it and collapses to one row when it lands outside, the standard convention; it previously force-selected the clicked row, which would have destroyed the selection before the menu opened. Drag-to-reorder is suppressed while more than one row is selected, since moving a group to one position has no sensible meaning. Deletion runs highest index first so the lower ones stay valid, fixing up the cue list per removal.
+
+  Note that **Ctrl+click is the usual "add to selection" modifier but may be bound to "Ctrl+click to overwrite scene"** in Settings. Shift-ranges are unaffected either way.
+
+- **Scenes: the last recalled scene is drawn bold**, the same treatment the active layer gets in the Layers window. Weight rather than a text marker, for the same reason: anything written into a row's label ends up in the rename box and from there in the name. It maps correctly in cue mode, where a row is a cue position rather than a scene index, and repaints on both recall paths.
+
+- **Scenes: "Store currently active layer on scene store"**, a new checkbox in the New Scene Defaults group of Settings, on by default. When on, saving a new scene records which layer is active so recalling it brings that layer back. When off the layer *definitions* are still captured — only the "activate this one" pointer is left unset. It is persisted on its own `LTSTOREACTIVELAYER` line rather than as a field on `LTDEFSETTINGS`, because a missing field there parses as 0 and would have silently defaulted the setting to off in every existing project.
+
+### Bug Fixes
+
+- **Scenes: overwriting a scene reverted its layer-to-recall to the last layer activated**: `Capture` runs on Overwrite as well as on New, and it set the scene's layer pointer from whichever layer was currently active — discarding whatever had been chosen in the recall dropdown. `Capture` no longer touches the assignment at all; a new scene is seeded in `DoSave`, and after that the dropdown is the only thing that changes it.
+
+  A second route to the same symptom is closed with it: `Capture` also rebuilds the scene's captured layer *set* from the live one, and a uid only means something within one set — so the chosen layer's uid could disappear from the freshly captured set even though the layer plainly still existed, dropping the scene back to its first layer. The assignment is now carried across the re-capture by name.
+
+- **Layers: removing a multi-track selection removed only the right-clicked track**: A correct `RemoveSelectedTrack` already existed and is what the **Del** key has always used, but the context menu's Remove case ignored it and erased the single hit-tested row. It now removes every selected track, and the menu item reads **"Remove N Tracks"** so a destructive action with no undo says what it is about to take. Right-clicking in that list also follows the same inside/outside-the-selection convention as the scene list; it used to bolt the clicked row onto an unrelated selection.
+
+---
+
 ## [v0.0.39-beta] — 2026-09-11
 
 ### Bug Fixes

@@ -42,6 +42,10 @@ static void MarkTouched(int idx)
 // EN_CHANGE / CBN_SELCHANGE from writing back to the snapshot.
 static bool g_syncingEditor = false;
 
+// Bold copy of the scene list's font, used by NM_CUSTOMDRAW to mark the scene
+// that was recalled last — the same treatment the active layer gets.
+static HFONT g_sceneBoldFont = nullptr;
+
 // Guard: when true, WM_DESTROY skips overwriting the dock-state pref (used by ToggleDocking)
 static bool g_suppressDockStateSave = false;
 
@@ -80,6 +84,12 @@ static std::vector<int> g_cueList;
 
 // Whether to place a project marker at the play-cursor on each recall
 static bool g_placeMarker = false;
+
+// Whether saving a scene records which layer is active at the time, so that
+// recalling the scene brings that layer back. Off means the scene still
+// captures the layer definitions — only the "recall this one" pointer is left
+// unset, for projects where layers are driven independently of scenes.
+bool g_storeActiveLayer = true;
 
 // Stop transport before recall; restart recording after recall
 static bool g_stopRecBeforeRecall = false;
@@ -369,6 +379,8 @@ void TransitionWnd_RecallScene(int index)
     TransitionEngine::Get().Recall(snap, effectiveMask, duration);
     TransitionEngine::Get().SetCurrentSlot(index);
     MarkTouched(index);
+    if (g_wnd && IsWindow(g_wnd))
+        InvalidateRect(GetDlgItem(g_wnd, IDC_LIST), nullptr, FALSE);
     // Restore full layer state (always, unless TS_LAYERS safe bit is set)
     RestoreLayerState(snap);
     if (g_wnd && IsWindow(g_wnd))
@@ -533,6 +545,7 @@ void TransitionWnd_ResetSettings()
     g_defaultTaper       = TAPER_SCURVE;
     g_defaultTaperExp    = 2.0;
     g_placeMarker        = false;
+    g_storeActiveLayer   = true;
     g_stopRecBeforeRecall = false;
     g_startRecAfterRecall = false;
     g_singleClickRecall  = false;
@@ -567,6 +580,13 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_singleClickRecall  = (singleClick != 0);
         g_altClickDelete     = (altDelete != 0);
         g_ctrlClickOverwrite = (ctrlOverwrite != 0);
+        return true;
+    }
+    if (strncmp(line, "LTSTOREACTIVELAYER ", 19) == 0)
+    {
+        int val = 1;
+        sscanf(line + 19, "%d", &val);
+        g_storeActiveLayer = (val != 0);
         return true;
     }
     if (strncmp(line, "LTPRELOADOFFLINE ", 17) == 0)
@@ -670,6 +690,9 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_singleClickRecall ? 1 : 0,
                  g_altClickDelete ? 1 : 0,
                  g_ctrlClickOverwrite ? 1 : 0);
+    // Its own line rather than a field on LTDEFSETTINGS: a missing field would
+    // read as 0, and this setting defaults to on.
+    ctx->AddLine("LTSTOREACTIVELAYER %d", g_storeActiveLayer ? 1 : 0);
     ctx->AddLine("LTPRELOADOFFLINE %d", g_preloadOffline ? 1 : 0);
     ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
     ctx->AddLine("LTSHADOWPARAMS %d", g_shadowParams ? 1 : 0);
@@ -1095,6 +1118,22 @@ static int GetSelectedListIndex(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// GetSelectedListIndices – every selected row, ascending.
+// GetSelectedListIndex still answers "the first one", which is what the
+// single-scene operations want; this is for the ones that act on a group.
+// ---------------------------------------------------------------------------
+static std::vector<int> GetSelectedListIndices(HWND hwnd)
+{
+    std::vector<int> out;
+    HWND hList = GetDlgItem(hwnd, IDC_LIST);
+    if (!hList) return out;
+    int i = -1;
+    while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) >= 0)
+        out.push_back(i);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // GetSelectedSnapshot
 // ---------------------------------------------------------------------------
 static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd)
@@ -1465,6 +1504,16 @@ static void DoSave(HWND hwnd)
     ss->m_taper    = g_defaultTaper;
     ss->m_taperExp = g_defaultTaperExp;
     ss->Capture(TS_CAPTURE_ALL);  // also captures full layer state
+
+    // Seed the new scene's layer assignment from whatever is active, if the
+    // user wants that. Only here, and only for a scene being created — see
+    // the note in Capture about why Overwrite must not do this.
+    if (g_storeActiveLayer)
+    {
+        LayersEngine& le = LayersEngine::Get();
+        ss->m_layerIdx = le.GetActiveLayer();
+        ss->m_layerUid = le.GetLayerUid(ss->m_layerIdx);
+    }
     ss->m_slot = slot;
 
     g_snapshots.push_back(std::move(ss));
@@ -1612,6 +1661,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (g_durationDebug) QueryPerformanceCounter(&t1);
 
     TransitionEngine::Get().SetCurrentSlot(snapIdx);
+    InvalidateRect(GetDlgItem(hwnd, IDC_LIST), nullptr, FALSE);
     MarkTouched(snapIdx);
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
 
@@ -2229,6 +2279,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         bool instant = (g_defaultDuration == 0.0);
         CheckDlgButton(hwnd, IDC_GSET_INSTANT, instant ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_MARKER,            g_placeMarker           ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_STORE_LAYER,       g_storeActiveLayer      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_STOP_REC_BEFORE,   g_stopRecBeforeRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_START_REC_AFTER,   g_startRecAfterRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SINGLE_CLICK,    g_singleClickRecall   ? BST_CHECKED : BST_UNCHECKED);
@@ -2326,6 +2377,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_defaultTaperExp = (ex > 0.0) ? ex : 2.0;
 
             g_placeMarker         = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER)            == BST_CHECKED);
+            g_storeActiveLayer    = (IsDlgButtonChecked(hwnd, IDC_GSET_STORE_LAYER)       == BST_CHECKED);
             g_stopRecBeforeRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_STOP_REC_BEFORE)   == BST_CHECKED);
             g_startRecAfterRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_START_REC_AFTER)   == BST_CHECKED);
             g_singleClickRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SINGLE_CLICK)    == BST_CHECKED);
@@ -2762,6 +2814,52 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
 
     HMENU hMenu = CreatePopupMenu();
 
+    // With several rows selected, only the operations that mean something for
+    // a group are offered. Recall, Rename, Overwrite and the rest all act on
+    // exactly one scene, and silently applying them to the first of a
+    // selection would be worse than not offering them.
+    const std::vector<int> multiSel = isCueMode ? std::vector<int>()
+                                                : GetSelectedListIndices(hwnd);
+    if (!isCueMode && multiSel.size() > 1)
+    {
+        char delLabel[48];
+        snprintf(delLabel, sizeof(delLabel), "Delete %d Scenes", (int)multiSel.size());
+        AppendMenu(hMenu, MF_STRING, CTX_DELETE, delLabel);
+
+        int cmdMulti = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
+                                      pt.x, pt.y, 0, hwnd, nullptr);
+        DestroyMenu(hMenu);
+
+        if (cmdMulti == CTX_DELETE)
+        {
+            char prompt[96];
+            snprintf(prompt, sizeof(prompt), "Delete %d scenes?", (int)multiSel.size());
+            if (MessageBoxA(hwnd, prompt, "Live Tools - Scenes",
+                            MB_YESNO | MB_ICONQUESTION) == IDYES)
+            {
+                // Highest index first so the lower ones stay valid, and fix up
+                // the cue list for each removal the same way a single delete does.
+                for (int k = (int)multiSel.size() - 1; k >= 0; k--)
+                {
+                    const int si = multiSel[k];
+                    if (si < 0 || si >= (int)g_snapshots.size()) continue;
+                    g_cueList.erase(
+                        std::remove(g_cueList.begin(), g_cueList.end(), si),
+                        g_cueList.end());
+                    for (auto& ci : g_cueList)
+                        if (ci > si) ci--;
+                    g_snapshots.erase(g_snapshots.begin() + si);
+                }
+                for (int i = 0; i < (int)g_snapshots.size(); i++)
+                    g_snapshots[i]->m_slot = i;
+                RefreshListView(hwnd);
+                LoadEditorFromSnapshot(hwnd, nullptr);
+                Undo_OnStateChangeEx("Delete Scenes", -1, -1);
+            }
+        }
+        return;
+    }
+
     if (isCueMode)
     {
         // Cue mode context menu: simpler
@@ -3022,7 +3120,10 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
             bool movedEnough = (abs(pt.x - s_lbDownPt.x) > GetSystemMetrics(SM_CXDRAG) ||
                                 abs(pt.y - s_lbDownPt.y) > GetSystemMetrics(SM_CYDRAG));
             bool heldLongEnough = (GetTickCount() - s_lbDownTime >= 200);
-            if (movedEnough && heldLongEnough)
+            // Reorder moves one row to one place; with several rows selected
+            // there is no sensible answer, so don't start a drag at all.
+            bool singleRow = (ListView_GetSelectedCount(hList) <= 1);
+            if (movedEnough && heldLongEnough && singleRow)
             {
                 g_dragSrc    = s_lbDownItem;
                 g_dragTarget = -1;
@@ -3088,8 +3189,16 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
         int safeItem = (item >= 0 && item < (int)g_snapshots.size()) ? item : -1;
         if (safeItem >= 0 && !g_snapshots[safeItem]->m_isSpacer)
         {
-            ListView_SetItemState(hList, safeItem,
-                LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            // Right-clicking inside a selection keeps it, so the menu can act
+            // on the group; right-clicking outside one selects just that row.
+            const bool alreadySel =
+                (ListView_GetItemState(hList, safeItem, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+            if (!alreadySel)
+            {
+                ListView_SetItemState(hList, -1, 0, LVIS_SELECTED);
+                ListView_SetItemState(hList, safeItem,
+                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            }
             LoadEditorFromSnapshot(dlg, g_snapshots[safeItem].get());
         }
         POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
@@ -3195,7 +3304,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
         HWND hList = CreateWindowExA(0, "SysListView32", "",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER |
-            LVS_REPORT | LVS_SHOWSELALWAYS | LVS_SINGLESEL | LVS_EDITLABELS,
+            LVS_REPORT | LVS_SHOWSELALWAYS | LVS_EDITLABELS,
             rList.left, rList.top,
             rList.right - rList.left, rList.bottom - rList.top,
             hwnd, (HMENU)(INT_PTR)IDC_LIST, g_hInstance, nullptr);
@@ -3203,6 +3312,18 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (hList)
         {
             ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+
+            // Bold variant of the list's own font, for the last-recalled scene.
+            if (!g_sceneBoldFont)
+            {
+                HFONT hf = (HFONT)SendMessage(hList, WM_GETFONT, 0, 0);
+                LOGFONT lf = {};
+                if (hf && GetObject(hf, sizeof(lf), &lf))
+                {
+                    lf.lfWeight     = FW_BOLD;
+                    g_sceneBoldFont = CreateFontIndirect(&lf);
+                }
+            }
 
             LVCOLUMN col = {};
             col.mask = LVCF_TEXT | LVCF_WIDTH;
@@ -3594,7 +3715,41 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         NMHDR* hdr = (NMHDR*)lParam;
         if (hdr->idFrom == IDC_LIST)
         {
-            if (hdr->code == NM_DBLCLK)
+            if (hdr->code == NM_CUSTOMDRAW)
+            {
+                // Mark the last-recalled scene by weight, the same way the
+                // Layers window marks the active layer. Weight rather than a
+                // text marker: anything written into the label would land in
+                // the rename box and end up in the scene name.
+                NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lParam;
+                LRESULT res = CDRF_DODEFAULT;
+                switch (cd->nmcd.dwDrawStage)
+                {
+                case CDDS_PREPAINT:
+                    res = g_sceneBoldFont ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
+                    break;
+                case CDDS_ITEMPREPAINT:
+                {
+                    const int row  = (int)cd->nmcd.dwItemSpec;
+                    const int slot = TransitionEngine::Get().GetCurrentSlot();
+                    // In cue mode a row is a cue position, so map it back to
+                    // the snapshot it points at before comparing.
+                    int rowSnap = row;
+                    if (g_cueMode)
+                        rowSnap = (row >= 0 && row < (int)g_cueList.size())
+                                  ? g_cueList[row] : -1;
+                    if (g_sceneBoldFont && rowSnap >= 0 && rowSnap == slot)
+                    {
+                        SelectObject(cd->nmcd.hdc, g_sceneBoldFont);
+                        res = CDRF_NEWFONT;
+                    }
+                    break;
+                }
+                }
+                SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
+                return TRUE;
+            }
+            else if (hdr->code == NM_DBLCLK)
             {
                 // Skip double-click recall when single-click recall is active
                 // (single-click already fired on the first button release)
@@ -3840,6 +3995,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             plugin_register("-accelerator", &g_notesAccel);
             g_notesAccelRegistered = false;
         }
+        if (g_sceneBoldFont) { DeleteObject(g_sceneBoldFont); g_sceneBoldFont = nullptr; }
         g_gripOldProc  = nullptr;
         g_splitOldProc = nullptr;
         TransitionEngine::Get().onTransitionComplete = nullptr;

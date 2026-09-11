@@ -10,6 +10,7 @@
 // Defined in TransitionWnd.cpp — used for optional debug popups
 extern bool g_durationDebug;
 
+
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
@@ -352,8 +353,27 @@ void TransitionSnapshot::Capture(int mask)
     // The recall path decides whether to apply them.
     {
         LayersEngine& le = LayersEngine::Get();
-        m_layerIdx = le.GetActiveLayer();
-        m_layerUid = le.GetLayerUid(m_layerIdx);
+
+        // The layer *definitions* are always captured — they are what recall
+        // installs. Which layer the scene activates is deliberately NOT set
+        // here: Capture also runs on Overwrite, and seeding from the active
+        // layer there threw away whatever the user had chosen in the recall
+        // dropdown, silently reverting the scene to the last layer they had
+        // activated. A new scene is seeded by DoSave instead; after that the
+        // dropdown is the only thing that changes the assignment.
+        //
+        // The assignment still has to survive this re-capture. A uid only
+        // means something within one captured set, and the set is about to be
+        // replaced by the live one — so a scene pointing into an older set
+        // would be left dangling and fall back to the first layer. Remember
+        // the layer's name now and re-resolve against the new set below.
+        std::string prevLayerName;
+        if (m_layerUid > 0)
+        {
+            for (const auto& cl : m_layers)
+                if (cl.uid == m_layerUid) { prevLayerName = cl.name; break; }
+        }
+
         m_layers.clear();
         for (int li = 0; li < le.GetLayerCount(); li++)
         {
@@ -371,6 +391,29 @@ void TransitionSnapshot::Capture(int mask)
             }
             m_layers.push_back(cl);
         }
+
+        // Re-point the assignment into the set just captured.
+        if (m_layerUid > 0)
+        {
+            bool stillThere = false;
+            for (const auto& cl : m_layers)
+                if (cl.uid == m_layerUid) { stillThere = true; break; }
+
+            if (!stillThere)
+            {
+                m_layerUid = 0;
+                if (!prevLayerName.empty())
+                {
+                    for (const auto& cl : m_layers)
+                        if (cl.name == prevLayerName) { m_layerUid = cl.uid; break; }
+                }
+            }
+        }
+
+        // Keep the old index field consistent for readers that still use it.
+        m_layerIdx = -1;
+        for (int li = 0; li < (int)m_layers.size(); li++)
+            if (m_layers[li].uid == m_layerUid) { m_layerIdx = li; break; }
     }
 
     // --- Save warning (always on) -------------------------------------------

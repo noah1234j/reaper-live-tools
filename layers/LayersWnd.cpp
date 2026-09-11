@@ -1152,8 +1152,29 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             if (item >= 0)
             {
-                ListView_SetItemState(hTrackList, item,
-                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                // Right-clicking inside an existing selection keeps it, so the
+                // menu acts on the whole selection; right-clicking outside one
+                // selects just that row first. Selecting unconditionally, as
+                // this did before, bolted the clicked row onto an unrelated
+                // selection and made "Remove" ambiguous.
+                const bool alreadySel =
+                    (ListView_GetItemState(hTrackList, item, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+                if (!alreadySel)
+                {
+                    const int cnt = ListView_GetItemCount(hTrackList);
+                    for (int k = 0; k < cnt; k++)
+                        ListView_SetItemState(hTrackList, k, 0, LVIS_SELECTED);
+                    ListView_SetItemState(hTrackList, item,
+                        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                }
+            }
+
+            // How many rows the menu will act on, for the Remove label.
+            int selCount = 0;
+            {
+                int si = -1;
+                while ((si = ListView_GetNextItem(hTrackList, si, LVNI_SELECTED)) >= 0)
+                    selCount++;
             }
 
             HMENU hMenu = CreatePopupMenu();
@@ -1170,8 +1191,13 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_TRK_SPACER_AFT, "Add Spacer After");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_TRK_REMOVE, "Remove\tDel");
+            char rmLabel[48];
+            if (selCount > 1)
+                snprintf(rmLabel, sizeof(rmLabel), "Remove %d Tracks\tDel", selCount);
+            else
+                snprintf(rmLabel, sizeof(rmLabel), "Remove\tDel");
+            AppendMenuA(hMenu, MF_STRING | (selCount < 1 ? MF_GRAYED : 0),
+                CTX_TRK_REMOVE, rmLabel);
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
                 CTX_TRK_CAPTURE, "Capture Visible Tracks");
@@ -1239,13 +1265,12 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 }
                 break;
             case CTX_TRK_REMOVE:
-                if (item >= 0 && item < (int)ld.tracks.size())
-                {
-                    ld.tracks.erase(ld.tracks.begin() + item);
-                    LayersEngine::Get().SaveExtState();
-                    RefreshTrackList(hwnd);
-                    RefreshLayerList(hwnd);
-                }
+                // Every selected row, not just the one that was right-clicked.
+                // RemoveSelectedTrack already walks the selection and erases
+                // from the highest index down; this case used to ignore it and
+                // delete the single hit-tested row instead, so removing a
+                // multi-track selection silently dropped one track.
+                RemoveSelectedTrack(hwnd);
                 break;
             case CTX_TRK_DELETE_ALL:
                 if (!ld.tracks.empty())
