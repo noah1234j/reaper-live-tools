@@ -72,7 +72,22 @@ Scans REAPER and Windows system settings for anything that could cause audio dro
 
 ## Installation
 
-### Pre-built (Windows)
+### ReaPack (recommended, Windows)
+
+1. Install [ReaPack](https://reapack.com/) if you don't have it.
+2. In REAPER: **Extensions → ReaPack → Import repositories...**
+3. Paste this URL and click OK:
+
+   ```
+   https://raw.githubusercontent.com/noah1234j/reaper-live-tools/main/index.xml
+   ```
+
+4. **Extensions → ReaPack → Browse packages**, search **Live Tools**, right-click → **Install**.
+5. Restart REAPER. Updates from then on are **Extensions → ReaPack → Synchronize packages**.
+
+Only a Windows x64 build is published right now; the macOS binary is not currently produced by CI, so ReaPack will report the package as unavailable on macOS. Build from source there for the time being.
+
+### Pre-built (Windows, manual)
 
 1. Download `reaper_transitions.dll` from the [Releases](../../releases) page.
 2. Copy it to your REAPER `UserPlugins` folder:

@@ -24,7 +24,6 @@ import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
-from xml.dom import minidom
 
 REPO = "noah1234j/reaper-live-tools"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -46,6 +45,28 @@ DCAs       VCA-style control groups
 Mute Groups, Live Lock, monitors and a meter bridge
 
 BETA software. Back up your projects before using it on a show."""
+
+
+def indent(elem, level=0, space="  "):
+    """ET.indent from Python 3.9, inlined so 3.8 works too.
+
+    minidom's toprettyxml is the usual shortcut but it reflows text nodes,
+    which would flatten the paragraph breaks in the changelogs and the
+    description. This only ever touches elements that have no text of
+    their own.
+    """
+    pad = "\n" + space * level
+    if len(elem):
+        if not (elem.text or "").strip():
+            elem.text = pad + space
+        for child in elem:
+            indent(child, level + 1, space)
+        if not (elem.tail or "").strip():
+            elem.tail = pad
+        if not (elem[-1].tail or "").strip():
+            elem[-1].tail = pad
+    elif level and not (elem.tail or "").strip():
+        elem.tail = pad
 
 
 def sh(*args):
@@ -135,13 +156,16 @@ def build():
     ET.SubElement(meta, "link", {"rel": "website",
                                  "href": "https://github.com/%s" % REPO}).text = "GitHub"
 
-    xml = minidom.parseString(ET.tostring(index, "utf-8")) \
-                 .toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
-    xml = "\n".join(line for line in xml.splitlines() if line.strip()) + "\n"
+    # Indent the element structure only (see indent() above): text nodes are
+    # left alone, so the blank lines separating paragraphs in the changelogs
+    # and the description survive.
+    indent(index)
 
     out = os.path.join(ROOT, "index.xml")
-    with open(out, "w", encoding="utf-8", newline="\n") as f:
-        f.write(xml)
+    with open(out, "wb") as f:
+        f.write(b'<?xml version="1.0" encoding="utf-8"?>\n')
+        ET.ElementTree(index).write(f, encoding="utf-8", xml_declaration=False)
+        f.write(b"\n")
     print("wrote %s (%d versions)" % (out, published))
 
 
