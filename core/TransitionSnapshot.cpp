@@ -539,12 +539,20 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
         }
     }
 
-    // Optional notes (newlines collapsed to spaces for single-line storage)
+    // Optional notes. The line is single-line storage, so newlines are escaped
+    // as "\n" rather than collapsed to spaces — the notes box accepts Return.
+    // Backslashes are escaped too, so the unescape below is unambiguous.
     if (!m_notes.empty()) {
-        std::string safeNotes = m_notes;
-        for (char& c : safeNotes) {
-            if (c == '"') c = '\'';
-            if (c == '\n' || c == '\r') c = ' ';
+        std::string safeNotes;
+        safeNotes.reserve(m_notes.size() + 8);
+        for (char c : m_notes) {
+            switch (c) {
+            case '"':  safeNotes += '\''; break;   // quote delimits the field
+            case '\\': safeNotes += "\\\\"; break;
+            case '\n': safeNotes += "\\n";  break;
+            case '\r': break;                      // CRLF -> a single "\n"
+            default:   safeNotes += c;     break;
+            }
         }
         ctx->AddLine("NOTES \"%s\"", safeNotes.c_str());
     }
@@ -867,7 +875,14 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             if (nq) {
                 nq++;
                 std::string notes;
-                while (*nq && *nq != '"') notes += *nq++;
+                while (*nq && *nq != '"') {
+                    // Undo the escaping above. Notes written by older builds
+                    // contain no backslashes of our making, so a stray one
+                    // there is simply passed through unchanged.
+                    if (*nq == '\\' && nq[1] == 'n')       { notes += '\n'; nq += 2; }
+                    else if (*nq == '\\' && nq[1] == '\\') { notes += '\\'; nq += 2; }
+                    else                                   { notes += *nq++; }
+                }
                 ss->m_notes = notes;
             }
         }

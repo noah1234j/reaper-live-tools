@@ -70,6 +70,7 @@
 #define IDC_SNAPNAME             2145   // scene title edit box (main Scenes window right panel)
 #define IDC_LAYERS_BTN           2146   // "Layers..." button (main Scenes window right panel)
 #define IDC_LAYER_STATUS         2147   // current layer indicator label (main Scenes window)
+#define IDC_NOTES_GRIP           2148   // drag handle on the notes box bottom edge
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213

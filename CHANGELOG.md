@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.0.32-beta] — 2026-09-10
+
+### New Features
+
+- **Scenes: Notes moved to the bottom of the sidebar, and it can be dragged taller**: The notes box sat in the middle of the right-hand panel, between the layer selector and the layer/status readouts, which pushed every button down and left it a fixed 34 units tall no matter how large the window was. Notes is now the last thing in the stack and everything above it has moved up to close the gap. A grab handle sits on the bottom edge of the box: drag it down to grow the box into the empty space below the sidebar, which is exactly the space that opens up as you make the window taller. The height is clamped to the space actually available, so shrinking the window pulls the box back in rather than letting it run off the bottom, and it is saved with the rest of the window state in the project.
+
+- **Scenes: the notes box accepts Return for a new line**: It was a multi-line field that could never be given a second line — Return went to the dialog rather than the control. The field now takes Return, and because REAPER sits ahead of the window in the keyboard queue and would otherwise run whatever action Return is bound to, a keyboard hook claims the key while (and only while) focus is inside the notes box.
+
+### Bug Fixes
+
+- **Scenes: line breaks in notes were replaced with spaces when the project was saved**: Notes are stored on a single line in the project file, and newlines were flattened to spaces to keep them there. That was invisible while the field could not produce a newline in the first place; now that it can, newlines are escaped instead, so multi-line notes survive a save and reload. Backslashes are escaped alongside them so the two cannot be confused. Notes written by older builds read back unchanged.
+
+---
+
 ## [v0.0.31-beta] — 2026-09-10
 
 ### New Features

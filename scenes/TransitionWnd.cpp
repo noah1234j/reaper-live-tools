@@ -132,6 +132,21 @@ static bool    g_skipNextContextMenu = false;
 struct SidebarCtrl { HWND hwnd; int origLeft; int origTop; int w; int h; };
 static std::vector<SidebarCtrl> g_sidebarCtrls;
 static int  g_initCx = 0, g_initCy = 0;
+
+// ---- Notes box resizer ----------------------------------------------------
+// The notes box is last in the sidebar stack, and the sidebar keeps its height
+// when the window grows — so everything below the notes box is free space, and
+// IDC_NOTES_GRIP lets the user drag the box down into it. g_notesExtra is how
+// many pixels past its default height the user has dragged it; it is saved
+// with the rest of the window state.
+static int     g_notesExtra     = 0;
+static RECT    g_notesInitRect  = {};   // client coords, recorded at WM_INITDIALOG
+static RECT    g_gripInitRect   = {};
+static WNDPROC g_gripOldProc    = nullptr;
+static bool    g_gripDragging   = false;
+static int     g_gripDragY0     = 0;
+static int     g_gripDragExtra0 = 0;
+static void    LayoutNotes(HWND hwnd);
 static RECT g_listInitRect = {};
 
 // ---------------------------------------------------------------------------
@@ -587,8 +602,10 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
     }
     if (strncmp(line, "LTSCENESWND ", 12) == 0)
     {
-        int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
-        sscanf(line + 12, "%d %d %d %d %d %d", &docked, &visible, &x, &y, &w, &h);
+        int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400, notesExtra = 0;
+        sscanf(line + 12, "%d %d %d %d %d %d %d",
+               &docked, &visible, &x, &y, &w, &h, &notesExtra);
+        g_notesExtra = (notesExtra > 0) ? notesExtra : 0;   // clamped by LayoutNotes
         s_savedWndDocked  = (docked  != 0);
         s_savedWndVisible = (visible != 0);
         s_savedWndX = x; s_savedWndY = y;
@@ -649,10 +666,159 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
             wx = s_savedWndX; wy = s_savedWndY;
             ww = s_savedWndW; wh = s_savedWndH;
         }
-        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d",
+        // Trailing notes height is optional on read, so older builds still
+        // parse this line and simply ignore the field.
+        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d %d",
                      wndDocked ? 1 : 0, wndVisible ? 1 : 0,
-                     wx, wy, ww, wh);
+                     wx, wy, ww, wh, g_notesExtra);
     }
+}
+
+// ---------------------------------------------------------------------------
+// NotesAccel – keyboard hook so Return reaches the notes box.
+//
+// ES_WANTRETURN tells the edit control to keep Return, but REAPER sits ahead
+// of the dialog in the keyboard queue and, for a docked window, will run
+// whatever action Return is bound to before the control ever sees it. This
+// hook claims Return (and keypad Enter) only while focus is actually inside
+// the notes box, and passes everything else through untouched.
+// ---------------------------------------------------------------------------
+static accelerator_register_t g_notesAccel;
+static bool                   g_notesAccelRegistered = false;
+
+static int NotesTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
+{
+    if (!msg || !g_wnd || !IsWindow(g_wnd)) return 0;
+    if (msg->message != WM_KEYDOWN && msg->message != WM_KEYUP) return 0;
+    if (msg->wParam != VK_RETURN) return 0;
+
+    HWND hNotes = GetDlgItem(g_wnd, IDC_SNAPNOTES);
+    if (!hNotes || GetFocus() != hNotes) return 0;
+
+    return -1;   // pass it to the control; ES_WANTRETURN turns it into a break
+}
+
+// ---------------------------------------------------------------------------
+// Notes line-ending helpers. Notes are stored with bare '\n', but a Win32
+// multiline edit needs "\r\n" to render a line break and hands "\r\n" back.
+// ---------------------------------------------------------------------------
+static std::string NotesToControl(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        if (c == '\r') continue;
+        if (c == '\n') out += '\r';
+        out += c;
+    }
+    return out;
+}
+
+static std::string NotesFromControl(const char* s)
+{
+    std::string out;
+    if (!s) return out;
+    for (; *s; s++)
+        if (*s != '\r') out += *s;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// NotesMaxExtra – how far the notes box may still be dragged down.
+// The sidebar controls keep their height on resize, so the gap between the
+// grip and the bottom of the client area is free space the box can claim. The
+// same margin the grip sits at by default is kept below it.
+// ---------------------------------------------------------------------------
+static int NotesMaxExtra(HWND hwnd)
+{
+    if (g_initCy <= 0 || g_gripInitRect.bottom <= g_gripInitRect.top) return 0;
+
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+
+    int baseH  = g_notesInitRect.bottom - g_notesInitRect.top;
+    int gripH  = g_gripInitRect.bottom  - g_gripInitRect.top;
+    int margin = g_initCy - g_gripInitRect.bottom;   // bottom gap at default size
+    int avail  = cr.bottom - margin - g_notesInitRect.top - baseH - gripH;
+    return avail > 0 ? avail : 0;
+}
+
+// ---------------------------------------------------------------------------
+// LayoutNotes – apply g_notesExtra to the notes box and reseat the grip.
+// Runs after the WM_SIZE sidebar pass, which has already put both controls
+// back at their default height, so x/width are read from the live controls.
+// ---------------------------------------------------------------------------
+static void LayoutNotes(HWND hwnd)
+{
+    HWND hNotes = GetDlgItem(hwnd, IDC_SNAPNOTES);
+    HWND hGrip  = GetDlgItem(hwnd, IDC_NOTES_GRIP);
+    if (!hNotes || !hGrip) return;
+    if (g_notesInitRect.bottom <= g_notesInitRect.top) return;
+
+    int maxExtra = NotesMaxExtra(hwnd);
+    if (g_notesExtra > maxExtra) g_notesExtra = maxExtra;
+    if (g_notesExtra < 0)        g_notesExtra = 0;
+
+    RECT nr, gr;
+    GetWindowRect(hNotes, &nr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&nr, 2);
+    GetWindowRect(hGrip,  &gr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&gr, 2);
+
+    int baseH = g_notesInitRect.bottom - g_notesInitRect.top;
+    int gripH = g_gripInitRect.bottom  - g_gripInitRect.top;
+    int h     = baseH + g_notesExtra;
+
+    SetWindowPos(hNotes, nullptr, nr.left, g_notesInitRect.top,
+                 nr.right - nr.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(hGrip, nullptr, gr.left, g_notesInitRect.top + h,
+                 gr.right - gr.left, gripH, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// ---------------------------------------------------------------------------
+// NotesGripProc – subclass for IDC_NOTES_GRIP: drag the notes box taller.
+// ---------------------------------------------------------------------------
+static LRESULT CALLBACK NotesGripProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+    case WM_SETCURSOR:
+        SetCursor(LoadCursor(nullptr, IDC_SIZENS));
+        return TRUE;
+
+    case WM_LBUTTONDOWN:
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        g_gripDragging   = true;
+        g_gripDragY0     = pt.y;
+        g_gripDragExtra0 = g_notesExtra;
+        SetCapture(h);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+        if (g_gripDragging)
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            g_notesExtra = g_gripDragExtra0 + (pt.y - g_gripDragY0);
+            LayoutNotes(GetParent(h));
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (g_gripDragging)
+        {
+            g_gripDragging = false;
+            ReleaseCapture();
+            MarkProjectDirty(nullptr);   // the new height is saved with the window state
+        }
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        g_gripDragging = false;
+        return 0;
+    }
+    return CallWindowProc(g_gripOldProc, h, msg, wp, lp);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,7 +928,8 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
     SetDlgItemText(hwnd, IDC_SNAPNAME, snap ? snap->m_name.c_str() : "");
 
     // Transition settings and notes are in the per-scene Settings popup.
-    SetDlgItemText(hwnd, IDC_SNAPNOTES, snap ? snap->m_notes.c_str() : "");
+    SetDlgItemText(hwnd, IDC_SNAPNOTES,
+                   snap ? NotesToControl(snap->m_notes).c_str() : "");
 
     // Per-scene layer selector. Listing the scene's *captured* layers here was
     // the bug: a layer added or renamed after the scene was saved never showed
@@ -1468,7 +1635,7 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
             SendDlgItemMessage(hwnd, IDC_TAPER, CB_ADDSTRING, 0, (LPARAM)n);
 
         // Fill from data
-        SetDlgItemText(hwnd, IDC_SNAPNOTES, d->notes.c_str());
+        SetDlgItemText(hwnd, IDC_SNAPNOTES, NotesToControl(d->notes).c_str());
         CheckDlgButton(hwnd, IDC_INSTANT, d->instant ? BST_CHECKED : BST_UNCHECKED);
 
         char buf[64];
@@ -1521,7 +1688,7 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
 
             char buf[4096] = {};
             GetDlgItemText(hwnd, IDC_SNAPNOTES, buf, sizeof(buf));
-            d->notes = buf;
+            d->notes = NotesFromControl(buf);
 
             d->instant = (IsDlgButtonChecked(hwnd, IDC_INSTANT) == BST_CHECKED);
 
@@ -2758,6 +2925,32 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
                 hChild = GetWindow(hChild, GW_HWNDNEXT);
             }
+
+            // ---- Notes resizer ----------------------------------------
+            HWND hNotes = GetDlgItem(hwnd, IDC_SNAPNOTES);
+            HWND hGrip  = GetDlgItem(hwnd, IDC_NOTES_GRIP);
+            if (hNotes && hGrip)
+            {
+                GetWindowRect(hNotes, &g_notesInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_notesInitRect, 2);
+                GetWindowRect(hGrip, &g_gripInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_gripInitRect, 2);
+
+                g_gripOldProc = (WNDPROC)SetWindowLongPtr(
+                    hGrip, GWLP_WNDPROC, (LONG_PTR)NotesGripProc);
+
+                if (!g_notesAccelRegistered)
+                {
+                    memset(&g_notesAccel, 0, sizeof(g_notesAccel));
+                    g_notesAccel.translateAccel = NotesTranslateAccel;
+                    g_notesAccel.isLocal        = true;
+                    plugin_register("accelerator", &g_notesAccel);
+                    g_notesAccelRegistered = true;
+                }
+
+                // The window may already have been resized to the saved rect.
+                LayoutNotes(hwnd);
+            }
         }
         return TRUE;
     }
@@ -2822,7 +3015,34 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             EndDeferWindowPos(hdwp);
         }
 
+        // The pass above reset the notes box to its default height; re-apply
+        // the dragged height, clamped to whatever space the new size leaves.
+        LayoutNotes(hwnd);
+
         InvalidateRect(hwnd, nullptr, TRUE);
+        break;
+    }
+
+    case WM_DRAWITEM:
+    {
+        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis && dis->CtlID == IDC_NOTES_GRIP)
+        {
+            // Two short rules centred in the strip, the usual "drag me" cue.
+            FillRect(dis->hDC, &dis->rcItem, GetSysColorBrush(COLOR_BTNFACE));
+            int midY = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+            int cx   = (dis->rcItem.left + dis->rcItem.right) / 2;
+            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+            HGDIOBJ old = SelectObject(dis->hDC, pen);
+            for (int i = 0; i < 2; i++)
+            {
+                MoveToEx(dis->hDC, cx - 14, midY - 1 + i * 2, nullptr);
+                LineTo  (dis->hDC, cx + 14, midY - 1 + i * 2);
+            }
+            SelectObject(dis->hDC, old);
+            DeleteObject(pen);
+            return TRUE;
+        }
         break;
     }
 
@@ -2879,7 +3099,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             {
                 char buf[4096] = {};
                 GetDlgItemText(hwnd, IDC_SNAPNOTES, buf, sizeof(buf));
-                g_snapshots[idx]->m_notes = buf;
+                g_snapshots[idx]->m_notes = NotesFromControl(buf);
             }
             return TRUE;
         }
@@ -3205,6 +3425,12 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             DockWindowRemove(hwnd);
         }
+        if (g_notesAccelRegistered)
+        {
+            plugin_register("-accelerator", &g_notesAccel);
+            g_notesAccelRegistered = false;
+        }
+        g_gripOldProc = nullptr;
         TransitionEngine::Get().onTransitionComplete = nullptr;
         g_wnd = nullptr;
         return TRUE;

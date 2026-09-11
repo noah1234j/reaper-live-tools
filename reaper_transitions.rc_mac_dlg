@@ -38,28 +38,33 @@ LTEXT           "", IDC_PROGRESS,          158, 31, 97,  8
 COMBOBOX        IDC_SNAP_LAYER,             158, 41, 97, 100,
 CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-// ---- Scene notes (multiline) -----------------------------------------
-LTEXT           "Notes:", IDC_STATIC,       158, 55, 97,  8
-EDITTEXT        IDC_SNAPNOTES,              158, 65, 97, 34,
-ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER
-
 // ---- Current layer indicator -----------------------------------------
-LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 101, 97, 8
+LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 55, 97, 8
 
 // ---- Status ----------------------------------------------------------
-LTEXT           "Idle",   IDC_STATUS,      158, 111, 97, 10
+LTEXT           "Idle",   IDC_STATUS,      158, 65, 97, 10
 
 // ---- Safes button ---------------------------------------------------
-PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 124, 97, 13
+PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 78, 97, 13
 
 // ---- Cue list setup button ------------------------------------------
-PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 141, 97, 13
+PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 95, 97, 13
 
 // ---- Settings button (opens global settings) -------------------------
-PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 158, 97, 13
+PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 112, 97, 13
 
 // ---- Layers button (opens Layers window) ----------------------------
-PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 175, 97, 13
+PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 129, 97, 13
+
+// ---- Scene notes (multiline, last control in the sidebar stack) -------
+// The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
+// a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
+// run time, so the height below is only the default.
+LTEXT           "Notes:", IDC_STATIC,       158, 146, 97,  8
+EDITTEXT        IDC_SNAPNOTES,              158, 156, 97, 28,
+ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
+CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
+158, 184, 97, 6
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_TSNAPS)
 
