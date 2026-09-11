@@ -133,6 +133,65 @@ bool LayersEngine::StrToGuid(const char* s, GUID& out)
 // ---------------------------------------------------------------------------
 // Activation
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Folder safety for track reordering
+//
+// REAPER stores no per-track parent: folder membership is purely positional.
+// A track belongs to the innermost folder whose parent sits above it and whose
+// matching negative I_FOLDERDEPTH sits below it. Moving a track to an absolute
+// index therefore silently adopts it into — or evicts it from — whatever
+// folder happens to span the destination. That is how layer reordering was
+// moving tracks between folders: nothing in the move said "change the folder",
+// the new position simply meant a different one.
+//
+// Reordering must never restructure the project, so a move that would land a
+// track under a different parent is skipped rather than corrected afterwards —
+// there is no "put it back" once the move has happened.
+// ---------------------------------------------------------------------------
+
+// Innermost open folder at list position `slot`, counting only tracks other
+// than `moving`. Excluding it makes the current and destination positions
+// directly comparable; it is safe because the caller has already established
+// that `moving` has I_FOLDERDEPTH 0, so lifting it out changes no other
+// track's nesting.
+static MediaTrack* FolderParentForSlot(int slot, MediaTrack* moving)
+{
+    std::vector<MediaTrack*> open;
+    const int n = CountTracks(0);
+    int seen = 0;
+    for (int t = 0; t < n && seen < slot; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr || tr == moving) continue;
+        int fd = 0;
+        int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
+        if (p) fd = *p;
+        if (fd >= 1)
+            open.push_back(tr);
+        else if (fd < 0)
+            for (int k = 0; k < -fd && !open.empty(); k++) open.pop_back();
+        seen++;
+    }
+    return open.empty() ? nullptr : open.back();
+}
+
+// True when moving `tr` from `curPos` to `dest` would change which folder it
+// belongs to, or when `tr` itself opens or closes one.
+static bool ReorderWouldChangeFolder(MediaTrack* tr, int curPos, int dest)
+{
+    if (!tr) return true;
+
+    // A folder parent (+1) or a last-child (-n) carries the folder structure
+    // in its own depth value. Relocating one without its siblings rewrites the
+    // tree, so these are never moved at all.
+    int fd = 0;
+    int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
+    if (p) fd = *p;
+    if (fd != 0) return true;
+
+    return FolderParentForSlot(curPos, tr) != FolderParentForSlot(dest, tr);
+}
+
 void LayersEngine::DoApplyLayer(int idx)
 {
     if (idx < 0 || idx >= (int)m_layers.size()) return;
@@ -240,6 +299,7 @@ void LayersEngine::DoApplyLayer(int idx)
                 // IP_TRACKNUMBER returns 1-based position directly — no scan needed
                 int curPos = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
                 if (curPos < 0 || curPos == li) continue;
+                if (ReorderWouldChangeFolder(tr, curPos, li)) continue;
                 SetOnlyTrackSelected(tr);
                 ReorderSelectedTracks(li, 0);
             }
@@ -471,6 +531,7 @@ void LayersEngine::PhysicallyReorderLayer(int idx)
         }
         if (curPos < 0 || curPos == li) continue;
         MediaTrack* tr = GetTrack(0, curPos);
+        if (ReorderWouldChangeFolder(tr, curPos, li)) continue;
         SetOnlyTrackSelected(tr);
         ReorderSelectedTracks(li, 0);
     }

@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.0.36-beta] — 2026-09-11
+
+### Bug Fixes
+
+- **Layers: activating a layer could move tracks into or out of folders**: REAPER stores no per-track parent — folder membership is purely positional, decided by which folder's `I_FOLDERDEPTH` span a track happens to sit inside. Reordering tracks to match a layer moves them to absolute indices, so a track whose destination landed inside a folder was silently adopted into it, and one moved out of a folder's span was evicted. Nothing in the move said "change the folder"; the new position simply meant a different one, which is why it only went wrong for some tracks in some layers. Both reorder paths now check before moving and skip any move that would change which folder a track belongs to. A track that opens a folder or closes one is never relocated at all, since moving a parent away from its children rewrites the tree. Skipping is deliberate rather than moving and repairing afterwards: once REAPER has re-parented a track there is no reliable way to put it back. The cost is that some tracks no longer reorder — folder parents, last children, and any track whose layer position falls inside a different folder — which is the direct price of never restructuring the project.
+
+### New Features
+
+- **Scenes: the layer recall dropdown is greyed out while the Layers global safe is set**: With that safe on, recall skips layer state entirely, so offering a layer to recall promised something that would not happen. The safe is toggled from the Safes window, which knows nothing about the dropdown, so the Scenes window notices the change on its UI tick and greys the control immediately instead of waiting for the scene selection to change.
+
+- **Layers: the capture menu items name the panel they will actually read**: Both entries hardcoded "MCP" regardless of the Target setting, so with layers following the TCP the menu told the user the wrong thing while capturing the right one. They now read "Add Layer (Current TCP Visibility)" and "Update Layer (Capture Visible TCP Tracks)" when the target is the track panel, and the Update confirmation names the panel too — which also makes the current target visible at the point of use rather than only inside the settings dialog.
+
+---
+
 ## [v0.0.35-beta] — 2026-09-10
 
 ### New Features

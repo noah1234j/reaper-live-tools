@@ -920,13 +920,24 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING,
                 CTX_LYR_ADD_LAYER, "Add Layer");
-            AppendMenuA(hMenu, MF_STRING,
-                CTX_LYR_ADD_FROM_MCP, "Add Layer (Current MCP Visibility)");
+            // Both capture items read whichever panel the Target setting
+            // points at, so the labels have to name that panel. Hardcoding
+            // "MCP" told the user the wrong thing whenever layers were
+            // following the TCP.
+            const char* panel = LayersEngine::Get().GetSettings().targetTcp
+                                ? "TCP" : "MCP";
+            char addLabel[64], updLabel[64];
+            snprintf(addLabel, sizeof(addLabel),
+                     "Add Layer (Current %s Visibility)", panel);
+            snprintf(updLabel, sizeof(updLabel),
+                     "Update Layer (Capture Visible %s Tracks)", panel);
+
+            AppendMenuA(hMenu, MF_STRING, CTX_LYR_ADD_FROM_MCP, addLabel);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_RENAME, "Rename\tF2");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_LYR_CAPTURE, "Update Layer (Capture Visible Tracks)");
+                CTX_LYR_CAPTURE, updLabel);
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_CLEAR, "Clear Tracks");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -1025,11 +1036,13 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 // Right-clicking the wrong row here silently discards a track
                 // list, so confirm which layer is about to be replaced.
                 {
-                    char prompt[192];
+                    char prompt[224];
                     snprintf(prompt, sizeof(prompt),
-                        "Update \"%s\" to the currently visible tracks?\n\n"
+                        "Update \"%s\" to the tracks currently visible in the %s?\n\n"
                         "The layer's existing track list will be replaced.",
-                        ld.name);
+                        ld.name,
+                        LayersEngine::Get().GetSettings().targetTcp
+                            ? "TCP (track panel)" : "MCP (mixer)");
                     if (MessageBoxA(hwnd, prompt, "Layers",
                                     MB_YESNO | MB_ICONQUESTION) != IDYES) break;
                 }

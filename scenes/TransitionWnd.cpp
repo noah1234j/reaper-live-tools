@@ -54,6 +54,11 @@ static int  s_savedWndX = 0, s_savedWndY = 0, s_savedWndW = 0, s_savedWndH = 0;
 // UI timer ID
 static const UINT UI_TIMER_ID = 1;
 
+// Last TS_LAYERS state applied to the recall dropdown, so the UI timer can
+// notice the global safe being toggled from the Safes window and re-enable or
+// grey the control without waiting for the scene selection to change.
+static bool g_layerComboSafed = false;
+
 // Row whose label is currently being edited in place, so the deferred
 // reposition in WM_USER + 2 knows which cell to move the edit box over.
 static int g_labelEditItem = -1;
@@ -1201,6 +1206,32 @@ static int FindCapturedLayerByUid(const TransitionSnapshot* snap, int uid)
 }
 
 // ---------------------------------------------------------------------------
+// UpdateLayerComboEnable – the recall dropdown is dead while the Layers global
+// safe is set: recall skips layer state entirely, so letting the user pick one
+// would promise something that will not happen.
+// ---------------------------------------------------------------------------
+static void UpdateLayerComboEnable(HWND hwnd)
+{
+    HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
+    if (!hCb) return;
+
+    const bool safed = (g_globalSafeMask & TS_LAYERS) != 0;
+    g_layerComboSafed = safed;
+
+    if (safed)
+    {
+        EnableWindow(hCb, FALSE);
+        return;
+    }
+
+    // Otherwise it follows the selected row: spacers have no layer to recall.
+    int idx = GetSelectedListIndex(hwnd);
+    const bool usable = (idx >= 0 && idx < (int)g_snapshots.size() &&
+                         !g_snapshots[idx]->m_isSpacer);
+    EnableWindow(hCb, usable ? TRUE : FALSE);
+}
+
+// ---------------------------------------------------------------------------
 // ResolveSceneLayer – point the scene at a layer that actually exists.
 // A scene whose layer was deleted falls back to the first layer rather than
 // keeping a dangling reference. "(no layer recall)" (uid 0) is a deliberate
@@ -1268,13 +1299,12 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
             }
 
             SendMessage(hCb, CB_SETCURSEL, (WPARAM)sel, 0);
-            EnableWindow(hCb, TRUE);
         }
         else
         {
             SendMessage(hCb, CB_SETCURSEL, 0, 0);
-            EnableWindow(hCb, FALSE);
         }
+        UpdateLayerComboEnable(hwnd);
     }
 
     // Update current layer indicator
@@ -3379,6 +3409,12 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             SendMessage(hProg, PBM_SETPOS, (WPARAM)pct, 0);
 
             SetDlgItemText(hwnd, IDC_STATUS, eng.GetStatus());
+
+            // The Layers global safe is toggled from the Safes window, which
+            // knows nothing about this dropdown. Notice the change here so it
+            // greys out straight away instead of on the next scene selection.
+            if (((g_globalSafeMask & TS_LAYERS) != 0) != g_layerComboSafed)
+                UpdateLayerComboEnable(hwnd);
 
             // Update layer status indicator
             {
