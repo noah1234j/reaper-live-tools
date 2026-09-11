@@ -2,6 +2,28 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.45" author="noah1234j" time="2026-09-11T21:07:54Z">
+        <changelog>Changed
+
+- Scenes no longer reorder tracks on recall: Recalling a scene now leaves the project's track order exactly as it is; everything else about the recall is unchanged.
+
+  The rewritten pass shipped in v0.0.43 still misplaces tracks, and it only ever covered the instant path. A recall with a transition time runs a different pass, which was never rewritten and still carries all four of the original defects - destination taken from the loop counter, no insert-before correction for downward moves, a folder check that lets a folder parent be moved away from its children, and a single pass that never verifies where anything landed.
+
+  Scenes still capture and store track order, so no scene needs re-saving and nothing is lost from existing scenes. When the pass is correct, re-enabling it restores the feature.
+
+  Not affected: track reordering in Layers, which is a separate code path and still active.
+
+Performance
+
+- Scenes: mute, solo and phase are no longer written when the track already holds the value: REAPER recomputes routing state on each of those writes - about a millisecond apiece - while reading the current value is free. A scene change moves a handful of tracks at most, so on a large project nearly all of those writes were setting a value that was already there. Each now reads first and writes only on a difference.
+
+Removed
+
+- Temporary action "Live Tools: DEBUG - Reorder benchmark" removed: The diagnostic added in v0.0.42 did its job and is gone from the action list.
+
+This release also carries the v0.0.44-beta changes, which were never published separately.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.45-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.43" author="noah1234j" time="2026-09-11T18:52:54Z">
         <changelog>Bug Fixes
 
