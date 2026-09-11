@@ -76,7 +76,7 @@
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
-#define LT_VERSION_STR           "v0.0.41-beta"
+#define LT_VERSION_STR           "v0.0.42-beta"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213

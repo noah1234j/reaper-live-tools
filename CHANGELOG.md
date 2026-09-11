@@ -1,5 +1,21 @@
 # Changelog
 
+## [v0.0.42-beta] — 2026-09-11
+
+### Diagnostics
+
+- **New temporary action: "Live Tools: DEBUG - Reorder benchmark"**: v0.0.41's instrumentation pinned a 47-second scene recall on `ReorderSelectedTracks` — 45,804 ms across 86 calls, 532 ms each, with everything else in the recall totalling about a second. (The quadratic deselect sweep that looked like the obvious culprit turned out to cost 1.67 ms for nearly 10,000 writes, so measuring it was worth doing.)
+
+  Relocating one item in a list of 114 cannot genuinely cost half a second, so that time is almost certainly fixed overhead REAPER pays per call — relinking routing, rebuilding panel order, producing undo state. This action settles whether that is true. It moves the last 12 tracks up one and back down, first as 24 single-track calls and then as 2 whole-block calls, and reports milliseconds per call for each. The same number of relocations happens either way, so if the per-call figures are close the cost is per call and batching the recall's reorder is worth building; if the block call costs roughly twelve times a single one, the cost follows the tracks and batching would buy nothing.
+
+  The recall path currently moves one track per call, which is the slowest way to use an API documented as moving *all* selected tracks at once.
+
+  **This action performs real track moves.** The project ends in the order it started, but run it on a saved project, and undo once if anything looks wrong afterwards. It is temporary and will be removed once the question is answered.
+
+  No recall behaviour changes in this release.
+
+---
+
 ## [v0.0.41-beta] — 2026-09-11
 
 ### New Features
