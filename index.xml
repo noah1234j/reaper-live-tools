@@ -2,6 +2,12 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.33" author="noah1234j" time="2026-09-11T00:34:59Z">
+        <changelog>New Features
+
+- Scenes: the plugin version is shown at the bottom of the sidebar: There was no way to tell which build was loaded without checking the DLL's timestamp, which matters when a beta is being replaced often. The version now sits as a footer at the very bottom of the right-hand column. It is pinned to the bottom of the window rather than parked at a fixed height, so it stays the last thing in the column at any size, and the notes box's drag limit accounts for it — dragging the box down stops above the footer instead of covering it. The window is 9 units taller to make room; the scene list grew with it rather than losing space.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.33-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.32" author="noah1234j" time="2026-09-11T00:15:03Z">
         <changelog>New Features
 
