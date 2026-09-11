@@ -2,6 +2,20 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.38" author="noah1234j" time="2026-09-11T16:26:10Z">
+        <changelog>New Features
+
+- Safes: layers can be made recall-safe, by index: Ten rows — Layer 1 through Layer 10, each showing the current layer's name — now sit under the tracks in the Safes grid. Ticking one means that layer keeps the definition it has now through a scene recall, instead of being overwritten by the copy the scene captured. The reference is deliberately by index rather than by name or uid: a scene recall replaces the entire layer set, and the slot number is the only thing that still means anything on the other side of that. The safe protects a layer's contents, not which layer is active — the scene still activates whatever layer it recorded. Stored per project as LTSAFELAYERS, and cleared by Clear All along with everything else.
+
+  A layer row is a single yes/no rather than a set of track parameters, so its checkbox sits in the All column — the one column that is not a specific parameter — and the rest of the row is drawn blank.
+
+Bug Fixes
+
+- Layers: renaming the active layer put an asterisk in the name: The active layer was marked by appending " *" to its list label, and ListView_EditLabel seeds the rename box from exactly that label — so renaming the active layer offered "Name *" and stored the asterisk as part of the layer name. The marker is now weight rather than text: the active row is drawn bold via NM_CUSTOMDRAW with a bold copy of the list's own font, which cannot leak into the data the way decorated text can. (NM_CUSTOMDRAW is a Win32 facility; on macOS the row may not render bold, but the rename bug is fixed on both since the label text was the cause.)
+
+- Layers: hiding tracks in one panel wiped the visual spacers in the other: REAPER exposes a single I_SPACER flag per track and renders it in both the TCP and the MCP, and the spacer pass cleared it across every track in the project before re-applying the layer's own. So a layer targeting the TCP that hid a stack of tracks also stripped their spacers out of the MCP, where those tracks were still on screen — the layer never touched MCP visibility, it just destroyed a property the MCP happens to draw. The clear now skips tracks that are not visible in the panel the layer targets. Clearing a hidden track's spacer achieves nothing there anyway, since the track is not drawn, so the target panel is unchanged while the other panel keeps its spacers. Tracks visible in both panels still take the layer's spacers in both — there is only one flag, so the two cannot hold different sets.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.38-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.37" author="noah1234j" time="2026-09-11T15:03:20Z">
         <changelog>Bug Fixes
 
