@@ -153,6 +153,25 @@ static void    LayoutNotes(HWND hwnd);
 // column at any window size.
 static RECT    g_versionInitRect = {};
 static void    LayoutVersion(HWND hwnd);
+
+// ---- Column splitter ------------------------------------------------------
+// g_splitOffset is how far the divider has been dragged from where the .rc
+// puts it, in pixels; positive widens the scene list at the sidebar's expense.
+// Saved with the window state. Sidebar controls are re-laid out proportionally
+// within whatever width is left, so they track the divider.
+static int     g_splitOffset      = 0;
+static RECT    g_splitInitRect    = {};
+static int     g_sbInitLeft       = 0;   // sidebar bounding box at design size
+static int     g_sbInitRight      = 0;
+// Controls above the scene list (the Scenes / Cue List toggles). They belong to
+// the left column, so they follow the divider rather than the window edge —
+// otherwise dragging the divider left leaves them overhanging the sidebar.
+static std::vector<SidebarCtrl> g_leftCtrls;
+static WNDPROC g_splitOldProc     = nullptr;
+static bool    g_splitDragging    = false;
+static int     g_splitDragX0      = 0;
+static int     g_splitDragOffset0 = 0;
+static void    LayoutMain(HWND hwnd);
 static RECT g_listInitRect = {};
 
 // ---------------------------------------------------------------------------
@@ -175,6 +194,7 @@ static LRESULT CALLBACK CueLvSubclassProc(HWND hList, UINT msg, WPARAM wParam, L
 static void RefillCueRightList(HWND hRight, const std::vector<int>& list);
 static void RestoreLayerState(TransitionSnapshot* snap);
 static void EnsureLayerUids(TransitionSnapshot* snap);
+static void ResolveSceneLayer(TransitionSnapshot* snap);
 static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -319,7 +339,7 @@ void TransitionWnd_RecallScene(int index)
 {
     if (index < 0 || index >= (int)g_snapshots.size()) return;
     TransitionSnapshot* snap = g_snapshots[index].get();
-    EnsureLayerUids(snap);   // pre-uid scenes: resolve m_layerIdx to a uid once
+    ResolveSceneLayer(snap);   // migrate pre-uid scenes; drop dangling references
     // m_duration == 0 means instant
     double duration = snap->m_duration;
     if (g_placeMarker)
@@ -345,7 +365,11 @@ void TransitionWnd_RecallScene(int index)
         HWND hList = GetDlgItem(g_wnd, IDC_LIST);
         ListView_SetItemState(hList, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(hList, index, FALSE);
+        // Repaint the sidebar so the "Layer:" readout matches what was just
+        // recalled; nothing else refreshed it after a recall.
+        LoadEditorFromSnapshot(g_wnd, snap);
     }
+    LayersWnd_Refresh();
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
     // Start recording after recall if enabled
     if (g_startRecAfterRecall)
@@ -608,10 +632,12 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
     }
     if (strncmp(line, "LTSCENESWND ", 12) == 0)
     {
-        int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400, notesExtra = 0;
-        sscanf(line + 12, "%d %d %d %d %d %d %d",
-               &docked, &visible, &x, &y, &w, &h, &notesExtra);
-        g_notesExtra = (notesExtra > 0) ? notesExtra : 0;   // clamped by LayoutNotes
+        int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
+        int notesExtra = 0, splitOffset = 0;
+        sscanf(line + 12, "%d %d %d %d %d %d %d %d",
+               &docked, &visible, &x, &y, &w, &h, &notesExtra, &splitOffset);
+        g_notesExtra  = (notesExtra > 0) ? notesExtra : 0;  // clamped by LayoutNotes
+        g_splitOffset = splitOffset;                        // clamped by LayoutMain
         s_savedWndDocked  = (docked  != 0);
         s_savedWndVisible = (visible != 0);
         s_savedWndX = x; s_savedWndY = y;
@@ -672,11 +698,11 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
             wx = s_savedWndX; wy = s_savedWndY;
             ww = s_savedWndW; wh = s_savedWndH;
         }
-        // Trailing notes height is optional on read, so older builds still
-        // parse this line and simply ignore the field.
-        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d %d",
+        // Trailing fields are optional on read, so older builds still parse
+        // this line and simply ignore them.
+        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d %d %d",
                      wndDocked ? 1 : 0, wndVisible ? 1 : 0,
-                     wx, wy, ww, wh, g_notesExtra);
+                     wx, wy, ww, wh, g_notesExtra, g_splitOffset);
     }
 }
 
@@ -738,14 +764,22 @@ static std::string NotesFromControl(const char* s)
 static int NotesMaxExtra(HWND hwnd)
 {
     if (g_initCy <= 0 || g_gripInitRect.bottom <= g_gripInitRect.top) return 0;
+    if (g_versionInitRect.bottom <= g_versionInitRect.top) return 0;
 
     RECT cr;
     GetClientRect(hwnd, &cr);
 
-    int baseH  = g_notesInitRect.bottom - g_notesInitRect.top;
-    int gripH  = g_gripInitRect.bottom  - g_gripInitRect.top;
-    int margin = g_initCy - g_gripInitRect.bottom;   // bottom gap at default size
-    int avail  = cr.bottom - margin - g_notesInitRect.top - baseH - gripH;
+    // Stop just above wherever LayoutVersion has pinned the footer, rather
+    // than reserving the whole gap that happens to exist at the design size —
+    // that gap is exactly the room the box is meant to be able to claim.
+    int verH   = g_versionInitRect.bottom - g_versionInitRect.top;
+    int verGap = g_initCy - g_versionInitRect.bottom;   // gap below the footer
+    int verTop = cr.bottom - verGap - verH;
+    int pad    = verH / 3;                              // breathing room, DPI-scaled
+
+    int baseH = g_notesInitRect.bottom - g_notesInitRect.top;
+    int gripH = g_gripInitRect.bottom  - g_gripInitRect.top;
+    int avail = (verTop - pad) - (g_notesInitRect.top + baseH + gripH);
     return avail > 0 ? avail : 0;
 }
 
@@ -803,6 +837,159 @@ static void LayoutVersion(HWND hwnd)
 
     SetWindowPos(hVer, nullptr, vr.left, top, vr.right - vr.left, h,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// ---------------------------------------------------------------------------
+// LayoutMain – position the list, the divider and the sidebar for the current
+// client size and divider offset. Replaces the old WM_SIZE pass, which shifted
+// the sidebar by dx and left its width alone; the sidebar now has to follow
+// the divider, so each control is placed proportionally within it.
+// ---------------------------------------------------------------------------
+static void LayoutMain(HWND hwnd)
+{
+    if (g_initCx <= 0 || g_sbInitRight <= g_sbInitLeft) return;
+
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    if (cr.right <= 0 || cr.bottom <= 0) return;
+
+    int dx = cr.right  - g_initCx;
+    int dy = cr.bottom - g_initCy;
+
+    int listLeft  = g_listInitRect.left;
+    int gap       = g_sbInitLeft - g_listInitRect.right;    // divider gutter
+    int rightEdge = cr.right - (g_initCx - g_sbInitRight);  // sidebar right margin
+    int sbInitW   = g_sbInitRight - g_sbInitLeft;
+
+    // Keep both columns usable no matter where the divider is dragged.
+    const int minList = (g_listInitRect.right - g_listInitRect.left) / 3;
+    const int minSb   = sbInitW / 2;
+
+    int divider = g_listInitRect.right + dx + g_splitOffset;
+    if (divider < listLeft + minList)      divider = listLeft + minList;
+    if (divider > rightEdge - gap - minSb) divider = rightEdge - gap - minSb;
+    g_splitOffset = divider - g_listInitRect.right - dx;    // clamp back
+
+    // ---- Scene list -------------------------------------------------------
+    HWND hList = GetDlgItem(hwnd, IDC_LIST);
+    if (hList && g_listInitRect.right > g_listInitRect.left)
+    {
+        int newW = divider - listLeft;
+        int newH = (g_listInitRect.bottom - g_listInitRect.top) + dy;
+        if (newW > 10 && newH > 10)
+        {
+            SetWindowPos(hList, nullptr, listLeft, g_listInitRect.top, newW, newH,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+
+            // Stretch "Name" to fill whatever the other two columns leave.
+            int col0W = ListView_GetColumnWidth(hList, 0);
+            int col2W = ListView_GetColumnWidth(hList, 2);
+            int col1W = newW - col0W - col2W - GetSystemMetrics(SM_CXVSCROLL) - 4;
+            if (col1W > 20) ListView_SetColumnWidth(hList, 1, col1W);
+        }
+    }
+
+    // ---- Left-column controls above the list ------------------------------
+    int listInitW = g_listInitRect.right - g_listInitRect.left;
+    int listW     = divider - listLeft;
+    if (listInitW > 0 && listW > 0 && !g_leftCtrls.empty())
+    {
+        HDWP hdwp = BeginDeferWindowPos((int)g_leftCtrls.size());
+        for (const auto& lc : g_leftCtrls)
+        {
+            int l = listLeft + MulDiv(lc.origLeft - listLeft, listW, listInitW);
+            int w = MulDiv(lc.w, listW, listInitW);
+            if (w < 1) w = 1;
+            hdwp = DeferWindowPos(hdwp, lc.hwnd, nullptr, l, lc.origTop, w, lc.h,
+                                  SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        EndDeferWindowPos(hdwp);
+    }
+
+    // ---- Divider ----------------------------------------------------------
+    HWND hSplit = GetDlgItem(hwnd, IDC_SPLITTER);
+    if (hSplit && g_splitInitRect.right > g_splitInitRect.left)
+    {
+        SetWindowPos(hSplit, nullptr,
+                     divider, g_splitInitRect.top,
+                     g_splitInitRect.right - g_splitInitRect.left,
+                     (g_splitInitRect.bottom - g_splitInitRect.top) + dy,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    // ---- Sidebar ----------------------------------------------------------
+    int sbLeft = divider + gap;
+    int sbW    = rightEdge - sbLeft;
+    if (sbW > 0 && sbInitW > 0 && !g_sidebarCtrls.empty())
+    {
+        HDWP hdwp = BeginDeferWindowPos((int)g_sidebarCtrls.size());
+        for (const auto& sc : g_sidebarCtrls)
+        {
+            // Map each control's slot in the design-size sidebar onto the
+            // sidebar's current width, so multi-control rows keep their
+            // proportions and their gutters.
+            int l = sbLeft + MulDiv(sc.origLeft - g_sbInitLeft, sbW, sbInitW);
+            int w = MulDiv(sc.w, sbW, sbInitW);
+            if (w < 1) w = 1;
+            hdwp = DeferWindowPos(hdwp, sc.hwnd, nullptr, l, sc.origTop, w, sc.h,
+                                  SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        EndDeferWindowPos(hdwp);
+    }
+
+    // Both of these depend on the widths just assigned above.
+    LayoutVersion(hwnd);
+    LayoutNotes(hwnd);
+
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+// ---------------------------------------------------------------------------
+// SplitterProc – subclass for IDC_SPLITTER: drag the column divider.
+// ---------------------------------------------------------------------------
+static LRESULT CALLBACK SplitterProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+    case WM_SETCURSOR:
+        SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+        return TRUE;
+
+    case WM_LBUTTONDOWN:
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        g_splitDragging    = true;
+        g_splitDragX0      = pt.x;
+        g_splitDragOffset0 = g_splitOffset;
+        SetCapture(h);
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+        if (g_splitDragging)
+        {
+            POINT pt;
+            GetCursorPos(&pt);
+            g_splitOffset = g_splitDragOffset0 + (pt.x - g_splitDragX0);
+            LayoutMain(GetParent(h));
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (g_splitDragging)
+        {
+            g_splitDragging = false;
+            ReleaseCapture();
+            MarkProjectDirty(nullptr);   // divider position is window state
+        }
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        g_splitDragging = false;
+        return 0;
+    }
+    return CallWindowProc(g_splitOldProc, h, msg, wp, lp);
 }
 
 // ---------------------------------------------------------------------------
@@ -913,15 +1100,40 @@ static void EnsureLayerUids(TransitionSnapshot* snap)
 {
     if (!snap || snap->m_layers.empty()) return;
 
+    LayersEngine& le = LayersEngine::Get();
     bool changed = false;
-    for (auto& cl : snap->m_layers)
+
+    // Uids already handed out within this scene, so two captured layers can
+    // never adopt the same one.
+    std::vector<int> taken;
+    for (const auto& cl : snap->m_layers)
+        if (cl.uid > 0) taken.push_back(cl.uid);
+
+    for (int i = 0; i < (int)snap->m_layers.size(); i++)
     {
-        if (cl.uid <= 0)
-        {
-            cl.uid  = LayersEngine::Get().AllocUid();
-            changed = true;
-        }
+        CapturedLayer& cl = snap->m_layers[i];
+        if (cl.uid > 0) continue;
+
+        // Adopt the uid of the live layer this capture refers to rather than
+        // minting a fresh one. A minted uid matches nothing in the live list,
+        // which is what made every layer of a pre-uid scene show up as "not
+        // in Layers". Match on name first — that is how the user identifies a
+        // layer — then fall back to the position it was captured at.
+        int live = -1;
+        for (int li = 0; li < le.GetLayerCount() && live < 0; li++)
+            if (strcmp(le.GetLayer(li).name, cl.name.c_str()) == 0) live = li;
+        if (live < 0 && i < le.GetLayerCount()) live = i;
+
+        int uid = (live >= 0) ? le.GetLayerUid(live) : 0;
+        if (uid > 0 && std::find(taken.begin(), taken.end(), uid) != taken.end())
+            uid = 0;                       // already claimed by an earlier layer
+        if (uid <= 0) uid = le.AllocUid();  // genuinely has no counterpart
+
+        cl.uid = uid;
+        taken.push_back(uid);
+        changed = true;
     }
+
     if (snap->m_layerUid <= 0 &&
         snap->m_layerIdx >= 0 && snap->m_layerIdx < (int)snap->m_layers.size())
     {
@@ -950,25 +1162,51 @@ static int FindCapturedLayerByUid(const TransitionSnapshot* snap, int uid)
 }
 
 // ---------------------------------------------------------------------------
+// ResolveSceneLayer – point the scene at a layer that actually exists.
+// A scene whose layer was deleted falls back to the first layer rather than
+// keeping a dangling reference. "(no layer recall)" (uid 0) is a deliberate
+// choice and is left alone.
+// ---------------------------------------------------------------------------
+static void ResolveSceneLayer(TransitionSnapshot* snap)
+{
+    if (!snap || snap->m_isSpacer) return;
+    EnsureLayerUids(snap);
+    if (snap->m_layerUid <= 0) return;
+
+    LayersEngine& le = LayersEngine::Get();
+    if (le.FindLayerByUid(snap->m_layerUid) >= 0) return;   // still there
+
+    // No layers loaded at all is not evidence the scene's layer was deleted —
+    // it is what the world looks like before the project's layers arrive.
+    // Clearing the reference here would wipe every scene's assignment.
+    if (le.GetLayerCount() <= 0) return;
+
+    snap->m_layerUid = le.GetLayerUid(0);
+
+    // The replacement may be newer than the scene's captured layer set, in
+    // which case recall would have nothing to apply for it.
+    if (snap->m_layerUid > 0 && FindCapturedLayerByUid(snap, snap->m_layerUid) < 0)
+        CaptureLayersFromEngine(snap);
+
+    snap->m_layerIdx = FindCapturedLayerByUid(snap, snap->m_layerUid);
+    MarkProjectDirty(nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // LoadEditorFromSnapshot – fill right-panel controls from a snapshot
 // ---------------------------------------------------------------------------
 static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
 {
     g_syncingEditor = true;
 
-    // Scene title edit box
-    SetDlgItemText(hwnd, IDC_SNAPNAME, snap ? snap->m_name.c_str() : "");
-
     // Transition settings and notes are in the per-scene Settings popup.
     SetDlgItemText(hwnd, IDC_SNAPNOTES,
                    snap ? NotesToControl(snap->m_notes).c_str() : "");
 
-    // Per-scene layer selector. Listing the scene's *captured* layers here was
-    // the bug: a layer added or renamed after the scene was saved never showed
-    // up. The list is now driven by the live LayersEngine, with each entry
-    // carrying its layer uid as item data so the selection survives renames
-    // and reordering. Layers the scene captured that no longer exist are
-    // appended, so an existing assignment is never silently dropped.
+    // Per-scene layer selector. This lists exactly the layers that exist right
+    // now — never the scene's captured copy, which is what used to hide layers
+    // created after the scene was saved. Each entry carries its layer uid as
+    // item data, so the selection survives renames and reordering.
     {
         HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
         g_syncingEditor = true;  // keep the guard while filling combobox
@@ -977,7 +1215,7 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
         SendMessage(hCb, CB_SETITEMDATA, (WPARAM)noneItem, (LPARAM)0);
         if (snap && !snap->m_isSpacer)
         {
-            EnsureLayerUids(snap);
+            ResolveSceneLayer(snap);
 
             LayersEngine& le = LayersEngine::Get();
             int sel = 0;
@@ -988,15 +1226,6 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
                 int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)ld.name);
                 SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)ld.uid);
                 if (ld.uid > 0 && ld.uid == snap->m_layerUid) sel = item;
-            }
-
-            for (const auto& cl : snap->m_layers)
-            {
-                if (le.FindLayerByUid(cl.uid) >= 0) continue;  // already listed above
-                std::string label = cl.name + "  (not in Layers)";
-                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)label.c_str());
-                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)cl.uid);
-                if (cl.uid > 0 && cl.uid == snap->m_layerUid) sel = item;
             }
 
             SendMessage(hCb, CB_SETCURSEL, (WPARAM)sel, 0);
@@ -1185,8 +1414,9 @@ static void RestoreLayerState(TransitionSnapshot* snap)
     if (g_globalSafeMask & TS_LAYERS) return;
     if (snap->m_layers.empty()) return;
 
-    // Number any pre-uid layers so the reference below is by uid, not index.
-    EnsureLayerUids(snap);
+    // Number any pre-uid layers so the reference below is by uid, not index,
+    // and replace a reference to a layer that has since been deleted.
+    ResolveSceneLayer(snap);
 
     // If the scene has no layer to recall (user chose "(no layer recall)" or
     // the scene was saved before layer capture was introduced) leave the
@@ -1255,7 +1485,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (g_snapshots[snapIdx]->m_isSpacer) return;
 
     TransitionSnapshot* snap = g_snapshots[snapIdx].get();
-    EnsureLayerUids(snap);   // pre-uid scenes: resolve m_layerIdx to a uid once
+    ResolveSceneLayer(snap);   // migrate pre-uid scenes; drop dangling references
     // m_duration == 0 means instant (set via the Scene Settings popup)
     double duration = snap->m_duration;
 
@@ -1451,6 +1681,13 @@ static void DoRecall(HWND hwnd, int listIndex)
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(hList, snapIdx, FALSE);
     }
+
+    // A recall can change the whole layer set. Repaint the sidebar so the
+    // "Layer:" readout matches, and the Layers window so its list does too —
+    // neither happened before, which is why the layer UI only caught up the
+    // next time something else touched a layer.
+    LoadEditorFromSnapshot(hwnd, snap);
+    LayersWnd_Refresh();
 
     // Start recording after recall if enabled
     if (g_startRecAfterRecall)
@@ -2939,23 +3176,51 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
             int threshold = g_listInitRect.right - 5;
             g_sidebarCtrls.clear();
+            g_leftCtrls.clear();
             HWND hChild = GetWindow(hwnd, GW_CHILD);
             while (hChild)
             {
                 RECT r;
                 GetWindowRect(hChild, &r);
                 MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&r, 2);
-                if (r.left > threshold)
-                {
-                    SidebarCtrl sc;
-                    sc.hwnd     = hChild;
-                    sc.origLeft = r.left;
-                    sc.origTop  = r.top;
-                    sc.w        = r.right  - r.left;
-                    sc.h        = r.bottom - r.top;
+                // The divider sits past the threshold too, but it is placed
+                // by LayoutMain rather than carried along with the sidebar.
+                int childId = GetDlgCtrlID(hChild);
+                SidebarCtrl sc;
+                sc.hwnd     = hChild;
+                sc.origLeft = r.left;
+                sc.origTop  = r.top;
+                sc.w        = r.right  - r.left;
+                sc.h        = r.bottom - r.top;
+
+                if (r.left > threshold && childId != IDC_SPLITTER)
                     g_sidebarCtrls.push_back(sc);
-                }
+                else if (childId != IDC_SPLITTER && childId != IDC_LIST &&
+                         childId > 0)
+                    g_leftCtrls.push_back(sc);
                 hChild = GetWindow(hChild, GW_HWNDNEXT);
+            }
+
+            // ---- Column divider ---------------------------------------
+            // The sidebar's design-size bounding box is what LayoutMain
+            // maps each control's slot out of.
+            g_sbInitLeft  = 0;
+            g_sbInitRight = 0;
+            for (const auto& sc : g_sidebarCtrls)
+            {
+                if (!g_sbInitRight || sc.origLeft < g_sbInitLeft)
+                    g_sbInitLeft = sc.origLeft;
+                if (sc.origLeft + sc.w > g_sbInitRight)
+                    g_sbInitRight = sc.origLeft + sc.w;
+            }
+
+            HWND hSplit = GetDlgItem(hwnd, IDC_SPLITTER);
+            if (hSplit)
+            {
+                GetWindowRect(hSplit, &g_splitInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_splitInitRect, 2);
+                g_splitOldProc = (WNDPROC)SetWindowLongPtr(
+                    hSplit, GWLP_WNDPROC, (LONG_PTR)SplitterProc);
             }
 
             // ---- Version footer ---------------------------------------
@@ -2989,10 +3254,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     plugin_register("accelerator", &g_notesAccel);
                     g_notesAccelRegistered = true;
                 }
-
-                // The window may already have been resized to the saved rect.
-                LayoutNotes(hwnd);
             }
+
+            // The window may already have been resized to the saved rect.
+            LayoutMain(hwnd);
         }
         return TRUE;
     }
@@ -3019,57 +3284,27 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         int newCy = (int)(short)HIWORD(lParam);
         if (g_initCx <= 0 || newCx <= 0 || newCy <= 0) break;
 
-        int dx = newCx - g_initCx;
-        int dy = newCy - g_initCy;
-
-        // Resize the ListView to fill extra width and height
-        HWND hListSz = GetDlgItem(hwnd, IDC_LIST);
-        if (hListSz && g_listInitRect.right > g_listInitRect.left)
-        {
-            int newW = (g_listInitRect.right  - g_listInitRect.left) + dx;
-            int newH = (g_listInitRect.bottom - g_listInitRect.top)  + dy;
-            if (newW > 10 && newH > 10)
-            {
-                SetWindowPos(hListSz, nullptr,
-                    g_listInitRect.left, g_listInitRect.top, newW, newH,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
-
-                // Stretch "Name" column to fill available list width
-                int col0W = ListView_GetColumnWidth(hListSz, 0);
-                int col2W = ListView_GetColumnWidth(hListSz, 2);
-                int col1W = newW - col0W - col2W
-                            - GetSystemMetrics(SM_CXVSCROLL) - 4;
-                if (col1W > 20)
-                    ListView_SetColumnWidth(hListSz, 1, col1W);
-            }
-        }
-
-        // Shift right-sidebar controls by dx (keep same y, w, h)
-        if (!g_sidebarCtrls.empty())
-        {
-            HDWP hdwp = BeginDeferWindowPos((int)g_sidebarCtrls.size());
-            for (const auto& sc : g_sidebarCtrls)
-            {
-                hdwp = DeferWindowPos(hdwp, sc.hwnd, nullptr,
-                    sc.origLeft + dx, sc.origTop, sc.w, sc.h,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-            EndDeferWindowPos(hdwp);
-        }
-
-        // The pass above reset both to their original y/height; re-pin the
-        // footer and re-apply the dragged notes height, clamped to whatever
-        // space the new size leaves above the footer.
-        LayoutVersion(hwnd);
-        LayoutNotes(hwnd);
-
-        InvalidateRect(hwnd, nullptr, TRUE);
+        LayoutMain(hwnd);
         break;
     }
 
     case WM_DRAWITEM:
     {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis && dis->CtlID == IDC_SPLITTER)
+        {
+            // A single hairline down the gutter: enough to read as a divider
+            // without drawing a heavy bar between the two columns.
+            FillRect(dis->hDC, &dis->rcItem, GetSysColorBrush(COLOR_BTNFACE));
+            int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
+            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+            HGDIOBJ old = SelectObject(dis->hDC, pen);
+            MoveToEx(dis->hDC, cx, dis->rcItem.top + 2, nullptr);
+            LineTo  (dis->hDC, cx, dis->rcItem.bottom - 2);
+            SelectObject(dis->hDC, old);
+            DeleteObject(pen);
+            return TRUE;
+        }
         if (dis && dis->CtlID == IDC_NOTES_GRIP)
         {
             // Two short rules centred in the strip, the usual "drag me" cue.
@@ -3144,21 +3379,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 char buf[4096] = {};
                 GetDlgItemText(hwnd, IDC_SNAPNOTES, buf, sizeof(buf));
                 g_snapshots[idx]->m_notes = NotesFromControl(buf);
-            }
-            return TRUE;
-        }
-
-        if (id == IDC_SNAPNAME && evt == EN_CHANGE && !g_syncingEditor)
-        {
-            int idx = GetSelectedListIndex(hwnd);
-            if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
-            {
-                char buf[256] = {};
-                GetDlgItemText(hwnd, IDC_SNAPNAME, buf, sizeof(buf));
-                g_snapshots[idx]->m_name = buf;
-                HWND hList = GetDlgItem(hwnd, IDC_LIST);
-                ListView_SetItemText(hList, idx, 1, buf);
-                MarkProjectDirty(nullptr);
             }
             return TRUE;
         }
@@ -3351,6 +3571,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     g_snapshots[di->item.iItem]->m_name = di->item.pszText;
                     SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
                     RefreshListView(hwnd);
+                    MarkProjectDirty(nullptr);
                 }
                 return TRUE;
             }
@@ -3474,7 +3695,8 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             plugin_register("-accelerator", &g_notesAccel);
             g_notesAccelRegistered = false;
         }
-        g_gripOldProc = nullptr;
+        g_gripOldProc  = nullptr;
+        g_splitOldProc = nullptr;
         TransitionEngine::Get().onTransitionComplete = nullptr;
         g_wnd = nullptr;
         return TRUE;

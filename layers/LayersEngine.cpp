@@ -988,8 +988,12 @@ void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int 
     // Persist once (avoids per-layer saves)
     SaveExtState();
 
-    // Activate the requested layer (also calls DoApplyLayer)
-    ActivateLayerByUid(activeUid);
+    // Activate the requested layer (also calls DoApplyLayer). A uid that no
+    // longer resolves means the scene pointed at a layer that has since been
+    // deleted — fall back to the first layer rather than activating nothing.
+    // activeUid <= 0 is the deliberate "no layer recall" choice, left alone.
+    if (activeUid > 0 && !ActivateLayerByUid(activeUid) && !m_layers.empty())
+        ActivateLayer(0);
 
     // Refresh the layers window to show the new state
     LayersWnd_Refresh();

@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.0.34-beta] — 2026-09-10
+
+### New Features
+
+- **Scenes: the divider between the scene list and the sidebar can be dragged**: The split between the two columns was fixed — widening the window only ever widened the list. A divider now sits in the gutter between them; drag it to give either column more room. The sidebar's controls are re-laid out proportionally into whatever width is left rather than keeping a fixed width, the Scenes/Cue List toggles follow the divider with the list they belong to, and both columns are clamped to a usable minimum so the divider cannot be dragged far enough to swallow one. The position is saved with the window state.
+
+- **Scenes: the sidebar name box is gone; rename in the list instead**: Scenes are renamed in place in the left column — right-click > Rename, or F2 — which is where the name is actually read. The duplicate name box in the sidebar has been removed and everything below it moved up. Inline renaming already existed; it now also marks the project dirty, which the sidebar box used to be what did.
+
+- **Scenes: the notes box can now be dragged at the default window size**: Its limit was measured against the gap that happened to exist at the design size, which left nothing to claim until the window was made taller. It now measures against the version footer, so the space freed by removing the name box is available to it immediately.
+
+### Bug Fixes
+
+- **Scenes: every layer in an older scene showed as "(not in Layers)" in the recall dropdown**: Scenes saved before layer uids existed are migrated on first use, and that migration minted a *fresh* uid for each captured layer. A freshly minted uid matches nothing in the live layer list by construction, so the dropdown classified every one of them as a layer that no longer exists and listed them all as dangling entries. The migration now adopts the uid of the live layer the capture refers to — matching on name first, then on the position it was captured at — and only mints one for a layer with no counterpart at all. The dropdown no longer lists captured-but-missing layers either: it shows exactly the layers that exist right now.
+
+- **Scenes: a scene pointing at a deleted layer recalled no layer at all**: Both the dropdown and recall now fall back to the first layer when the assigned one is gone, rather than leaving a dangling reference that activated nothing. A scene set to "(no layer recall)" is a deliberate choice and is left alone, and a layer list that is simply empty — which is what the world looks like before a project's layers have loaded — is no longer mistaken for a deletion.
+
+- **Scenes: the layer UI did not update after a scene recall**: A recall can replace the entire layer set, but neither the sidebar's "Layer:" readout nor the Layers window was repainted afterwards, so both kept showing the previous state until something else happened to touch a layer. Both now refresh at the end of a recall.
+
+---
+
 ## [v0.0.33-beta] — 2026-09-10
 
 ### New Features
