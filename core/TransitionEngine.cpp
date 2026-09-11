@@ -1142,6 +1142,67 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
 // ---------------------------------------------------------------------------
 // ApplyImmediate – instant recall (duration == 0)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Track reordering
+//
+// The previous implementation had four defects that compounded into tracks
+// landing in the wrong places — and into far more moves than the project
+// needed, which is what made recall take 47 seconds at 532 ms per move:
+//
+//   1. It passed the loop counter as the destination index. The real captured
+//      position was only ever used to sort. The two agree only when the
+//      snapshot covers every project track with no gaps, so any skip — an
+//      order-safed track, one missing from the project, one refused by the
+//      folder check — put every later destination out by one or more.
+//   2. ReorderSelectedTracks inserts *before* the given index in the current
+//      list. A track moving down vacates a slot above its destination first,
+//      so every downward move landed one slot short.
+//   3. The folder check stopped a child leaving its folder, but nothing
+//      stopped a folder *parent* being moved away from its children, which
+//      restructures the tree outright.
+//   4. A single pass with no verification, so none of the above was noticed;
+//      mislanded tracks displaced others, which made yet more tracks look out
+//      of place and need moving.
+//
+// This version permutes tracks only among slots that already belong to the
+// same folder parent, and never relocates a track that opens or closes a
+// folder. Folder membership therefore cannot change: that is a property of
+// how the moves are chosen, not a check that can be skipped. Destinations are
+// recomputed from the live track list before every move, so a refused or
+// unnecessary move cannot corrupt the ones after it.
+// ---------------------------------------------------------------------------
+
+// Innermost folder parent for every project index. REAPER has no per-track
+// parent pointer — membership is positional — so this is derived by walking
+// the running I_FOLDERDEPTH total once.
+static void BuildFolderParentMap(std::vector<MediaTrack*>& parentAt)
+{
+    const int n = GetNumTracks();
+    parentAt.assign(n, nullptr);
+
+    std::vector<MediaTrack*> open;
+    for (int t = 0; t < n; t++)
+    {
+        MediaTrack* tr = GetTrack(nullptr, t);
+        if (!tr) continue;
+        parentAt[t] = open.empty() ? nullptr : open.back();
+
+        int fd = 0;
+        int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
+        if (p) fd = *p;
+        if (fd >= 1)
+            open.push_back(tr);
+        else if (fd < 0)
+            for (int k = 0; k < -fd && !open.empty(); k++) open.pop_back();
+    }
+}
+
+static int LiveTrackIndex(MediaTrack* tr)
+{
+    if (!tr) return -1;
+    return (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
+}
+
 void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                                       const TrackMap& tmap)
 {
@@ -1454,61 +1515,104 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
     }
 
     // Track reordering – must happen after all per-track property updates
-    // because FindTrack() scans by GUID at current positions.
+    // because the map above resolves tracks at their current positions.
     const double tReorder0 = g_durationDebug ? QpcMs() : 0.0;
     if (mask & TS_TRACKORDER)
     {
-        // Build a target order from tracks that have a valid capturedIndex.
-        // We only reorder tracks that exist in the snapshot; unknown tracks stay put.
-        struct OrderEntry { int targetIdx; GUID guid; };
-        std::vector<OrderEntry> order;
+        const int nTracks = GetNumTracks();
+
+        std::vector<MediaTrack*> parentAt;
+        BuildFolderParentMap(parentAt);
+
+        // Candidates: snapshot tracks that exist in the project, are not
+        // order-safed, and carry no folder structure of their own. A track
+        // whose I_FOLDERDEPTH is non-zero opens or closes a folder, and moving
+        // one without its siblings rewrites the tree — those never move.
+        struct Cand { int captured; MediaTrack* tr; MediaTrack* parent; };
+        std::vector<Cand> cands;
         for (const auto& ts : snap->m_tracks)
         {
             if (ts.capturedIndex < 0) continue;
-            const int safe = GetEffectiveSafeMask(ts.guid);
-            if (safe & TS_TRACKORDER) continue; // safed
-            order.push_back({ ts.capturedIndex, ts.guid });
-        }
-        // Sort by target index
-        std::sort(order.begin(), order.end(),
-                  [](const OrderEntry& a, const OrderEntry& b){ return a.targetIdx < b.targetIdx; });
-        // Move each track into position iteratively
-        for (int pass = 0; pass < (int)order.size(); ++pass)
-        {
-            auto it2 = tmap.find(order[pass].guid);
-            MediaTrack* tr = (it2 != tmap.end()) ? it2->second : nullptr;
-            if (!tr) continue;
-            // Current index of this track
-            // IP_TRACKNUMBER returns the value directly as void* (1-based), not a pointer
-            int curIdx = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
-            if (curIdx == pass) continue; // already in place
-            // Don't move a track outside its parent folder
-            if (WouldLeaveFolder(tr, pass)) continue;
-            // Deselect all, select only this track
-            const double tSel0 = g_durationDebug ? QpcMs() : 0.0;
-            int n = GetNumTracks();
-            for (int i = 0; i < n; ++i)
-            {
-                MediaTrack* t2 = GetTrack(nullptr, i);
-                if (!t2) continue;
-                int zero = 0;
-                GetSetMediaTrackInfo(t2, "I_SELECTED", &zero);
-            }
-            int one = 1;
-            GetSetMediaTrackInfo(tr, "I_SELECTED", &one);
-            if (g_durationDebug)
-            {
-                lastTimings.i_reorderSel += QpcMs() - tSel0;
-                lastTimings.i_reorderSelWrites += n + 1;
-            }
+            if (GetEffectiveSafeMask(ts.guid) & TS_TRACKORDER) continue;
 
-            // Insert before track at target position
-            const double tMove0 = g_durationDebug ? QpcMs() : 0.0;
-            ReorderSelectedTracks(pass, 0);
-            if (g_durationDebug)
+            auto it2 = tmap.find(ts.guid);
+            if (it2 == tmap.end() || !it2->second) continue;
+            MediaTrack* tr = it2->second;
+
+            const int cur = LiveTrackIndex(tr);
+            if (cur < 0 || cur >= nTracks) continue;
+
+            int fd = 0;
+            int* pfd = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
+            if (pfd) fd = *pfd;
+            if (fd != 0) continue;
+
+            cands.push_back({ ts.capturedIndex, tr, parentAt[cur] });
+        }
+
+        // Group by folder parent. Permuting within a group can only ever put a
+        // track at an index another member of the same group occupies, so the
+        // track keeps its parent by construction.
+        std::vector<MediaTrack*> parents;
+        for (const auto& c : cands)
+            if (std::find(parents.begin(), parents.end(), c.parent) == parents.end())
+                parents.push_back(c.parent);
+
+        for (MediaTrack* parent : parents)
+        {
+            std::vector<Cand> group;
+            for (const auto& c : cands)
+                if (c.parent == parent) group.push_back(c);
+            if (group.size() < 2) continue;
+
+            std::sort(group.begin(), group.end(),
+                      [](const Cand& a, const Cand& b){ return a.captured < b.captured; });
+
+            for (size_t k = 0; k < group.size(); ++k)
             {
-                lastTimings.i_reorderMove += QpcMs() - tMove0;
-                lastTimings.i_reorderMoves++;
+                // The slots this group occupies right now, ascending. Read
+                // fresh every step: a move renumbers everything between source
+                // and destination, and acting on stale numbers is exactly what
+                // put tracks in the wrong places before.
+                std::vector<int> slots;
+                slots.reserve(group.size());
+                for (const auto& c : group)
+                {
+                    const int idx = LiveTrackIndex(c.tr);
+                    if (idx >= 0) slots.push_back(idx);
+                }
+                if (slots.size() != group.size()) break;  // list changed underneath
+                std::sort(slots.begin(), slots.end());
+
+                const int dest = slots[k];
+                const int cur  = LiveTrackIndex(group[k].tr);
+                if (cur < 0 || cur == dest) continue;     // already right: no move
+                if (WouldLeaveFolder(group[k].tr, dest)) continue;
+
+                // Insert-before semantics: a track moving down vacates a slot
+                // above the destination first, so aim one past it.
+                const int beforeIdx = (cur < dest) ? dest + 1 : dest;
+
+                const double tSel0 = g_durationDebug ? QpcMs() : 0.0;
+                int zero = 0, one = 1;
+                const int nSel = GetNumTracks();
+                for (int t = 0; t < nSel; ++t)
+                    if (MediaTrack* t2 = GetTrack(nullptr, t))
+                        GetSetMediaTrackInfo(t2, "I_SELECTED", &zero);
+                GetSetMediaTrackInfo(group[k].tr, "I_SELECTED", &one);
+                if (g_durationDebug)
+                {
+                    lastTimings.i_reorderSel += QpcMs() - tSel0;
+                    lastTimings.i_reorderSelWrites += nSel + 1;
+                }
+
+                const double tMove0 = g_durationDebug ? QpcMs() : 0.0;
+                ReorderSelectedTracks(beforeIdx, 0);
+                if (g_durationDebug)
+                {
+                    lastTimings.i_reorderMove += QpcMs() - tMove0;
+                    lastTimings.i_reorderMoves++;
+                }
             }
         }
     }

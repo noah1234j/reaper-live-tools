@@ -1,5 +1,22 @@
 # Changelog
 
+## [v0.0.43-beta] — 2026-09-11
+
+### Bug Fixes
+
+- **Scenes: track reordering put tracks in the wrong places and rearranged folders**: The reorder pass had four defects that compounded, and they are also why a 114-track recall performed 86 moves at 532 ms each:
+
+  1. **The destination was the loop counter, not the captured position.** The real captured index was only ever used to sort. The two agree only when the snapshot covers every project track with no gaps, so any skip — an order-safed track, one missing from the project, one refused by the folder check — put every later destination out by one or more.
+  2. **Downward moves landed a slot short.** `ReorderSelectedTracks` inserts *before* the given index in the current list, and a track moving down vacates a slot above its destination first. The correction was never applied.
+  3. **Folder parents could be moved away from their children.** The folder check stopped a *child* leaving its folder but did nothing about a track that opens or closes one, and relocating those rewrites the tree.
+  4. **One pass, no verification.** Nothing noticed any of the above; mislanded tracks displaced others, which made yet more tracks look out of place and need moving.
+
+  The rewrite groups tracks by folder parent and permutes each group only among the slots it already occupies, so a track can only ever land where a same-parent track sits — folder membership cannot change because no move that would change it is ever generated, rather than being caught by a check that can be skipped. Any track carrying folder structure of its own (non-zero `I_FOLDERDEPTH`) is never relocated. Destinations are recomputed from the live track list before every move, so a refused or unnecessary move cannot corrupt the ones after it, and the insert-before correction is applied for downward moves.
+
+  Tracks already in the right position are skipped, so a scene whose order already matches performs no moves at all. Batching and minimum-move selection were deliberately *not* added yet: much of the old move count was the bug thrashing rather than work the project needed, and that should be measured on a correct algorithm before optimising it.
+
+---
+
 ## [v0.0.42-beta] — 2026-09-11
 
 ### Diagnostics
