@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.0.37-beta] — 2026-09-11
+
+### Bug Fixes
+
+- **Layers: activating a layer wiped REAPER's visual spacers instead of restoring the layer's own**: Spacers were *cleared* with a direct `I_SPACER` write but *set* by selecting the track and firing REAPER action 42665. Clearing therefore always worked while setting depended on the action id resolving in the running REAPER and on the selection surviving long enough to be acted on — so when the set half failed it failed silently, and every layer apply removed the spacers without putting any back. Both directions now write `I_SPACER`, which makes setting a spacer exactly as reliable as clearing one, independent of the selection, and independent of any action id.
+
+  Two things follow from dropping the action. The UI-refresh suppression no longer has to end early — it was released before the spacer pass purely because `Main_OnCommand` needed refresh active to write `I_SPACER` correctly — so the whole apply now runs under one suppression and repaints once at the end rather than twice. And the "does a spacer precede this track" test, which was a loop that always broke on its first iteration and so only ever looked one entry back, is now written as the single comparison it always was.
+
+---
+
 ## [v0.0.36-beta] — 2026-09-11
 
 ### Bug Fixes

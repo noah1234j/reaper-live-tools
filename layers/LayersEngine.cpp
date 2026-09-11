@@ -306,16 +306,20 @@ void LayersEngine::DoApplyLayer(int idx)
         }
     }
 
-    // End the UI-refresh suppression before firing REAPER actions.
-    // Main_OnCommand needs UI refresh active to correctly write I_SPACER.
-    PreventUIRefresh(-1);
-    TrackList_AdjustWindows(false);
-
-    // ---- Set REAPER visual spacers via built-in actions --------------------
+    // ---- Set REAPER visual spacers ----------------------------------------
+    // Spacers used to be cleared with a direct I_SPACER write but *set* by
+    // firing action 42665 with the track selected. That asymmetry is why they
+    // went missing: clearing always worked, while setting depended on the
+    // action id resolving in the running REAPER and on the selection surviving
+    // long enough to be acted on — and when it did not, the layer's spacers
+    // silently never came back. Both directions now write I_SPACER, so setting
+    // a spacer is exactly as reliable as clearing one, needs no selection, and
+    // does not have to happen with UI refresh enabled.
     {
         int numAllTracks = CountTracks(0);
 
-        // Clear all existing spacers directly.
+        // Clear every existing spacer first: a track the layer records no
+        // spacer for must end up without one.
         int zeroVal = 0;
         for (int t = 0; t < numAllTracks; t++)
         {
@@ -326,25 +330,17 @@ void LayersEngine::DoApplyLayer(int idx)
                 GetSetMediaTrackInfo(tr, "I_SPACER", &zeroVal);
         }
 
-        // For each real track that immediately follows a spacer entry in the
-        // layer, select it and fire the "insert spacer before" action (42665).
-        // Track lookup is O(1) via projByGUID — no inner scan needed.
-        for (int li = 0; li < limit; li++)
+        // Then put one above each real track that follows a spacer entry in
+        // the layer. Track lookup is O(1) via projByGUID — no inner scan.
+        int oneVal = 1;
+        for (int li = 1; li < limit; li++)
         {
             if (layer.tracks[li].isSpacer) continue;
-
-            bool hasPrecedingSpacers = false;
-            for (int k = li - 1; k >= 0; k--)
-            {
-                if (layer.tracks[k].isSpacer) { hasPrecedingSpacers = true; break; }
-                else break;
-            }
-            if (!hasPrecedingSpacers) continue;
+            if (!layer.tracks[li - 1].isSpacer) continue;
 
             auto it = projByGUID.find(layer.tracks[li].guid);
             if (it == projByGUID.end()) continue;
-            SetOnlyTrackSelected(it->second);
-            Main_OnCommand(42665, 0);  // Insert visual spacer before tracks
+            GetSetMediaTrackInfo(it->second, "I_SPACER", &oneVal);
         }
 
         // Restore selection using the GUID set built earlier — O(n) with O(1) lookups
@@ -362,6 +358,10 @@ void LayersEngine::DoApplyLayer(int idx)
         }
     }
 
+    // Nothing above fires a REAPER action any more, so the whole apply can run
+    // under one suppression and repaint once at the end.
+    PreventUIRefresh(-1);
+    TrackList_AdjustWindows(false);
     UpdateArrange();
 }
 
