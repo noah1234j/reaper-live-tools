@@ -2,6 +2,14 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.37" author="noah1234j" time="2026-09-11T15:03:20Z">
+        <changelog>Bug Fixes
+
+- Layers: activating a layer wiped REAPER's visual spacers instead of restoring the layer's own: Spacers were *cleared* with a direct I_SPACER write but *set* by selecting the track and firing REAPER action 42665. Clearing therefore always worked while setting depended on the action id resolving in the running REAPER and on the selection surviving long enough to be acted on — so when the set half failed it failed silently, and every layer apply removed the spacers without putting any back. Both directions now write I_SPACER, which makes setting a spacer exactly as reliable as clearing one, independent of the selection, and independent of any action id.
+
+  Two things follow from dropping the action. The UI-refresh suppression no longer has to end early — it was released before the spacer pass purely because Main_OnCommand needed refresh active to write I_SPACER correctly — so the whole apply now runs under one suppression and repaints once at the end rather than twice. And the "does a spacer precede this track" test, which was a loop that always broke on its first iteration and so only ever looked one entry back, is now written as the single comparison it always was.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.37-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.36" author="noah1234j" time="2026-09-11T14:46:59Z">
         <changelog>Bug Fixes
 
