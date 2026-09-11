@@ -1,17 +1,17 @@
 // ---------------------------------------------------------------------------
 // LayersWnd.cpp  –  Live Tools: Layers  –  dockable window
 //
-// Left panel  : ListView of all 10 layers (drag-to-reorder).
-//               Columns: #  Name  Max Ch  Tracks
-// Right panel : Properties for the selected layer.
-//               – Name edit + Set button
-//               – Max channels spin (0 = unlimited)
-//               – Track ListView (drag-to-reorder within layer)
-//               – Add Selected | Remove | Move Up | Move Down | Capture | Clear
-// Bottom bar  : Activate | Prev | Next | Show All | Settings... | status
+// Left column  : ListView of the layers (drag-to-reorder, F2 to rename).
+//                Columns: Name  Trks.  The active layer is drawn bold.
+// Right column : ListView of the selected layer's tracks (drag-to-reorder).
+// Bottom bar   : Settings... | status
+//
+// Everything else lives in the two lists' right-click menus: activate, show
+// all, add/update/clear a layer, and the per-track actions.
 //
 // Settings modal (IDD_LAYERS_SETTINGS):
-//   Apply MCP visibility | Also hide TCP | Reorder tracks | Restore on deactivate
+//   Target MCP/TCP | Apply track visibility | Also hide in the other panel |
+//   Reorder tracks | Restore on deactivate | Trigger MCP select | Max channels
 // ---------------------------------------------------------------------------
 #include "LayersWnd.h"
 #include "LayersEngine.h"
@@ -33,6 +33,10 @@ static HINSTANCE s_hInst  = nullptr;
 static HWND      s_hwnd   = nullptr;
 static HWND      s_hSettingsDlg = nullptr;  // settings modal while it is open
 static int       s_selLayer = 0;   // index of layer selected in list (0-based)
+
+// Bold copy of the layer list's own font, used by NM_CUSTOMDRAW to mark the
+// active layer. Built once the list exists and released with the window.
+static HFONT     s_boldFont = nullptr;
 
 // Drag state – layer list
 static bool s_draggingLayer  = false;
@@ -152,7 +156,6 @@ static void RefreshLayerList(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LYR_LAYER_LIST);
     if (!hList) return;
 
-    int active = LayersEngine::Get().GetActiveLayer();
     int count  = LayersEngine::Get().GetLayerCount();
 
     int prevSel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
@@ -167,12 +170,15 @@ static void RefreshLayerList(HWND hwnd)
         LVITEMA lvi = {};
         lvi.mask  = LVIF_TEXT;
         lvi.iItem = i;
-        // Column 0 = name, with " *" suffix when this is the active layer
+        // Column 0 is the layer name, nothing else. The active layer used to
+        // get a " *" suffix here, but ListView_EditLabel seeds the edit box
+        // from the label — so renaming the active layer handed the user
+        // "Name *" and stored the asterisk as part of the name. The active
+        // row is drawn bold instead (NM_CUSTOMDRAW below), which cannot leak
+        // into the data.
         char nameBuf[70];
-        if (i == active)
-            snprintf(nameBuf, sizeof(nameBuf), "%s *", ld.name);
-        else
-            strncpy(nameBuf, ld.name, sizeof(nameBuf) - 1);
+        strncpy(nameBuf, ld.name, sizeof(nameBuf) - 1);
+        nameBuf[sizeof(nameBuf) - 1] = '\0';
         lvi.pszText = nameBuf;
         ListView_InsertItem(hList, &lvi);
 
@@ -776,6 +782,18 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_SetExtendedListViewStyle(hList,
                     LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
+                // Bold variant of the list's own font, for the active layer.
+                if (!s_boldFont)
+                {
+                    HFONT hf = (HFONT)SendMessage(hList, WM_GETFONT, 0, 0);
+                    LOGFONT lf = {};
+                    if (hf && GetObject(hf, sizeof(lf), &lf))
+                    {
+                        lf.lfWeight = FW_BOLD;
+                        s_boldFont  = CreateFontIndirect(&lf);
+                    }
+                }
+
                 LVCOLUMNA col = {};
                 col.mask = LVCF_TEXT | LVCF_WIDTH;
                 col.cx = 166; col.pszText = const_cast<char*>("Name");
@@ -1334,7 +1352,31 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         // ---- Layer list notifications ------------------------------------
         if (hdr->idFrom == IDC_LYR_LAYER_LIST)
         {
-            if (hdr->code == LVN_ITEMCHANGED)
+            if (hdr->code == NM_CUSTOMDRAW)
+            {
+                // Mark the active layer by weight rather than by decorating
+                // its text: anything written into the label ends up in the
+                // rename box, and from there in the layer name.
+                NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lParam;
+                LRESULT res = CDRF_DODEFAULT;
+                switch (cd->nmcd.dwDrawStage)
+                {
+                case CDDS_PREPAINT:
+                    res = s_boldFont ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
+                    break;
+                case CDDS_ITEMPREPAINT:
+                    if (s_boldFont &&
+                        (int)cd->nmcd.dwItemSpec == LayersEngine::Get().GetActiveLayer())
+                    {
+                        SelectObject(cd->nmcd.hdc, s_boldFont);
+                        res = CDRF_NEWFONT;
+                    }
+                    break;
+                }
+                SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
+                return TRUE;
+            }
+            else if (hdr->code == LVN_ITEMCHANGED)
             {
                 NMLISTVIEW* nlv = (NMLISTVIEW*)lParam;
                 if ((nlv->uNewState & LVIS_SELECTED) && nlv->iItem >= 0)
@@ -1407,6 +1449,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         return TRUE;
 
     case WM_DESTROY:
+        if (s_boldFont) { DeleteObject(s_boldFont); s_boldFont = nullptr; }
         s_hwnd = nullptr;
         return TRUE;
     }

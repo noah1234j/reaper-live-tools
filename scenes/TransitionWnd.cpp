@@ -1492,9 +1492,23 @@ static void RestoreLayerState(TransitionSnapshot* snap)
     // current layer system untouched.
     if (snap->m_layerUid <= 0) return;
 
+    LayersEngine& le = LayersEngine::Get();
+
     std::vector<LayerDef> newLayers;
-    for (const auto& cl : snap->m_layers)
+    for (int i = 0; i < (int)snap->m_layers.size(); i++)
     {
+        // A safed slot keeps the layer that is there now, exactly as it is,
+        // instead of taking the scene's captured copy. The safe is by index
+        // because that is the only reference that still means anything once
+        // the whole layer set is being replaced.
+        if (i < kLayerSafeCount && (g_layerSafeMask & (1 << i)) &&
+            i < le.GetLayerCount())
+        {
+            newLayers.push_back(le.GetLayer(i));
+            continue;
+        }
+
+        const CapturedLayer& cl = snap->m_layers[i];
         LayerDef ld;
         strncpy(ld.name, cl.name.c_str(), sizeof(ld.name) - 1);
         ld.name[sizeof(ld.name) - 1] = '\0';

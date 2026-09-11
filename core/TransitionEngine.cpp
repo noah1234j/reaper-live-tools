@@ -70,6 +70,7 @@ static bool WouldLeaveFolder(MediaTrack* tr, int targetIdx)
 // Safes globals
 // ---------------------------------------------------------------------------
 int  g_globalSafeMask     = 0;
+int  g_layerSafeMask      = 0;
 bool g_trackSafesEnabled = true;
 std::vector<TrackSafeEntry> g_trackSafes;
 

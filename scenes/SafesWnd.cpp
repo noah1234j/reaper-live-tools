@@ -3,6 +3,7 @@
 #include "TransitionSnapshot.h"  // TS_* bit flags
 #include "api.h"                 // GetNumTracks, GetTrack, GetSetMediaTrackInfo, etc.
 #include "resource.h"
+#include "../layers/LayersEngine.h"   // layer names for the layer safe rows
 
 extern bool g_trackSafesEnabled;
 
@@ -92,9 +93,27 @@ static const int k_ptAllBits =
 // ---------------------------------------------------------------------------
 struct SafeRow {
     std::string label;
-    GUID        guid;     // zero for Global row
+    GUID        guid;     // zero for Global and Layer rows
     bool        isGlobal;
+    bool        isLayer  = false;  // layer recall-safe row, below the tracks
+    int         layerIdx = -1;     // 0-based layer index for isLayer rows
 };
+
+// A layer row carries a single yes/no rather than a set of parameters, so it
+// is drawn and clicked in the "All" column only — the one column that is not
+// a specific track parameter. Every other cell in the row stays blank.
+static bool LayerRowSafed(int layerIdx)
+{
+    if (layerIdx < 0 || layerIdx >= kLayerSafeCount) return false;
+    return (g_layerSafeMask & (1 << layerIdx)) != 0;
+}
+
+static void SetLayerRowSafed(int layerIdx, bool on)
+{
+    if (layerIdx < 0 || layerIdx >= kLayerSafeCount) return;
+    if (on) g_layerSafeMask |=  (1 << layerIdx);
+    else    g_layerSafeMask &= ~(1 << layerIdx);
+}
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -117,6 +136,8 @@ static bool s_suppressClick  = false;   // suppress NM_CLICK while dragging
 static int GetRowMask(int row)
 {
     if (row < 0 || row >= (int)g_rows.size()) return 0;
+    if (g_rows[row].isLayer)
+        return LayerRowSafed(g_rows[row].layerIdx) ? k_ptAllBits : 0;
     if (g_rows[row].isGlobal) return g_globalSafeMask;
     for (const auto& e : g_trackSafes)
         if (IsEqualGUID(e.guid, g_rows[row].guid)) return e.mask;
@@ -126,6 +147,11 @@ static int GetRowMask(int row)
 static void SetRowMask(int row, int mask)
 {
     if (row < 0 || row >= (int)g_rows.size()) return;
+    if (g_rows[row].isLayer) {
+        SetLayerRowSafed(g_rows[row].layerIdx,
+                         (mask & k_ptAllBits) == k_ptAllBits);
+        return;
+    }
     if (g_rows[row].isGlobal) {
         g_globalSafeMask = mask;
         return;
@@ -172,6 +198,30 @@ static void RebuildRows()
 
         g_rows.push_back(r);
     }
+
+    // Then one row per layer slot, under the tracks. These are fixed slots by
+    // index rather than one row per existing layer: the safe has to survive a
+    // scene recall that replaces the whole layer set, and an index is the only
+    // thing that still means something on the other side of that.
+    const int layerCount = LayersEngine::Get().GetLayerCount();
+    for (int i = 0; i < kLayerSafeCount; ++i)
+    {
+        SafeRow r;
+        r.isGlobal = false;
+        r.isLayer  = true;
+        r.layerIdx = i;
+        r.guid     = GUID{};
+
+        char lbl[160];
+        if (i < layerCount)
+            snprintf(lbl, sizeof(lbl), "Layer %d  -  %s",
+                     i + 1, LayersEngine::Get().GetLayer(i).name);
+        else
+            snprintf(lbl, sizeof(lbl), "Layer %d", i + 1);
+        r.label = lbl;
+
+        g_rows.push_back(r);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,6 +263,9 @@ static int PtLvcToSafeCol(int lvc)
 static void ApplyCellToggle(int row, int sc, bool checking)
 {
     if (row < 0 || row >= (int)g_rows.size()) return;
+    // A layer row has one checkbox, in the All column; the per-parameter
+    // columns mean nothing for it.
+    if (g_rows[row].isLayer && sc != COL_ALL) return;
     int bit = k_colBit[sc];
     if (sc == COL_ALL)
     {
@@ -568,6 +621,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 
         case IDC_CLEAR_SAFES:
             g_globalSafeMask = 0;
+            g_layerSafeMask  = 0;
             g_trackSafes.clear();
             CheckDlgButton(hDlg, IDC_GSAFE_VOL,    BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_PAN,    BST_UNCHECKED);
@@ -642,7 +696,8 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             const int row = ht.iItem;
             const int lvc = ht.iSubItem;   // ListView column index
             const int sc  = PtLvcToSafeCol(lvc);  // SafeCol
-            if (row >= 0 && lvc > 0 && sc > 0)
+            if (row >= 0 && lvc > 0 && sc > 0 &&
+                !(g_rows[row].isLayer && sc != COL_ALL))
             {
                 if (sc == COL_ALL)
                 {
@@ -684,6 +739,20 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 
                 HDC   hdc  = pcd->nmcd.hdc;
                 RECT  rcIt = pcd->nmcd.rc;
+
+                // A layer row gets one checkbox, in the All column. Paint the
+                // rest of its cells empty rather than leaving stale pixels.
+                const bool layerRow = (row >= 0 && row < (int)g_rows.size() &&
+                                       g_rows[row].isLayer);
+                if (layerRow && sc != COL_ALL)
+                {
+                    const bool selBlank = (ListView_GetItemState(g_hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+                    SetBkColor(hdc, selBlank ? GetSysColor(COLOR_HIGHLIGHT)
+                                             : GetSysColor(COLOR_WINDOW));
+                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
+                    return TRUE;
+                }
 
                 // Fill background
                 const bool isSelected = (ListView_GetItemState(g_hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
@@ -824,6 +893,7 @@ static GUID SafesStringToGuid(const char* s)
 void SafesWnd_ResetForProject()
 {
     g_globalSafeMask    = 0;
+    g_layerSafeMask     = 0;
     g_trackSafesEnabled = true;
     g_trackSafes.clear();
 }
@@ -836,6 +906,8 @@ bool SafesWnd_ProcessLine(const char* line)
     int val = 0;
     if (sscanf(line, "LTSAFEGLOBAL %d", &val) == 1)
         { g_globalSafeMask = val; return true; }
+    if (sscanf(line, "LTSAFELAYERS %d", &val) == 1)
+        { g_layerSafeMask = val; return true; }
     if (sscanf(line, "LTSAFETRACKSEN %d", &val) == 1)
         { g_trackSafesEnabled = (val != 0); return true; }
 
@@ -854,6 +926,8 @@ bool SafesWnd_ProcessLine(const char* line)
 void SafesWnd_SaveConfig(ProjectStateContext* ctx)
 {
     ctx->AddLine("LTSAFEGLOBAL %d", g_globalSafeMask);
+    if (g_layerSafeMask)
+        ctx->AddLine("LTSAFELAYERS %d", g_layerSafeMask);
     ctx->AddLine("LTSAFETRACKSEN %d", g_trackSafesEnabled ? 1 : 0);
     for (const auto& e : g_trackSafes)
     {

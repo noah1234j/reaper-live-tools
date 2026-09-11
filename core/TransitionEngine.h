@@ -21,6 +21,14 @@ class MediaTrack;
 // Bit flags reuse the TS_* constants from TransitionSnapshot.h.
 // ---------------------------------------------------------------------------
 extern int  g_globalSafeMask;
+
+// Layer recall safes: bit N set = layer at index N keeps its current
+// definition through a scene recall instead of being overwritten by the one
+// the scene captured. Only the first kLayerSafeCount layers can be safed —
+// the Safes grid shows a row per slot, and beyond that the list would be
+// unbounded and the indices meaningless.
+static const int kLayerSafeCount = 10;
+extern int  g_layerSafeMask;
 extern bool g_trackSafesEnabled;
 
 struct TrackSafeEntry {

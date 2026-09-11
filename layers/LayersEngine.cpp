@@ -318,13 +318,30 @@ void LayersEngine::DoApplyLayer(int idx)
     {
         int numAllTracks = CountTracks(0);
 
-        // Clear every existing spacer first: a track the layer records no
-        // spacer for must end up without one.
+        // Clear spacers before re-applying the layer's own, but only on tracks
+        // the layer is actually showing.
+        //
+        // REAPER exposes a single I_SPACER flag per track and renders it in
+        // both panels, so clearing it project-wide took out spacers in the
+        // panel the layer is not targeting: hiding a stack of tracks from the
+        // TCP wiped their spacers out of the MCP, where those tracks were
+        // still on screen. Clearing a hidden track's spacer buys nothing in
+        // the target panel — the track is not drawn there at all — so skipping
+        // them leaves the target panel identical and stops the collateral
+        // damage in the other one. A track's spacer is restored to the layer's
+        // idea of it the moment the layer shows it again.
+        const char* visAttr = cfg.targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER";
         int zeroVal = 0;
         for (int t = 0; t < numAllTracks; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
             if (!tr) continue;
+
+            bool  vis = true;
+            bool* pv  = (bool*)GetSetMediaTrackInfo(tr, visAttr, nullptr);
+            if (pv) vis = *pv;
+            if (!vis) continue;
+
             int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
             if (sp && *sp > 0)
                 GetSetMediaTrackInfo(tr, "I_SPACER", &zeroVal);
