@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.0.45-beta] — 2026-09-11
+
+### Changed
+
+- **Scenes no longer reorder tracks on recall**: Track reordering is switched off in both recall paths. Recalling a scene now leaves the project's track order exactly as it is; everything else about the recall is unchanged.
+
+  The rewritten pass shipped in v0.0.43 still misplaces tracks, and it only ever covered the instant path. A recall with a transition time runs a different pass, which was never rewritten and still carries all four of the original defects — destination taken from the loop counter, no insert-before correction for downward moves, a folder check that lets a folder parent be moved away from its children, and a single pass that never verifies where anything landed.
+
+  Scenes still capture and store track order, so no scene needs re-saving and nothing is lost from existing scenes. When the pass is correct, re-enabling it restores the feature. The switch is `g_trackReorderEnabled` in `core/TransitionEngine.cpp`.
+
+  Not affected: track reordering in Layers, which is a separate code path and still active.
+
+---
+
 ## [v0.0.44-beta] — 2026-09-11
 
 ### Performance

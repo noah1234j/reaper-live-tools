@@ -6,6 +6,16 @@
 #include <cmath>
 
 extern bool g_durationDebug;  // defined in scenes/TransitionWnd.cpp
+
+// Scene recall does not reorder tracks while this is false. Both recall
+// paths — ApplyImmediate and the timed Recall — check it before their
+// TS_TRACKORDER pass, so nothing moves tracks on recall in either case.
+// Turned off in v0.0.45-beta: the rewritten pass in ApplyImmediate still
+// misplaces tracks, and the timed path was never rewritten at all and
+// still carries all four of the v0.0.43 defects. Scenes continue to
+// capture and store track order, so re-enabling restores the feature
+// without needing a re-save.
+static const bool g_trackReorderEnabled = false;
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -1533,7 +1543,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
     // Track reordering – must happen after all per-track property updates
     // because the map above resolves tracks at their current positions.
     const double tReorder0 = g_durationDebug ? QpcMs() : 0.0;
-    if (mask & TS_TRACKORDER)
+    if (g_trackReorderEnabled && (mask & TS_TRACKORDER))
     {
         const int nTracks = GetNumTracks();
 
@@ -2358,7 +2368,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
     // Track reordering – instant, happens before lerp timer starts
     {
         double tr0 = QpcMs();
-        if (mask & TS_TRACKORDER)
+        if (g_trackReorderEnabled && (mask & TS_TRACKORDER))
         {
         struct OrderEntry { int targetIdx; GUID guid; };
         std::vector<OrderEntry> order;
