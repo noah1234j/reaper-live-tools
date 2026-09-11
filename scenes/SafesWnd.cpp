@@ -93,15 +93,13 @@ static const int k_ptAllBits =
 // ---------------------------------------------------------------------------
 struct SafeRow {
     std::string label;
-    GUID        guid;     // zero for Global and Layer rows
+    GUID        guid;     // zero for Global row
     bool        isGlobal;
-    bool        isLayer  = false;  // layer recall-safe row, below the tracks
-    int         layerIdx = -1;     // 0-based layer index for isLayer rows
 };
 
-// A layer row carries a single yes/no rather than a set of parameters, so it
-// is drawn and clicked in the "All" column only — the one column that is not
-// a specific track parameter. Every other cell in the row stays blank.
+// Layer safes live in their own list (g_hLayerList) rather than as rows in the
+// track grid: a layer is a single yes/no, not a set of track parameters, so it
+// has nothing to say about any of that grid's columns.
 static bool LayerRowSafed(int layerIdx)
 {
     if (layerIdx < 0 || layerIdx >= kLayerSafeCount) return false;
@@ -121,6 +119,7 @@ static void SetLayerRowSafed(int layerIdx, bool on)
 static HINSTANCE   g_hInst       = nullptr;
 static HWND        g_hDlg        = nullptr;
 static HWND        g_hList       = nullptr;
+static HWND        g_hLayerList  = nullptr;   // layer recall safes, own table
 static std::vector<SafeRow> g_rows;
 
 // Drag-to-check state (used by SafesListSubclassProc)
@@ -136,8 +135,6 @@ static bool s_suppressClick  = false;   // suppress NM_CLICK while dragging
 static int GetRowMask(int row)
 {
     if (row < 0 || row >= (int)g_rows.size()) return 0;
-    if (g_rows[row].isLayer)
-        return LayerRowSafed(g_rows[row].layerIdx) ? k_ptAllBits : 0;
     if (g_rows[row].isGlobal) return g_globalSafeMask;
     for (const auto& e : g_trackSafes)
         if (IsEqualGUID(e.guid, g_rows[row].guid)) return e.mask;
@@ -147,11 +144,6 @@ static int GetRowMask(int row)
 static void SetRowMask(int row, int mask)
 {
     if (row < 0 || row >= (int)g_rows.size()) return;
-    if (g_rows[row].isLayer) {
-        SetLayerRowSafed(g_rows[row].layerIdx,
-                         (mask & k_ptAllBits) == k_ptAllBits);
-        return;
-    }
     if (g_rows[row].isGlobal) {
         g_globalSafeMask = mask;
         return;
@@ -167,6 +159,39 @@ static void ToggleBit(int row, int bit)
 {
     int m = GetRowMask(row);
     SetRowMask(row, m ^ bit);
+}
+
+// ---------------------------------------------------------------------------
+// Layer safe list: one fixed row per slot.
+//
+// Slots by index rather than one row per existing layer: a scene recall
+// replaces the whole layer set, so the slot number is the only reference that
+// still means anything on the other side of one. Slots past the end of the
+// current layer list are shown too, so a safe set now still applies to a layer
+// created later.
+// ---------------------------------------------------------------------------
+static void PopulateLayerList()
+{
+    if (!g_hLayerList) return;
+    ListView_DeleteAllItems(g_hLayerList);
+
+    const int layerCount = LayersEngine::Get().GetLayerCount();
+    for (int i = 0; i < kLayerSafeCount; ++i)
+    {
+        char lbl[160];
+        if (i < layerCount)
+            snprintf(lbl, sizeof(lbl), "%d.  %s",
+                     i + 1, LayersEngine::Get().GetLayer(i).name);
+        else
+            snprintf(lbl, sizeof(lbl), "%d.  (no layer)", i + 1);
+
+        LVITEMA item = {};
+        item.mask    = LVIF_TEXT;
+        item.iItem   = i;
+        item.pszText = lbl;
+        ListView_InsertItem(g_hLayerList, &item);
+        ListView_SetItemText(g_hLayerList, i, 1, (LPSTR)" ");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,30 +220,6 @@ static void RebuildRows()
         // GUID
         GUID* pg = (GUID*)GetSetMediaTrackInfo(tr, "GUID", nullptr);
         r.guid = pg ? *pg : GUID{};
-
-        g_rows.push_back(r);
-    }
-
-    // Then one row per layer slot, under the tracks. These are fixed slots by
-    // index rather than one row per existing layer: the safe has to survive a
-    // scene recall that replaces the whole layer set, and an index is the only
-    // thing that still means something on the other side of that.
-    const int layerCount = LayersEngine::Get().GetLayerCount();
-    for (int i = 0; i < kLayerSafeCount; ++i)
-    {
-        SafeRow r;
-        r.isGlobal = false;
-        r.isLayer  = true;
-        r.layerIdx = i;
-        r.guid     = GUID{};
-
-        char lbl[160];
-        if (i < layerCount)
-            snprintf(lbl, sizeof(lbl), "Layer %d  -  %s",
-                     i + 1, LayersEngine::Get().GetLayer(i).name);
-        else
-            snprintf(lbl, sizeof(lbl), "Layer %d", i + 1);
-        r.label = lbl;
 
         g_rows.push_back(r);
     }
@@ -263,9 +264,6 @@ static int PtLvcToSafeCol(int lvc)
 static void ApplyCellToggle(int row, int sc, bool checking)
 {
     if (row < 0 || row >= (int)g_rows.size()) return;
-    // A layer row has one checkbox, in the All column; the per-parameter
-    // columns mean nothing for it.
-    if (g_rows[row].isLayer && sc != COL_ALL) return;
     int bit = k_colBit[sc];
     if (sc == COL_ALL)
     {
@@ -505,9 +503,38 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             ListView_InsertColumn(g_hList, lvc, &col);
         }
 
+        // ---- Layer recall safes: its own small table ---------------------
+        HWND hLyrPh = GetDlgItem(hDlg, IDC_SAFESLAYERLIST);
+        if (hLyrPh)
+        {
+            RECT rcL = {};
+            GetClientRect(hLyrPh, &rcL);
+            MapWindowPoints(hLyrPh, hDlg, (POINT*)&rcL, 2);
+            DestroyWindow(hLyrPh);
+
+            g_hLayerList = CreateWindowExA(
+                WS_EX_CLIENTEDGE,
+                WC_LISTVIEWA, "",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL |
+                LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+                rcL.left, rcL.top, rcL.right - rcL.left, rcL.bottom - rcL.top,
+                hDlg, (HMENU)(UINT_PTR)IDC_SAFESLAYERLIST, g_hInst, nullptr);
+
+            ListView_SetExtendedListViewStyle(g_hLayerList,
+                LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+
+            LVCOLUMNA lc = {};
+            lc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+            lc.pszText = (LPSTR)"Layer"; lc.cx = 240; lc.fmt = LVCFMT_LEFT;
+            ListView_InsertColumn(g_hLayerList, 0, &lc);
+            lc.pszText = (LPSTR)"Safe";  lc.cx = 48;  lc.fmt = LVCFMT_CENTER;
+            ListView_InsertColumn(g_hLayerList, 1, &lc);
+        }
+
         // Build rows and populate
         RebuildRows();
         PopulateList();
+        PopulateLayerList();
 
         // Subclass the ListView header for rotated column labels
         HWND hHdr = ListView_GetHeader(g_hList);
@@ -596,14 +623,24 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         HWND hTrackEn = GetDlgItem(hDlg, IDC_TRACK_SAFES_EN);
         if (hTrackEn) SetWindowPos(hTrackEn, nullptr, MARGIN, trackEnY, 160, CHK_H, SWP_NOZORDER);
 
-        // ListView
-        const int listTop    = trackEnY + CHK_H + MARGIN;
-        const int listBottom = H - BTN_H - MARGIN * 2;
+        // The layer table keeps a fixed height at the bottom — it holds a
+        // known ten rows — and the track list absorbs everything left over.
+        const int LBL_H  = 12;
+        const int LYR_H  = 118;
+
+        const int listTop = trackEnY + CHK_H + MARGIN;
+        const int by      = H - BTN_H - MARGIN;
+        const int lyrTop  = by - MARGIN - LYR_H;
+        const int lblTop  = lyrTop - LBL_H;
+        int listBottom    = lblTop - MARGIN;
+        if (listBottom < listTop + 40) listBottom = listTop + 40;
+
         SetWindowPos(g_hList, nullptr,
             MARGIN, listTop, W - MARGIN*2, listBottom - listTop, SWP_NOZORDER);
 
-        // Bottom buttons
-        const int by = listBottom + MARGIN;
+        HWND hLyrLbl = GetDlgItem(hDlg, IDC_SAFESLAYERLBL);
+        if (hLyrLbl) SetWindowPos(hLyrLbl, nullptr, MARGIN, lblTop, W - MARGIN*2, LBL_H, SWP_NOZORDER);
+        if (g_hLayerList) SetWindowPos(g_hLayerList, nullptr, MARGIN, lyrTop, W - MARGIN*2, LYR_H, SWP_NOZORDER);
         HWND hRefresh = GetDlgItem(hDlg, IDC_REFRESH_SAFES);
         HWND hClear   = GetDlgItem(hDlg, IDC_CLEAR_SAFES);
         if (hRefresh) SetWindowPos(hRefresh, nullptr, MARGIN,              by, BTN_W, BTN_H, SWP_NOZORDER);
@@ -617,12 +654,14 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         case IDC_REFRESH_SAFES:
             RebuildRows();
             PopulateList();
+            PopulateLayerList();
             break;
 
         case IDC_CLEAR_SAFES:
             g_globalSafeMask = 0;
             g_layerSafeMask  = 0;
             g_trackSafes.clear();
+            if (g_hLayerList) InvalidateRect(g_hLayerList, nullptr, FALSE);
             CheckDlgButton(hDlg, IDC_GSAFE_VOL,    BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_PAN,    BST_UNCHECKED);
             CheckDlgButton(hDlg, IDC_GSAFE_MUTE,   BST_UNCHECKED);
@@ -681,6 +720,67 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
     case WM_NOTIFY:
     {
         NMHDR* pnm = (NMHDR*)lParam;
+        // ---- Layer safe table --------------------------------------------
+        if (pnm->hwndFrom == g_hLayerList)
+        {
+            if (pnm->code == NM_CLICK)
+            {
+                NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
+                LVHITTESTINFO ht = {};
+                ht.pt = nia->ptAction;
+                ListView_SubItemHitTest(g_hLayerList, &ht);
+                if (ht.iItem >= 0 && ht.iSubItem == 1)
+                {
+                    SetLayerRowSafed(ht.iItem, !LayerRowSafed(ht.iItem));
+                    RECT rcRow;
+                    ListView_GetItemRect(g_hLayerList, ht.iItem, &rcRow, LVIR_BOUNDS);
+                    InvalidateRect(g_hLayerList, &rcRow, FALSE);
+                    MarkProjectDirty(nullptr);
+                }
+            }
+            else if (pnm->code == NM_CUSTOMDRAW)
+            {
+                NMLVCUSTOMDRAW* pcd = (NMLVCUSTOMDRAW*)lParam;
+                switch (pcd->nmcd.dwDrawStage)
+                {
+                case CDDS_PREPAINT:
+                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NOTIFYITEMDRAW);
+                    return TRUE;
+                case CDDS_ITEMPREPAINT:
+                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NOTIFYSUBITEMDRAW);
+                    return TRUE;
+                case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+                {
+                    if (pcd->iSubItem != 1) break;   // column 0 draws normally
+
+                    const int  row = (int)pcd->nmcd.dwItemSpec;
+                    HDC        hdc = pcd->nmcd.hdc;
+                    RECT       rcIt = pcd->nmcd.rc;
+                    const bool sel = (ListView_GetItemState(g_hLayerList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+
+                    SetBkColor(hdc, sel ? GetSysColor(COLOR_HIGHLIGHT)
+                                        : GetSysColor(COLOR_WINDOW));
+                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+
+                    const int cbSize = 13;
+                    RECT rcCb;
+                    rcCb.left   = rcIt.left + (rcIt.right  - rcIt.left - cbSize) / 2;
+                    rcCb.top    = rcIt.top  + (rcIt.bottom - rcIt.top  - cbSize) / 2;
+                    rcCb.right  = rcCb.left + cbSize;
+                    rcCb.bottom = rcCb.top  + cbSize;
+
+                    UINT dfcs = DFCS_BUTTONCHECK | DFCS_FLAT;
+                    if (LayerRowSafed(row)) dfcs |= DFCS_CHECKED;
+                    DrawFrameControl(hdc, &rcCb, DFC_BUTTON, dfcs);
+
+                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
+                    return TRUE;
+                }
+                }
+            }
+            break;
+        }
+
         if (pnm->hwndFrom != g_hList) break;
 
         if (pnm->code == NM_CLICK)
@@ -696,8 +796,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             const int row = ht.iItem;
             const int lvc = ht.iSubItem;   // ListView column index
             const int sc  = PtLvcToSafeCol(lvc);  // SafeCol
-            if (row >= 0 && lvc > 0 && sc > 0 &&
-                !(g_rows[row].isLayer && sc != COL_ALL))
+            if (row >= 0 && lvc > 0 && sc > 0)
             {
                 if (sc == COL_ALL)
                 {
@@ -739,20 +838,6 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 
                 HDC   hdc  = pcd->nmcd.hdc;
                 RECT  rcIt = pcd->nmcd.rc;
-
-                // A layer row gets one checkbox, in the All column. Paint the
-                // rest of its cells empty rather than leaving stale pixels.
-                const bool layerRow = (row >= 0 && row < (int)g_rows.size() &&
-                                       g_rows[row].isLayer);
-                if (layerRow && sc != COL_ALL)
-                {
-                    const bool selBlank = (ListView_GetItemState(g_hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-                    SetBkColor(hdc, selBlank ? GetSysColor(COLOR_HIGHLIGHT)
-                                             : GetSysColor(COLOR_WINDOW));
-                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
-                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
-                    return TRUE;
-                }
 
                 // Fill background
                 const bool isSelected = (ListView_GetItemState(g_hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;

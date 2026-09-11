@@ -251,7 +251,7 @@ END
 //  Bottom: Enable Per-Track toggle + Refresh / Clear All buttons
 // ---------------------------------------------------------------------------
 
-IDD_SAFES DIALOGEX 0, 0, 430, 252
+IDD_SAFES DIALOGEX 0, 0, 430, 320
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Live Tools - Safes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -281,11 +281,16 @@ BEGIN
             BS_AUTOCHECKBOX | WS_TABSTOP, 5, 62, 130, 10
 
     // ListView placeholder – replaced dynamically in WM_INITDIALOG
-    LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 148
+    LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 160
+
+    // ---- Layer recall safes: its own table, tracks and layers are not the
+    // same kind of thing and do not share the per-parameter columns ---------
+    LTEXT           "Layer Recall Safes  (a safed layer keeps its current tracks through a scene recall):", IDC_SAFESLAYERLBL, 5, 242, 420, 8
+    LTEXT           "", IDC_SAFESLAYERLIST, 5, 252, 420, 44
 
     // ---- Bottom buttons --------------------------------------------------
-    PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 230, 56, 14
-    PUSHBUTTON      "Clear All", IDC_CLEAR_SAFES,   66, 230, 56, 14
+    PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 300, 56, 14
+    PUSHBUTTON      "Clear All", IDC_CLEAR_SAFES,   66, 300, 56, 14
 END
 
 // ---------------------------------------------------------------------------
@@ -327,12 +332,12 @@ END
 // IDD_LAYERS_SETTINGS  -  Layers settings dialog  (250 x 115 DU)
 // ---------------------------------------------------------------------------
 
-IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 164
+IDD_LAYERS_SETTINGS DIALOGEX 0, 0, 250, 178
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Layers Settings"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 127
+    GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 141
     LTEXT           "Layers control:", IDC_STATIC, 12, 18, 55, 10, SS_CENTERIMAGE
     CONTROL         "MCP (mixer)",       IDC_LYR_SET_TARGET_MCP, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 70, 18, 60, 10
     CONTROL         "TCP (track panel)", IDC_LYR_SET_TARGET_TCP, "Button", BS_AUTORADIOBUTTON,                        135, 18, 80, 10
@@ -341,15 +346,16 @@ BEGIN
     CONTROL         "Reorder tracks to match layer order",  IDC_LYR_SET_REORDER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 56, 185, 10
     CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 68, 200, 10
     CONTROL         "Trigger MCP select (refresh control surface channels)", IDC_LYR_SET_TRIGGERMCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 80, 225, 10
-    LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 98, 105, 8, SS_CENTERIMAGE
-    EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 96, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+    CONTROL         "Manage visual spacers (REAPER shares one spacer flag between TCP and MCP)", IDC_LYR_SET_SPACERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 92, 225, 10
+    LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 112, 105, 8, SS_CENTERIMAGE
+    EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 110, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
     CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
                     UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-                    156, 96, 12, 12
-    LTEXT           "(0 = all)", IDC_STATIC, 171, 98, 50, 8, SS_CENTERIMAGE
+                    156, 110, 12, 12
+    LTEXT           "(0 = all)", IDC_STATIC, 171, 112, 50, 8, SS_CENTERIMAGE
 
-    DEFPUSHBUTTON   "OK",     IDOK,     140, 145, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 196, 145, 50, 14
+    DEFPUSHBUTTON   "OK",     IDOK,     140, 159, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 196, 159, 50, 14
 END
 
 // ---------------------------------------------------------------------------

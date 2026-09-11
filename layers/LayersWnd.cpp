@@ -139,7 +139,10 @@ int LayersWnd_IsVisible()
 
 void LayersWnd_Refresh()
 {
-    if (s_hwnd && IsWindow(s_hwnd) && IsWindowVisible(s_hwnd))
+    // Deliberately not gated on IsWindowVisible: a hidden window that is
+    // refreshed anyway is correct the instant it is shown, whereas skipping
+    // the refresh leaves it showing whatever it held when it was hidden.
+    if (s_hwnd && IsWindow(s_hwnd))
     {
         LayersEngine::Get().RefreshAllTrackNames();
         RefreshLayerList(s_hwnd);
@@ -471,6 +474,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,  cfg.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,  cfg.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_TRIGGERMCP, cfg.triggerMcpSelect  ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_LYR_SET_SPACERS,    cfg.manageSpacers     ? BST_CHECKED : BST_UNCHECKED);
         // Set up max channels spin
         {
             HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
@@ -504,6 +508,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
             cfg.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)  == BST_CHECKED);
             cfg.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)  == BST_CHECKED);
             cfg.triggerMcpSelect    = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TRIGGERMCP) == BST_CHECKED);
+            cfg.manageSpacers       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_SPACERS)    == BST_CHECKED);
             BOOL ok = FALSE;
             int val = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
             cfg.globalMaxChannels   = (ok && val >= 0) ? val : 0;

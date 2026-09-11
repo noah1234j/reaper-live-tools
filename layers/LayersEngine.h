@@ -46,6 +46,16 @@ struct LayersSettings
     int  globalMaxChannels   = 0;   // 0 = unlimited; applies to all layers
     bool triggerMcpSelect    = false; // briefly select/deselect first MCP track to refresh surfaces
 
+    // Whether activating a layer applies the layer's visual spacers.
+    //
+    // REAPER has a single I_SPACER flag per track and draws it in both the TCP
+    // and the MCP, so a layer cannot give the two panels different spacers —
+    // managing them for the target panel necessarily rewrites them in the
+    // other one. Off by default, so layers leave every spacer alone and a
+    // project's own spacers are never collateral damage of a layer change.
+    // Layers still record spacers when captured; turning this on applies them.
+    bool manageSpacers       = false;
+
     void Load();
     void Save() const;
 };

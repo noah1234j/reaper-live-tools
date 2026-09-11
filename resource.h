@@ -76,7 +76,7 @@
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
-#define LT_VERSION_STR           "v0.0.38-beta"
+#define LT_VERSION_STR           "v0.0.39-beta"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213
@@ -86,6 +86,8 @@
 #define IDC_SAFESLIST            2200
 #define IDC_REFRESH_SAFES        2201
 #define IDC_CLEAR_SAFES          2202
+#define IDC_SAFESLAYERLIST       2203   // layer recall-safe list (own table)
+#define IDC_SAFESLAYERLBL        2204
 
 // ---- Live Monitor window --------------------------------------------------
 #define IDD_MONITOR              207
@@ -258,6 +260,7 @@
 #define IDC_LYR_SET_TRIGGERMCP   2828
 #define IDC_LYR_SET_TARGET_MCP   2829
 #define IDC_LYR_SET_TARGET_TCP   2830
+#define IDC_LYR_SET_SPACERS      2831   // "Manage visual spacers" checkbox
 
 // ---- Button Map window ---------------------------------------------------
 #define IDD_BTN_MAP              218

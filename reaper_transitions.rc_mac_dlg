@@ -234,7 +234,7 @@ SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_CUE_SETUP)
 #ifndef SET_IDD_SAFES_STYLE
 #define SET_IDD_SAFES_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_SAFES,SET_IDD_SAFES_STYLE,"Live Tools - Safes",430,252,SET_IDD_SAFES_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_SAFES,SET_IDD_SAFES_STYLE,"Live Tools - Safes",430,320,SET_IDD_SAFES_SCALE)
 BEGIN
 // ---- Global Safes groupbox (two rows) --------------------------------
 GROUPBOX        "Global Safes", IDC_GSAFES_GROUP, 5, 4, 420, 52
@@ -261,11 +261,16 @@ CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",
 BS_AUTOCHECKBOX | WS_TABSTOP, 5, 62, 130, 10
 
 // ListView placeholder – replaced dynamically in WM_INITDIALOG
-LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 148
+LTEXT           "", IDC_SAFESLIST, 5, 76, 420, 160
+
+// ---- Layer recall safes: its own table, tracks and layers are not the
+// same kind of thing and do not share the per-parameter columns ---------
+LTEXT           "Layer Recall Safes  (a safed layer keeps its current tracks through a scene recall):", IDC_SAFESLAYERLBL, 5, 242, 420, 8
+LTEXT           "", IDC_SAFESLAYERLIST, 5, 252, 420, 44
 
 // ---- Bottom buttons --------------------------------------------------
-PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 230, 56, 14
-PUSHBUTTON      "Clear All", IDC_CLEAR_SAFES,   66, 230, 56, 14
+PUSHBUTTON      "Refresh",   IDC_REFRESH_SAFES,  5, 300, 56, 14
+PUSHBUTTON      "Clear All", IDC_CLEAR_SAFES,   66, 300, 56, 14
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SAFES)
 
@@ -307,9 +312,9 @@ SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LAYERS)
 #ifndef SET_IDD_LAYERS_SETTINGS_STYLE
 #define SET_IDD_LAYERS_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LAYERS_SETTINGS,SET_IDD_LAYERS_SETTINGS_STYLE,"Layers Settings",250,164,SET_IDD_LAYERS_SETTINGS_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_LAYERS_SETTINGS,SET_IDD_LAYERS_SETTINGS_STYLE,"Layers Settings",250,178,SET_IDD_LAYERS_SETTINGS_SCALE)
 BEGIN
-GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 127
+GROUPBOX        "Apply when activating a layer:", IDC_STATIC, 5, 5, 240, 141
 LTEXT           "Layers control:", IDC_STATIC, 12, 18, 55, 10, SS_CENTERIMAGE
 CONTROL         "MCP (mixer)",       IDC_LYR_SET_TARGET_MCP, "Button", BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP, 70, 18, 60, 10
 CONTROL         "TCP (track panel)", IDC_LYR_SET_TARGET_TCP, "Button", BS_AUTORADIOBUTTON,                        135, 18, 80, 10
@@ -318,15 +323,16 @@ CONTROL         "Also hide in the other panel",         IDC_LYR_SET_HIDETCP, "Bu
 CONTROL         "Reorder tracks to match layer order",  IDC_LYR_SET_REORDER, "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 56, 185, 10
 CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 68, 200, 10
 CONTROL         "Trigger MCP select (refresh control surface channels)", IDC_LYR_SET_TRIGGERMCP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 80, 225, 10
-LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 98, 105, 8, SS_CENTERIMAGE
-EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 96, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+CONTROL         "Manage visual spacers (REAPER shares one spacer flag between TCP and MCP)", IDC_LYR_SET_SPACERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 92, 225, 10
+LTEXT           "Max Channels (all layers):", IDC_STATIC, 12, 112, 105, 8, SS_CENTERIMAGE
+EDITTEXT        IDC_LYR_MAXCH_EDIT, 120, 110, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
 CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
 UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-156, 96, 12, 12
-LTEXT           "(0 = all)", IDC_STATIC, 171, 98, 50, 8, SS_CENTERIMAGE
+156, 110, 12, 12
+LTEXT           "(0 = all)", IDC_STATIC, 171, 112, 50, 8, SS_CENTERIMAGE
 
-DEFPUSHBUTTON   "OK",     IDOK,     140, 145, 50, 14
-PUSHBUTTON      "Cancel", IDCANCEL, 196, 145, 50, 14
+DEFPUSHBUTTON   "OK",     IDOK,     140, 159, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 196, 159, 50, 14
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LAYERS_SETTINGS)
 

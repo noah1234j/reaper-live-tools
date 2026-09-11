@@ -1232,10 +1232,17 @@ static void UpdateLayerComboEnable(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
-// ResolveSceneLayer – point the scene at a layer that actually exists.
-// A scene whose layer was deleted falls back to the first layer rather than
-// keeping a dangling reference. "(no layer recall)" (uid 0) is a deliberate
-// choice and is left alone.
+// ResolveSceneLayer – make sure the scene points at a layer it can recall.
+//
+// The reference is resolved against the scene's OWN captured layer set, never
+// against the live one. Every scene stores a full layer set, and recall
+// replaces the live layers with it — so after recalling scene A the live
+// layers carry A's uids, and scene B's uid legitimately matches none of them.
+// Testing against the live set treated that as a dangling reference and
+// "repaired" scene B by overwriting its captured layers with A's, which lost
+// B's layers and made B recall A's on the next go.
+//
+// "(no layer recall)" (uid 0) is a deliberate choice and is left alone.
 // ---------------------------------------------------------------------------
 static void ResolveSceneLayer(TransitionSnapshot* snap)
 {
@@ -1243,22 +1250,13 @@ static void ResolveSceneLayer(TransitionSnapshot* snap)
     EnsureLayerUids(snap);
     if (snap->m_layerUid <= 0) return;
 
-    LayersEngine& le = LayersEngine::Get();
-    if (le.FindLayerByUid(snap->m_layerUid) >= 0) return;   // still there
+    if (FindCapturedLayerByUid(snap, snap->m_layerUid) >= 0) return;  // fine
 
-    // No layers loaded at all is not evidence the scene's layer was deleted —
-    // it is what the world looks like before the project's layers arrive.
-    // Clearing the reference here would wipe every scene's assignment.
-    if (le.GetLayerCount() <= 0) return;
-
-    snap->m_layerUid = le.GetLayerUid(0);
-
-    // The replacement may be newer than the scene's captured layer set, in
-    // which case recall would have nothing to apply for it.
-    if (snap->m_layerUid > 0 && FindCapturedLayerByUid(snap, snap->m_layerUid) < 0)
-        CaptureLayersFromEngine(snap);
-
-    snap->m_layerIdx = FindCapturedLayerByUid(snap, snap->m_layerUid);
+    // Genuinely dangling: the scene names a layer its own capture does not
+    // contain. Fall back to the first layer it did capture.
+    if (snap->m_layers.empty()) return;
+    snap->m_layerUid = snap->m_layers[0].uid;
+    snap->m_layerIdx = 0;
     MarkProjectDirty(nullptr);
 }
 
@@ -1273,10 +1271,17 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
     SetDlgItemText(hwnd, IDC_SNAPNOTES,
                    snap ? NotesToControl(snap->m_notes).c_str() : "");
 
-    // Per-scene layer selector. This lists exactly the layers that exist right
-    // now — never the scene's captured copy, which is what used to hide layers
-    // created after the scene was saved. Each entry carries its layer uid as
-    // item data, so the selection survives renames and reordering.
+    // Per-scene layer selector.
+    //
+    // The scene's own captured layers come first: those are what recall can
+    // actually activate, since recall installs that captured set. Any layer
+    // that exists right now but is not in the capture is listed after them, so
+    // a layer created since the scene was saved can still be chosen — picking
+    // one refreshes the scene's captured set (see CBN_SELCHANGE), which is the
+    // only point at which that set is allowed to change behind the user.
+    //
+    // Each entry carries its layer uid as item data, so a selection survives
+    // renames and reordering.
     {
         HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
         g_syncingEditor = true;  // keep the guard while filling combobox
@@ -1290,9 +1295,17 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
             LayersEngine& le = LayersEngine::Get();
             int sel = 0;
 
+            for (const auto& cl : snap->m_layers)
+            {
+                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)cl.name.c_str());
+                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)cl.uid);
+                if (cl.uid > 0 && cl.uid == snap->m_layerUid) sel = item;
+            }
+
             for (int li = 0; li < le.GetLayerCount(); li++)
             {
                 const LayerDef& ld = le.GetLayer(li);
+                if (FindCapturedLayerByUid(snap, ld.uid) >= 0) continue;
                 int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)ld.name);
                 SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)ld.uid);
                 if (ld.uid > 0 && ld.uid == snap->m_layerUid) sel = item;

@@ -307,6 +307,9 @@ void LayersEngine::DoApplyLayer(int idx)
     }
 
     // ---- Set REAPER visual spacers ----------------------------------------
+    // Skipped entirely when the user has turned spacer management off: there
+    // is one I_SPACER flag shared by both panels, so any write here is visible
+    // in the panel the layer is not targeting too.
     // Spacers used to be cleared with a direct I_SPACER write but *set* by
     // firing action 42665 with the track selected. That asymmetry is why they
     // went missing: clearing always worked, while setting depended on the
@@ -315,6 +318,7 @@ void LayersEngine::DoApplyLayer(int idx)
     // silently never came back. Both directions now write I_SPACER, so setting
     // a spacer is exactly as reliable as clearing one, needs no selection, and
     // does not have to happen with UI refresh enabled.
+    if (cfg.manageSpacers)
     {
         int numAllTracks = CountTracks(0);
 
@@ -396,9 +400,10 @@ void LayersEngine::Deactivate()
     m_activeLayer = -1;
     if (m_settings.restoreOnDeactivate)
         RestoreAllVisible();
-    else
+    else if (m_settings.manageSpacers)
     {
-        // Always clear spacers even if track visibility is not restored
+        // Clear spacers even though track visibility is not being restored —
+        // but only if layers are managing spacers at all.
         int numTracks = CountTracks(0);
         int zeroVal = 0;
         for (int t = 0; t < numTracks; t++)
@@ -441,7 +446,10 @@ void LayersEngine::RestoreAllVisible()
         GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", &show);
         if (m_settings.hideTcpToo)
             GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP", &show);
-        GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
+        // Same shared I_SPACER flag as on apply: leave it alone unless the
+        // user has asked layers to manage spacers.
+        if (m_settings.manageSpacers)
+            GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
     }
     TrackList_AdjustWindows(false);
     UpdateArrange();
@@ -1204,7 +1212,7 @@ void LayersEngine::ResetForProject()
 //   >
 void LayersEngine::SaveConfig(ProjectStateContext* ctx)
 {
-    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d",
+    ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d managespacers=%d",
                  m_nextUid, m_activeLayer,
                  m_settings.applyMcpVisibility  ? 1 : 0,
                  m_settings.hideTcpToo          ? 1 : 0,
@@ -1212,7 +1220,8 @@ void LayersEngine::SaveConfig(ProjectStateContext* ctx)
                  m_settings.restoreOnDeactivate ? 1 : 0,
                  m_settings.globalMaxChannels,
                  m_settings.triggerMcpSelect    ? 1 : 0,
-                 m_settings.targetTcp           ? 1 : 0);
+                 m_settings.targetTcp           ? 1 : 0,
+                 m_settings.manageSpacers       ? 1 : 0);
 
     for (const auto& ld : m_layers)
     {
@@ -1254,8 +1263,9 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
 
     int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0, trigmcpsel = 0, targettcp = 0;
-    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d",
-           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel, &targettcp);
+    int managespacers = 0;   // absent in projects written before the setting existed
+    sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d managespacers=%d",
+           &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel, &targettcp, &managespacers);
 
     m_nextUid = (nextuid >= 1) ? nextuid : 1;
     m_settings.applyMcpVisibility  = (mcpvis  != 0);
@@ -1265,6 +1275,7 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
     m_settings.triggerMcpSelect    = (trigmcpsel != 0);
     m_settings.targetTcp           = (targettcp != 0);
+    m_settings.manageSpacers       = (managespacers != 0);
     m_layers.clear();
 
     char subline[4096];
