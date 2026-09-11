@@ -2,6 +2,22 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.39" author="noah1234j" time="2026-09-11T17:22:23Z">
+        <changelog>Bug Fixes
+
+- Scenes: selecting a scene after recalling a different one overwrote its stored layers: ResolveSceneLayer runs whenever a scene is selected, and it checked the scene's layer uid against the live layer set. But every scene stores a full layer set and recall installs it, so after recalling scene A the live layers carry A's uids — and scene B's uid legitimately matches none of them. That normal state was read as a dangling reference, and the code "repaired" scene B by overwriting its captured layers with the live ones, which were A's. Scene B then recalled A's layers, and the Layers window faithfully showed them, which is why this looked like the Layers UI failing to refresh. The reference is now resolved against the scene's own captured set — the only set its uid was ever an index into — and nothing rewrites a scene's layers behind the user. The one remaining place a scene's captured set changes is the user explicitly picking a layer in the recall dropdown.
+
+  Scenes whose layer sets were already overwritten by an earlier build cannot be recovered automatically and need re-saving.
+
+- Layers: the window did not update while hidden: LayersWnd_Refresh was gated on IsWindowVisible, so a hidden Layers window kept whatever it last held and was stale the moment it was opened. It now refreshes regardless, and is correct the instant it is shown.
+
+New Features
+
+- Layers: visual spacers are left alone by default: REAPER exposes a single I_SPACER flag per track and draws it in both the TCP and the MCP, so a layer cannot give the two panels different spacers — managing them for the panel a layer targets necessarily rewrites them in the other one. A layer hiding tracks from the TCP was therefore rewriting spacers in the MCP, where those tracks were still on screen. There is no way to express "manage the TCP's spacers but not the MCP's" against one flag, so this is now a choice: a new "Manage visual spacers" setting in Layers → Settings, off by default, including for projects saved before it existed. With it off no code path in the plugin writes I_SPACER at all — on apply, on deactivate, or on restore. Layers still record spacers when captured; turning the setting on applies them, accepting that both panels are written.
+
+- Safes: layer recall safes moved to their own table: The ten layer slots added in v0.0.38 were rows in the per-track grid, with their single checkbox squeezed into the "All" column. A layer is one yes/no rather than a set of track parameters, so it has nothing to say about that grid's columns. They now have a separate list below the tracks with its own Layer / Safe columns. The Safes window grew to fit it; the track list absorbs any extra height and the layer table keeps a fixed one.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.39-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.38" author="noah1234j" time="2026-09-11T16:26:10Z">
         <changelog>New Features
 
