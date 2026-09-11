@@ -1,5 +1,20 @@
 # Changelog
 
+## [v0.0.41-beta] — 2026-09-11
+
+### New Features
+
+- **Duration debug: the instant recall report now accounts for all of its time**: A 114-track scene reported 48,514 ms in `ApplyImmediate` while its sub-buckets summed to 1,136 ms — 96% of the recall was real but invisible, because the two blocks that run after the per-track loop had no timers on them. Both are now measured:
+
+  - **Track reorder**, split into the deselect-all sweep and the `ReorderSelectedTracks` calls, with counts of the moves performed and the `I_SELECTED` writes issued. The block deselects every track in the project once per track moved, so on a large project it is quadratic; splitting it says which half the cost is actually in rather than leaving it to inference.
+  - **Close FX windows**, the sweep over every track's FX at the end of a recall.
+
+  The report also prints an **`[unaccounted]`** line — `ApplyImmediate` minus every bucket — so what is left over is stated rather than implied. It stays there permanently: a future regression cannot hide in an unexplained gap the way this one did. Timing columns widened from 6 to 9 characters, since five-digit millisecond values were overflowing their field and running together.
+
+  This release only measures; no recall behaviour changes.
+
+---
+
 ## [v0.0.40-beta] — 2026-09-11
 
 ### New Features

@@ -93,6 +93,14 @@ public:
         double i_layout   = 0.0;  // name/color/height across all tracks
         double i_fx       = 0.0;  // total SyncFXChain time (all tracks)
         double i_sends    = 0.0;  // send add/update/remove time (all tracks)
+        // The two blocks that run after the per-track loop. Untimed until now,
+        // which is what let 96% of a recall hide behind an unexplained gap.
+        double i_reorder      = 0.0;  // whole TS_TRACKORDER block
+        double i_reorderSel   = 0.0;  //   ...of which: deselect-all sweeps
+        double i_reorderMove  = 0.0;  //   ...of which: ReorderSelectedTracks
+        double i_closeFX      = 0.0;  // closing open FX windows
+        int    i_reorderMoves = 0;    // moves actually performed
+        int    i_reorderSelWrites = 0; // I_SELECTED writes done by the sweeps
         int    tracksMatched  = 0;    // tracks found in project
         int    tracksSkipped  = 0;    // tracks not found
         int    paramLerps     = 0;    // FX param lerp entries

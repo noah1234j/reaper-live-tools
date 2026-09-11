@@ -1455,6 +1455,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
 
     // Track reordering – must happen after all per-track property updates
     // because FindTrack() scans by GUID at current positions.
+    const double tReorder0 = g_durationDebug ? QpcMs() : 0.0;
     if (mask & TS_TRACKORDER)
     {
         // Build a target order from tracks that have a valid capturedIndex.
@@ -1484,6 +1485,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             // Don't move a track outside its parent folder
             if (WouldLeaveFolder(tr, pass)) continue;
             // Deselect all, select only this track
+            const double tSel0 = g_durationDebug ? QpcMs() : 0.0;
             int n = GetNumTracks();
             for (int i = 0; i < n; ++i)
             {
@@ -1494,13 +1496,27 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             }
             int one = 1;
             GetSetMediaTrackInfo(tr, "I_SELECTED", &one);
+            if (g_durationDebug)
+            {
+                lastTimings.i_reorderSel += QpcMs() - tSel0;
+                lastTimings.i_reorderSelWrites += n + 1;
+            }
+
             // Insert before track at target position
+            const double tMove0 = g_durationDebug ? QpcMs() : 0.0;
             ReorderSelectedTracks(pass, 0);
+            if (g_durationDebug)
+            {
+                lastTimings.i_reorderMove += QpcMs() - tMove0;
+                lastTimings.i_reorderMoves++;
+            }
         }
     }
+    if (g_durationDebug) lastTimings.i_reorder = QpcMs() - tReorder0;
 
     // Close all open FX windows on recall
     {
+        const double tCloseFX0 = g_durationDebug ? QpcMs() : 0.0;
         int nTr = CountTracks(nullptr);
         for (int tIdx = 0; tIdx < nTr; tIdx++)
         {
@@ -1511,6 +1527,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                 if (TrackFX_GetOpen(trSweep, fx))
                     TrackFX_Show(trSweep, fx, 0);
         }
+        if (g_durationDebug) lastTimings.i_closeFX = QpcMs() - tCloseFX0;
     }
 
     TrackList_AdjustWindows(false);

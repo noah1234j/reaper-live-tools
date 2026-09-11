@@ -1691,17 +1691,22 @@ static void DoRecall(HWND hwnd, int listIndex)
             snprintf(buf, sizeof(buf),
                 "[Live Tools] Scene recall timing: \"%s\"  [INSTANT]\n"
                 "%s"
-                "  BuildTrackMap:     %6.2f ms  (%d tracks)\n"
-                "  ApplyImmediate:    %6.2f ms\n"
-                "    VolPan:          %6.2f ms\n"
-                "    Mute/Solo/Phase: %6.2f ms\n"
-                "    Vis/Sel/Offset:  %6.2f ms\n"
-                "    Layout:          %6.2f ms\n"
-                "    FX chains:       %6.2f ms\n"
-                "    Sends:           %6.2f ms\n"
-                "  Engine total:      %6.2f ms\n"
-                "  RestoreLayerState: %6.2f ms\n"
-                "  ── TOTAL ──        %6.2f ms\n",
+                "  BuildTrackMap:     %9.2f ms  (%d tracks)\n"
+                "  ApplyImmediate:    %9.2f ms\n"
+                "    VolPan:          %9.2f ms\n"
+                "    Mute/Solo/Phase: %9.2f ms\n"
+                "    Vis/Sel/Offset:  %9.2f ms\n"
+                "    Layout:          %9.2f ms\n"
+                "    FX chains:       %9.2f ms\n"
+                "    Sends:           %9.2f ms\n"
+                "    Track reorder:   %9.2f ms  (%d moves)\n"
+                "      deselect-all:  %9.2f ms  (%d I_SELECTED writes)\n"
+                "      ReorderSel:    %9.2f ms\n"
+                "    Close FX windows:%9.2f ms\n"
+                "    [unaccounted]:   %9.2f ms\n"
+                "  Engine total:      %9.2f ms\n"
+                "  RestoreLayerState: %9.2f ms\n"
+                "  ── TOTAL ──        %9.2f ms\n",
                 snap->m_name.c_str(),
                 settingsBuf,
                 t.buildTrackMap,  t.tracksMatched,
@@ -1712,6 +1717,16 @@ static void DoRecall(HWND hwnd, int listIndex)
                 t.i_layout,
                 t.i_fx,
                 t.i_sends,
+                t.i_reorder, t.i_reorderMoves,
+                t.i_reorderSel, t.i_reorderSelWrites,
+                t.i_reorderMove,
+                t.i_closeFX,
+                // Whatever ApplyImmediate spent outside every bucket above.
+                // Printed rather than left implicit so a future regression
+                // cannot hide in the gap the way this one did.
+                t.discreteParams - (t.i_volPan + t.i_muteSolo + t.i_vis +
+                                    t.i_layout + t.i_fx + t.i_sends +
+                                    t.i_reorder + t.i_closeFX),
                 t.total,
                 msLayers,
                 msTotal);
