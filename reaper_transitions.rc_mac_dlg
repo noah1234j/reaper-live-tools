@@ -15,20 +15,20 @@
 #ifndef SET_IDD_TSNAPS_STYLE
 #define SET_IDD_TSNAPS_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_TSNAPS,SET_IDD_TSNAPS_STYLE,"Scenes",258,202,SET_IDD_TSNAPS_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_TSNAPS,SET_IDD_TSNAPS_STYLE,"Scenes",258,230,SET_IDD_TSNAPS_SCALE)
 BEGIN
 // ---- Mode toggle buttons (Scenes / Cue List) -------------------------
 CONTROL         "Scenes",   IDC_MODE_SCENES, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 5, 3, 72, 13
 CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
 
 // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-LTEXT           "", IDC_LIST, 5, 19, 148, 180
+LTEXT           "", IDC_LIST, 5, 19, 148, 208
 
 // ---- Column divider --------------------------------------------------
 // Drag to move the split between the scene list and the sidebar.
 // LayoutMain() positions and sizes it, so this is just the default.
 CONTROL         "", IDC_SPLITTER, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
-153, 19, 5, 180
+153, 19, 5, 208
 
 // ---- Top action buttons -----------------------------------------------
 PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
@@ -40,42 +40,39 @@ PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
 // ---- Progress bar placeholder – replaced dynamically -----------------
 LTEXT           "", IDC_PROGRESS,          158, 17, 97,  8
 
-// ---- Per-scene layer selector ----------------------------------------
-COMBOBOX        IDC_SNAP_LAYER,             158, 27, 97, 100,
-CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-
-// ---- Current layer indicator -----------------------------------------
-LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 41, 97, 8
-
-// ---- Status ----------------------------------------------------------
-LTEXT           "Idle",   IDC_STATUS,      158, 51, 97, 10
-
 // ---- Safes button ---------------------------------------------------
-PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 64, 97, 13
+PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 29, 97, 13
 
 // ---- Cue list setup button ------------------------------------------
-PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 81, 97, 13
+PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 46, 97, 13
 
 // ---- Settings button (opens global settings) -------------------------
-PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 98, 97, 13
+PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 63, 97, 13
 
-// ---- Layers button (opens Layers window) ----------------------------
-PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 115, 97, 13
+// ---- Layer group: current layer, the Layers window, and the per-scene
+// "layer to recall" selector, kept together ---------------------------
+LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 80, 97, 8
+
+PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 90, 97, 13
+
+COMBOBOX        IDC_SNAP_LAYER,             158, 107, 97, 100,
+CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
 // ---- Scene notes (multiline, last control in the sidebar stack) -------
 // The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
 // a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
 // run time, so the height below is only the default.
-LTEXT           "Notes:", IDC_STATIC,       158, 132, 97,  8
-EDITTEXT        IDC_SNAPNOTES,              158, 142, 97, 28,
+LTEXT           "Notes:", IDC_STATIC,       158, 125, 97,  8
+EDITTEXT        IDC_SNAPNOTES,              158, 135, 97, 56,
 ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
 CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
-158, 170, 97, 6
+158, 191, 97, 6
 
-// ---- Version footer --------------------------------------------------
-// Pinned to the bottom of the client area by LayoutVersion(), so the
-// position below is only where it sits at the default window size.
-CTEXT           "", IDC_VERSION,            158, 193, 97,  8
+// ---- Footer: status line then version, both pinned to the bottom of
+// the client area by LayoutFooter(). The positions below are only where
+// they sit at the default window size.
+LTEXT           "Idle",   IDC_STATUS,       158, 209, 97, 10
+CTEXT           "",       IDC_VERSION,      158, 221, 97,  8
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_TSNAPS)
 
@@ -285,26 +282,21 @@ BEGIN
 LTEXT           "Layers (double-click to activate):", IDC_STATIC, 5, 3, 170, 8
 
 // ListView placeholder – replaced dynamically in WM_INITDIALOG
-LTEXT           "", IDC_LYR_LAYER_LIST, 5, 13, 212, 308
+LTEXT           "", IDC_LYR_LAYER_LIST, 5, 13, 212, 320
 
-// ---- Right: Layer properties ----------------------------------------
-GROUPBOX        "Layer Properties", IDC_LYR_PROP_GROUP, 221, 3, 260, 327
-
-LTEXT           "Name:",    IDC_STATIC,       227, 18, 26, 8, SS_CENTERIMAGE
-EDITTEXT        IDC_LYR_NAME_EDIT,            255, 16, 219, 12, ES_AUTOHSCROLL
-
-LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 227, 32, 249, 8
+// ---- Right column: tracks in the selected layer ----------------------
+// Renaming is done in the layer list itself (F2 / right-click > Rename),
+// so there is no name box, and no properties frame around this column.
+LTEXT           "Tracks in Layer  (drag rows to reorder, right-click for options):", IDC_STATIC, 221, 3, 260, 8
 
 // ListView placeholder for track list – replaced dynamically
-LTEXT           "", IDC_LYR_TRACK_LIST, 226, 44, 249, 282
+LTEXT           "", IDC_LYR_TRACK_LIST, 221, 13, 260, 320
 
 // ---- Bottom bar ------------------------------------------------------
-PUSHBUTTON      "Activate",    IDC_LYR_ACTIVATE,     5,  341, 56, 13
-PUSHBUTTON      "Prev",        IDC_LYR_PREV,         64, 341, 36, 13
-PUSHBUTTON      "Next",        IDC_LYR_NEXT,        103, 341, 36, 13
-PUSHBUTTON      "Show All",    IDC_LYR_DEACTIVATE,  142, 341, 52, 13
-PUSHBUTTON      "Settings...", IDC_LYR_SETTINGS_BTN,197, 341, 58, 13
-LTEXT           "Ready",       IDC_LYR_STATUS,      259, 344, 222, 10
+// Activate / Prev / Next / Show All have moved into the layer list's
+// right-click menu.
+PUSHBUTTON      "Settings...", IDC_LYR_SETTINGS_BTN, 5, 341, 58, 13
+LTEXT           "Ready",       IDC_LYR_STATUS,      68, 344, 413, 10
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_LAYERS)
 

@@ -54,6 +54,10 @@ static int  s_savedWndX = 0, s_savedWndY = 0, s_savedWndW = 0, s_savedWndH = 0;
 // UI timer ID
 static const UINT UI_TIMER_ID = 1;
 
+// Row whose label is currently being edited in place, so the deferred
+// reposition in WM_USER + 2 knows which cell to move the edit box over.
+static int g_labelEditItem = -1;
+
 // Context menu item IDs
 enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE,
        CTX_NEW, CTX_RECALL_CTX, CTX_COPY_CTX, CTX_PASTE_CTX,
@@ -148,11 +152,13 @@ static int     g_gripDragY0     = 0;
 static int     g_gripDragExtra0 = 0;
 static void    LayoutNotes(HWND hwnd);
 
-// Version footer. Unlike the rest of the sidebar it tracks the bottom of the
-// client area rather than keeping its y, so it stays the last thing in the
-// column at any window size.
+// Footer: the status line and the version, stacked at the very bottom of the
+// sidebar. Unlike the rest of the column they track the bottom of the client
+// area rather than keeping their y, so they stay last at any window size.
 static RECT    g_versionInitRect = {};
-static void    LayoutVersion(HWND hwnd);
+static RECT    g_statusInitRect  = {};
+static void    LayoutFooter(HWND hwnd);
+static int     FooterStatusTop(HWND hwnd);
 
 // ---- Column splitter ------------------------------------------------------
 // g_splitOffset is how far the divider has been dragged from where the .rc
@@ -769,17 +775,17 @@ static int NotesMaxExtra(HWND hwnd)
     RECT cr;
     GetClientRect(hwnd, &cr);
 
-    // Stop just above wherever LayoutVersion has pinned the footer, rather
-    // than reserving the whole gap that happens to exist at the design size —
-    // that gap is exactly the room the box is meant to be able to claim.
-    int verH   = g_versionInitRect.bottom - g_versionInitRect.top;
-    int verGap = g_initCy - g_versionInitRect.bottom;   // gap below the footer
-    int verTop = cr.bottom - verGap - verH;
-    int pad    = verH / 3;                              // breathing room, DPI-scaled
+    // Stop just above wherever LayoutFooter has pinned the status line — the
+    // topmost of the two footer rows — rather than reserving the whole gap
+    // that happens to exist at the design size. That gap is exactly the room
+    // the box is meant to be able to claim.
+    int staTop = FooterStatusTop(hwnd);
+    if (staTop <= 0) return 0;
+    int pad = (g_versionInitRect.bottom - g_versionInitRect.top) / 3;
 
     int baseH = g_notesInitRect.bottom - g_notesInitRect.top;
     int gripH = g_gripInitRect.bottom  - g_gripInitRect.top;
-    int avail = (verTop - pad) - (g_notesInitRect.top + baseH + gripH);
+    int avail = (staTop - pad) - (g_notesInitRect.top + baseH + gripH);
     return avail > 0 ? avail : 0;
 }
 
@@ -814,28 +820,61 @@ static void LayoutNotes(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
-// LayoutVersion – keep the version footer pinned to the bottom of the sidebar.
-// The WM_SIZE sidebar pass restores its original y, so this runs after it.
+// FooterStatusTop – where LayoutFooter puts the status line for the current
+// client height. This is the ceiling the notes box may be dragged up to.
 // ---------------------------------------------------------------------------
-static void LayoutVersion(HWND hwnd)
+static int FooterStatusTop(HWND hwnd)
 {
-    HWND hVer = GetDlgItem(hwnd, IDC_VERSION);
-    if (!hVer || g_initCy <= 0) return;
-    if (g_versionInitRect.bottom <= g_versionInitRect.top) return;
+    if (g_initCy <= 0) return 0;
+    if (g_versionInitRect.bottom <= g_versionInitRect.top) return 0;
+    if (g_statusInitRect.bottom  <= g_statusInitRect.top)  return 0;
 
     RECT cr;
     GetClientRect(hwnd, &cr);
 
-    RECT vr;
-    GetWindowRect(hVer, &vr);
-    MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&vr, 2);
+    int verH   = g_versionInitRect.bottom - g_versionInitRect.top;
+    int verGap = g_initCy - g_versionInitRect.bottom;          // gap below the version
+    int verTop = cr.bottom - verGap - verH;
 
-    int h      = g_versionInitRect.bottom - g_versionInitRect.top;
-    int margin = g_initCy - g_versionInitRect.bottom;   // bottom gap at default size
-    int top    = cr.bottom - margin - h;
-    if (top < g_versionInitRect.top) top = g_versionInitRect.top;
+    int staH   = g_statusInitRect.bottom - g_statusInitRect.top;
+    int staGap = g_versionInitRect.top - g_statusInitRect.bottom;  // gap between the two
+    return verTop - staGap - staH;
+}
 
-    SetWindowPos(hVer, nullptr, vr.left, top, vr.right - vr.left, h,
+// ---------------------------------------------------------------------------
+// LayoutFooter – keep the status line and version pinned to the bottom of the
+// sidebar. The LayoutMain sidebar pass restores their original y, so this runs
+// after it.
+// ---------------------------------------------------------------------------
+static void LayoutFooter(HWND hwnd)
+{
+    HWND hVer = GetDlgItem(hwnd, IDC_VERSION);
+    HWND hSta = GetDlgItem(hwnd, IDC_STATUS);
+    if (!hVer || !hSta || g_initCy <= 0) return;
+    if (g_versionInitRect.bottom <= g_versionInitRect.top) return;
+    if (g_statusInitRect.bottom  <= g_statusInitRect.top)  return;
+
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+
+    int verH   = g_versionInitRect.bottom - g_versionInitRect.top;
+    int verGap = g_initCy - g_versionInitRect.bottom;
+    int verTop = cr.bottom - verGap - verH;
+    if (verTop < g_versionInitRect.top) verTop = g_versionInitRect.top;
+
+    int staH   = g_statusInitRect.bottom - g_statusInitRect.top;
+    int staTop = FooterStatusTop(hwnd);
+    if (staTop < g_statusInitRect.top) staTop = g_statusInitRect.top;
+
+    // x/width come from the live controls: the sidebar pass has already
+    // scaled them to the current column width.
+    RECT vr, sr;
+    GetWindowRect(hVer, &vr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&vr, 2);
+    GetWindowRect(hSta, &sr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&sr, 2);
+
+    SetWindowPos(hVer, nullptr, vr.left, verTop, vr.right - vr.left, verH,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    SetWindowPos(hSta, nullptr, sr.left, staTop, sr.right - sr.left, staH,
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
@@ -938,7 +977,7 @@ static void LayoutMain(HWND hwnd)
     }
 
     // Both of these depend on the widths just assigned above.
-    LayoutVersion(hwnd);
+    LayoutFooter(hwnd);
     LayoutNotes(hwnd);
 
     InvalidateRect(hwnd, nullptr, TRUE);
@@ -2678,6 +2717,8 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         AppendMenu(hMenu, MF_STRING, CTX_NEW, "New");
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_RECALL_CTX, "Recall");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
+        AppendMenu(hMenu, MF_STRING | (!hasItem ? MF_GRAYED : 0), CTX_RENAME, "Rename\tF2");
+        AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_COPY_CTX,  "Copy");
         AppendMenu(hMenu, MF_STRING | (!hasClip ? MF_GRAYED : 0), CTX_PASTE_CTX, "Paste");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -3223,14 +3264,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     hSplit, GWLP_WNDPROC, (LONG_PTR)SplitterProc);
             }
 
-            // ---- Version footer ---------------------------------------
+            // ---- Footer (status line + version) -----------------------
             HWND hVer = GetDlgItem(hwnd, IDC_VERSION);
-            if (hVer)
+            HWND hSta = GetDlgItem(hwnd, IDC_STATUS);
+            if (hVer && hSta)
             {
                 SetDlgItemText(hwnd, IDC_VERSION, LT_VERSION_STR);
                 GetWindowRect(hVer, &g_versionInitRect);
                 MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_versionInitRect, 2);
-                LayoutVersion(hwnd);
+                GetWindowRect(hSta, &g_statusInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_statusInitRect, 2);
             }
 
             // ---- Notes resizer ----------------------------------------
@@ -3348,6 +3391,24 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             }
         }
         return TRUE;
+
+    case WM_USER + 2:
+    {
+        // Deferred from LVN_BEGINLABELEDIT: put the in-place edit over the
+        // Name column rather than the "#" column the list view chose.
+        HWND hList = GetDlgItem(hwnd, IDC_LIST);
+        HWND hEdit = hList ? ListView_GetEditControl(hList) : nullptr;
+        if (hEdit && g_labelEditItem >= 0)
+        {
+            RECT rc = {};
+            if (ListView_GetSubItemRect(hList, g_labelEditItem, 1, LVIR_BOUNDS, &rc))
+                SetWindowPos(hEdit, nullptr, rc.left, rc.top,
+                             rc.right - rc.left, rc.bottom - rc.top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            SendMessage(hEdit, EM_SETSEL, 0, (LPARAM)-1);
+        }
+        return TRUE;
+    }
 
     case WM_USER + 1:
         {
@@ -3502,6 +3563,23 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
                     return TRUE;
                 }
+
+                // A list view edits the item *label*, which is column 0 — the
+                // "#" column — so the box opened over the row number showing
+                // the index. Seed it with the name instead and move it onto
+                // the Name column, deferred because the list view sizes the
+                // edit control after this notification returns.
+                if (di->item.iItem >= 0 && di->item.iItem < (int)g_snapshots.size())
+                {
+                    HWND hEdit = ListView_GetEditControl(hdr->hwndFrom);
+                    if (hEdit)
+                    {
+                        SetWindowText(hEdit,
+                            g_snapshots[di->item.iItem]->m_name.c_str());
+                        g_labelEditItem = di->item.iItem;
+                        PostMessage(hwnd, WM_USER + 2, 0, 0);
+                    }
+                }
             }
             else if (hdr->code == NM_RCLICK)
             {
@@ -3565,11 +3643,15 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             else if (hdr->code == LVN_ENDLABELEDIT)
             {
                 NMLVDISPINFO* di = (NMLVDISPINFO*)lParam;
+                g_labelEditItem = -1;
                 if (di->item.pszText && di->item.iItem >= 0 &&
                     di->item.iItem < (int)g_snapshots.size())
                 {
                     g_snapshots[di->item.iItem]->m_name = di->item.pszText;
-                    SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
+                    // FALSE: do not let the list write the typed text into the
+                    // item label ("#"). RefreshListView rebuilds the row with
+                    // the name in the right column.
+                    SetWindowLongPtr(hwnd, DWLP_MSGRESULT, FALSE);
                     RefreshListView(hwnd);
                     MarkProjectDirty(nullptr);
                 }

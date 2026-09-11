@@ -840,11 +840,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
         switch (id)
         {
-        case IDC_LYR_DEACTIVATE:
-            LayersEngine::Get().Deactivate();
-            RefreshLayerList(hwnd);
-            UpdateStatus(hwnd);
-            break;
+        // "Show All" lost its bottom-bar button; it lives in the layer list's
+        // right-click menu now (CTX_LYR_SHOW_ALL).
 
         case IDC_LYR_SETTINGS_BTN:
             DialogBox(s_hInst,
@@ -884,6 +881,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             CTX_TRK_ADD_SEL    = 3017,
             CTX_LYR_DELETE_ALL = 3018,
             CTX_TRK_DELETE_ALL = 3019,
+            CTX_LYR_SHOW_ALL   = 3020,
         };
 
         HWND hCtrl = (HWND)wParam;
@@ -918,6 +916,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             HMENU hMenu = CreatePopupMenu();
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_ACTIVATE, "Activate\tDbl-click");
+            AppendMenuA(hMenu, MF_STRING, CTX_LYR_SHOW_ALL, "Show All Tracks");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING,
                 CTX_LYR_ADD_LAYER, "Add Layer");
@@ -1087,6 +1086,11 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 RefreshLayerList(hwnd);
                 break;
             }
+            case CTX_LYR_SHOW_ALL:
+                LayersEngine::Get().Deactivate();
+                RefreshLayerList(hwnd);
+                UpdateStatus(hwnd);
+                break;
             case CTX_LYR_DELETE:
                 DeleteSelectedLayer(hwnd);
                 break;

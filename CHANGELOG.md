@@ -1,5 +1,23 @@
 # Changelog
 
+## [v0.0.35-beta] — 2026-09-10
+
+### New Features
+
+- **Layers: the window is now two plain labelled columns**: The right-hand side was wrapped in a "Layer Properties" frame containing a `Name:` box above the track list. Both are gone — the frame and the name box, which was a dead control with nothing behind it; layers have always been renamed in the list itself (F2, or right-click > Rename). Both lists now start at the same height and run taller for it.
+
+- **Layers: the bottom bar is just Settings**: Activate, Prev, Next and Show All have been removed from it. Activate was already in the layer list's right-click menu, Prev and Next had no code behind them at all, and **Show All Tracks** has moved into that same menu — it was the only way to deactivate a layer, so leaving it on a removed button would have cost the feature.
+
+- **Scenes: Rename is in the right-click menu**: The handler already existed and F2 already worked; the menu entry was simply missing.
+
+- **Scenes: sidebar rearranged**: The status readout ("Done. Layer 4…") moved to the very bottom, directly above the version line — both are pinned to the bottom of the window now, so they stay last however tall it gets. `Layer: -`, the **Layers…** button and the per-scene "layer to recall" selector are grouped together in that order, and Safes / Cue Setup / Settings moved up to take the freed space. The notes box starts at double its previous height.
+
+### Bug Fixes
+
+- **Scenes: renaming a scene inline edited the "#" column**: The edit box opened over the row-number column, pre-filled with the index rather than the scene name, because a list view edits the item *label* — which is column 0 — and the name lives in column 1. The box is now seeded with the name and moved onto the Name column; the move is deferred by a posted message because the list view sizes the edit control after the notification that starts the edit returns. The edit is also no longer allowed to write back into the label, which used to flash the typed name into the "#" column before the row was rebuilt.
+
+---
+
 ## [v0.0.34-beta] — 2026-09-10
 
 ### New Features
