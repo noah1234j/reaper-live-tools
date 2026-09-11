@@ -11,7 +11,6 @@
 #include "TransitionSnapshot.h"
 #include "TransitionEngine.h"
 #include "TransitionWnd.h"
-void LT_RunReorderBenchmark();   // core/ReorderBench.cpp, temporary diagnostic
 #include "SafesWnd.h"
 #include "MonitorWnd.h"
 #include "MeterBridgeWnd.h"
@@ -64,7 +63,6 @@ static int       g_cmdLiveOpt         = 0;
 static int       g_cmdShowMeterBridge = 0;
 static int       g_cmdShowLiveLock    = 0;
 static int       g_cmdShowLayers      = 0;
-static int       g_cmdReorderBench    = 0;   // temporary diagnostic
 static int       g_cmdShowMuteGroups  = 0;
 static int       g_cmdShowDca             = 0;
 static gaccel_register_t g_liveLockAccel;
@@ -393,7 +391,6 @@ static bool RunCommand(int cmd, int /*flag*/)
     if (cmd == g_cmdShowLiveLock) { LiveLockWnd_ShowHide();    return true; }
     if (cmd == g_cmdShowMuteGroups) { MuteGroupsWnd_ShowHide(); return true; }
     if (cmd == g_cmdShowLayers)  { LayersWnd_ShowHide();         return true; }
-    if (cmd == g_cmdReorderBench) { LT_RunReorderBenchmark();     return true; }
     if (cmd == g_cmdShowDca)              { DcaWnd_ShowHide();               return true; }
     if (cmd == g_cmdShowSafes)            { SafesWnd_ShowHide();             return true; }
     if (cmd == g_cmdSafesAddSelected)     { SafesWnd_AddSelectedTracksToSafes(); return true; }
@@ -566,17 +563,6 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     g_layersAccel.desc      = "Live Tools: Layers - Show/Hide";
     g_layersAccel.accel.cmd = (WORD)g_cmdShowLayers;
     plugin_register("gaccel", &g_layersAccel);
-
-    // ---- Register reorder benchmark (temporary diagnostic) ---------------
-    g_cmdReorderBench = plugin_register("command_id", (void*)"LT_DEBUG_REORDER_BENCH");
-    if (g_cmdReorderBench)
-    {
-        static gaccel_register_t g_benchAccel;
-        memset(&g_benchAccel, 0, sizeof(g_benchAccel));
-        g_benchAccel.desc      = "Live Tools: DEBUG - Reorder benchmark";
-        g_benchAccel.accel.cmd = (WORD)g_cmdReorderBench;
-        plugin_register("gaccel", &g_benchAccel);
-    }
 
     // ---- Register DCA command --------------------------------------------
     g_cmdShowDca = plugin_register("command_id", (void*)"LT_DCA_GROUPS");

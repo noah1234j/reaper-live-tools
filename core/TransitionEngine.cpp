@@ -1240,22 +1240,38 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
             GetSetMediaTrackInfo(tr, "D_PANLAW",   &pl);
             if (g_durationDebug) lastTimings.i_volPan += QpcMs() - t0;
         }
+        // Mute, solo and phase are read before they are written. REAPER
+        // recomputes routing state on every one of these writes — about a
+        // millisecond each — while reading is free. A scene change moves a
+        // handful of tracks at most, so on a large project nearly all of
+        // these writes set a value that is already there and cost a
+        // millisecond to do nothing. Writing the same value has no effect
+        // worth preserving, so the skip needs no setting to guard it.
         if (effMask & TS_MUTE)
         {
             double t0 = g_durationDebug ? QpcMs() : 0.0;
-            bool m = ts.mute;  GetSetMediaTrackInfo(tr, "B_MUTE",  &m);
+            bool m = ts.mute;
+            bool* cur = (bool*)GetSetMediaTrackInfo(tr, "B_MUTE", nullptr);
+            if (!cur || *cur != m)
+                GetSetMediaTrackInfo(tr, "B_MUTE", &m);
             if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
         }
         if (effMask & TS_SOLO)
         {
             double t0 = g_durationDebug ? QpcMs() : 0.0;
-            int s = ts.solo;   GetSetMediaTrackInfo(tr, "I_SOLO",  &s);
+            int s = ts.solo;
+            int* cur = (int*)GetSetMediaTrackInfo(tr, "I_SOLO", nullptr);
+            if (!cur || *cur != s)
+                GetSetMediaTrackInfo(tr, "I_SOLO", &s);
             if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
         }
         if (effMask & TS_PHASE)
         {
             double t0 = g_durationDebug ? QpcMs() : 0.0;
-            bool p = ts.phase; GetSetMediaTrackInfo(tr, "B_PHASE", &p);
+            bool p = ts.phase;
+            bool* cur = (bool*)GetSetMediaTrackInfo(tr, "B_PHASE", nullptr);
+            if (!cur || *cur != p)
+                GetSetMediaTrackInfo(tr, "B_PHASE", &p);
             if (g_durationDebug) lastTimings.i_muteSolo += QpcMs() - t0;
         }
         if (effMask & TS_VIS)

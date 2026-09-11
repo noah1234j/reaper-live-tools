@@ -70,7 +70,6 @@ add_library(reaper_transitions SHARED
   reaper_transitions.cpp
   # Core snapshot engine
   core/TransitionSnapshot.cpp
-  core/ReorderBench.cpp          # temporary diagnostic, remove with the action
   core/TransitionEngine.cpp
   core/PluginSafetyEngine.cpp
   core/ChunkRecallList.cpp

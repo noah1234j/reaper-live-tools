@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.0.44-beta] — 2026-09-11
+
+### Performance
+
+- **Scenes: mute, solo and phase are no longer written when the track already holds the value**: `ApplyImmediate` wrote `B_MUTE`, `I_SOLO` and `B_PHASE` unconditionally for every track in the snapshot. REAPER recomputes routing state on each of these writes — roughly a millisecond apiece — while reading the current value costs nothing. A scene change moves a handful of tracks at most, so on a large project nearly all of those writes were setting a value that was already there and paying a millisecond to do nothing. Each of the three now reads first and writes only on a difference. Writing the same value has no side effect worth preserving, so the skip needs no setting to guard it.
+
+### Removed
+
+- **Temporary action "Live Tools: DEBUG - Reorder benchmark" removed**: The diagnostic added in v0.0.42 did its job — it is what pinned the 47-second recall on `ReorderSelectedTracks` at 532 ms per move and led to the v0.0.43 rewrite. It is gone from the action list rather than left to become permanent; if batching and minimum-move selection need measuring later, it comes back from git history.
+
+---
+
 ## [v0.0.43-beta] — 2026-09-11
 
 ### Bug Fixes
