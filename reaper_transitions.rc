@@ -23,7 +23,7 @@
 //   Right (x 158-255) : controls (~97 DU wide)
 // ---------------------------------------------------------------------------
 
-IDD_TSNAPS DIALOGEX 0, 0, 258, 193
+IDD_TSNAPS DIALOGEX 0, 0, 258, 202
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Scenes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -33,7 +33,7 @@ BEGIN
     CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
 
     // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-    LTEXT           "", IDC_LIST, 5, 19, 148, 171
+    LTEXT           "", IDC_LIST, 5, 19, 148, 180
 
     // ---- Top action buttons -----------------------------------------------
     PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
@@ -76,6 +76,11 @@ BEGIN
                     ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
     CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
                     158, 184, 97, 6
+
+    // ---- Version footer --------------------------------------------------
+    // Pinned to the bottom of the client area by LayoutVersion(), so the
+    // position below is only where it sits at the default window size.
+    CTEXT           "", IDC_VERSION,            158, 193, 97,  8
 END
 
 // ---------------------------------------------------------------------------

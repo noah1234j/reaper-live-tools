@@ -15,14 +15,14 @@
 #ifndef SET_IDD_TSNAPS_STYLE
 #define SET_IDD_TSNAPS_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_TSNAPS,SET_IDD_TSNAPS_STYLE,"Scenes",258,193,SET_IDD_TSNAPS_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_TSNAPS,SET_IDD_TSNAPS_STYLE,"Scenes",258,202,SET_IDD_TSNAPS_SCALE)
 BEGIN
 // ---- Mode toggle buttons (Scenes / Cue List) -------------------------
 CONTROL         "Scenes",   IDC_MODE_SCENES, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 5, 3, 72, 13
 CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
 
 // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-LTEXT           "", IDC_LIST, 5, 19, 148, 171
+LTEXT           "", IDC_LIST, 5, 19, 148, 180
 
 // ---- Top action buttons -----------------------------------------------
 PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
@@ -65,6 +65,11 @@ EDITTEXT        IDC_SNAPNOTES,              158, 156, 97, 28,
 ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
 CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
 158, 184, 97, 6
+
+// ---- Version footer --------------------------------------------------
+// Pinned to the bottom of the client area by LayoutVersion(), so the
+// position below is only where it sits at the default window size.
+CTEXT           "", IDC_VERSION,            158, 193, 97,  8
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_TSNAPS)
 

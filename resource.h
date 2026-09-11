@@ -71,6 +71,11 @@
 #define IDC_LAYERS_BTN           2146   // "Layers..." button (main Scenes window right panel)
 #define IDC_LAYER_STATUS         2147   // current layer indicator label (main Scenes window)
 #define IDC_NOTES_GRIP           2148   // drag handle on the notes box bottom edge
+#define IDC_VERSION              2149   // version footer, pinned to the sidebar bottom
+
+// Plugin version, shown in the Scenes sidebar footer. Bump alongside the
+// README banner, the CHANGELOG heading and the git tag when cutting a release.
+#define LT_VERSION_STR           "v0.0.33-beta"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213

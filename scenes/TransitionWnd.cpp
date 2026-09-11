@@ -147,6 +147,12 @@ static bool    g_gripDragging   = false;
 static int     g_gripDragY0     = 0;
 static int     g_gripDragExtra0 = 0;
 static void    LayoutNotes(HWND hwnd);
+
+// Version footer. Unlike the rest of the sidebar it tracks the bottom of the
+// client area rather than keeping its y, so it stays the last thing in the
+// column at any window size.
+static RECT    g_versionInitRect = {};
+static void    LayoutVersion(HWND hwnd);
 static RECT g_listInitRect = {};
 
 // ---------------------------------------------------------------------------
@@ -771,6 +777,32 @@ static void LayoutNotes(HWND hwnd)
                  nr.right - nr.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(hGrip, nullptr, gr.left, g_notesInitRect.top + h,
                  gr.right - gr.left, gripH, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// ---------------------------------------------------------------------------
+// LayoutVersion – keep the version footer pinned to the bottom of the sidebar.
+// The WM_SIZE sidebar pass restores its original y, so this runs after it.
+// ---------------------------------------------------------------------------
+static void LayoutVersion(HWND hwnd)
+{
+    HWND hVer = GetDlgItem(hwnd, IDC_VERSION);
+    if (!hVer || g_initCy <= 0) return;
+    if (g_versionInitRect.bottom <= g_versionInitRect.top) return;
+
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+
+    RECT vr;
+    GetWindowRect(hVer, &vr);
+    MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&vr, 2);
+
+    int h      = g_versionInitRect.bottom - g_versionInitRect.top;
+    int margin = g_initCy - g_versionInitRect.bottom;   // bottom gap at default size
+    int top    = cr.bottom - margin - h;
+    if (top < g_versionInitRect.top) top = g_versionInitRect.top;
+
+    SetWindowPos(hVer, nullptr, vr.left, top, vr.right - vr.left, h,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // ---------------------------------------------------------------------------
@@ -2926,6 +2958,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 hChild = GetWindow(hChild, GW_HWNDNEXT);
             }
 
+            // ---- Version footer ---------------------------------------
+            HWND hVer = GetDlgItem(hwnd, IDC_VERSION);
+            if (hVer)
+            {
+                SetDlgItemText(hwnd, IDC_VERSION, LT_VERSION_STR);
+                GetWindowRect(hVer, &g_versionInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_versionInitRect, 2);
+                LayoutVersion(hwnd);
+            }
+
             // ---- Notes resizer ----------------------------------------
             HWND hNotes = GetDlgItem(hwnd, IDC_SNAPNOTES);
             HWND hGrip  = GetDlgItem(hwnd, IDC_NOTES_GRIP);
@@ -3015,8 +3057,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             EndDeferWindowPos(hdwp);
         }
 
-        // The pass above reset the notes box to its default height; re-apply
-        // the dragged height, clamped to whatever space the new size leaves.
+        // The pass above reset both to their original y/height; re-pin the
+        // footer and re-apply the dragged notes height, clamped to whatever
+        // space the new size leaves above the footer.
+        LayoutVersion(hwnd);
         LayoutNotes(hwnd);
 
         InvalidateRect(hwnd, nullptr, TRUE);

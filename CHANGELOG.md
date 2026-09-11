@@ -1,5 +1,13 @@
 # Changelog
 
+## [v0.0.33-beta] — 2026-09-10
+
+### New Features
+
+- **Scenes: the plugin version is shown at the bottom of the sidebar**: There was no way to tell which build was loaded without checking the DLL's timestamp, which matters when a beta is being replaced often. The version now sits as a footer at the very bottom of the right-hand column. It is pinned to the bottom of the window rather than parked at a fixed height, so it stays the last thing in the column at any size, and the notes box's drag limit accounts for it — dragging the box down stops above the footer instead of covering it. The window is 9 units taller to make room; the scene list grew with it rather than losing space.
+
+---
+
 ## [v0.0.32-beta] — 2026-09-10
 
 ### New Features
