@@ -3,15 +3,19 @@
 //
 // Left column  : ListView of the layers (drag-to-reorder, F2 to rename).
 //                Columns: Name  Trks.  The active layer is drawn bold.
-// Right column : ListView of the selected layer's tracks (drag-to-reorder).
+// Right column : ListView of the selected layer's channels, laid out like
+//                REAPER's Track Manager. Columns: Name  TCP  MCP  Spacer.
+//                A dot in TCP/MCP means the layer shows that channel in that
+//                panel; click one to toggle it. The Spacer cell adds or
+//                removes a spacer slot above the row. Rows drag to reorder.
 // Bottom bar   : Settings... | status
 //
 // Everything else lives in the two lists' right-click menus: activate, show
 // all, add/update/clear a layer, and the per-track actions.
 //
 // Settings modal (IDD_LAYERS_SETTINGS):
-//   Target MCP/TCP | Apply track visibility | Also hide in the other panel |
-//   Reorder tracks | Restore on deactivate | Trigger MCP select | Max channels
+//   Apply track visibility (TCP and MCP) | Reorder tracks |
+//   Restore on deactivate | Trigger MCP select | Manage spacers | Max channels
 // ---------------------------------------------------------------------------
 #include "LayersWnd.h"
 #include "LayersEngine.h"
@@ -68,6 +72,16 @@ static POINT   s_trkLbDownPt       = {};
 static int     s_trkLbDownItem     = -1;
 static DWORD   s_trkLbDownTime     = 0;
 
+// Track list columns. The list is modelled on REAPER's Track Manager: one
+// row per channel in the layer, a dot in TCP/MCP for each panel the channel
+// is shown in, and a marker in Spacer for the visual gaps.
+enum {
+    LYRCOL_NAME   = 0,
+    LYRCOL_TCP    = 1,
+    LYRCOL_MCP    = 2,
+    LYRCOL_SPACER = 3,
+};
+
 // ---------------------------------------------------------------------------
 // Forward declarations
 // ---------------------------------------------------------------------------
@@ -85,6 +99,24 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
 static void DeleteSelectedLayer(HWND hwnd);
 static void DeleteAllLayers(HWND hwnd);
 static void RemoveSelectedTrack(HWND hwnd);
+static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt);
+
+// ---------------------------------------------------------------------------
+// ReadPanelVis - where a track is on screen right now
+//
+// Capture used to read the one panel the Target setting pointed at, so a
+// layer taken from the mixer said nothing about the track panel and vice
+// versa. Both are read now and a track counts as captured if either shows it,
+// which is what lets a captured layer reproduce a TCP/MCP split instead of
+// flattening it.
+// ---------------------------------------------------------------------------
+static void ReadPanelVis(MediaTrack* tr, bool& tcp, bool& mcp)
+{
+    tcp = mcp = false;
+    if (!tr) return;
+    if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) tcp = *p;
+    if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) mcp = *p;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -224,38 +256,32 @@ static void RefreshTrackList(HWND hwnd)
 
     ListView_DeleteAllItems(hList);
 
-    int realIdx = 0;  // count of real (non-spacer) tracks for numbering
+    // Only the name is set as text. TCP, MCP and Spacer are painted in
+    // NM_CUSTOMDRAW below, so their subitems stay empty on purpose.
+    const LayersSettings& cfg = LayersEngine::Get().GetSettings();
+    const int limit = cfg.globalMaxChannels > 0
+                    ? cfg.globalMaxChannels : (int)ld.tracks.size();
+
     for (int i = 0; i < (int)ld.tracks.size(); i++)
     {
         const LayerTrack& lt = ld.tracks[i];
+
+        char dispName[160];
+        // ASCII on purpose: this is an ANSI list view, so a real em dash would
+        // arrive as whatever the system code page makes of its UTF-8 bytes.
+        if (lt.isSpacer)
+            strcpy(dispName, "--------------------");
+        else if (i < limit)
+            snprintf(dispName, sizeof(dispName), "%s", lt.name);
+        else
+            snprintf(dispName, sizeof(dispName), "[%s]", lt.name);
+
         LVITEMA lvi = {};
         lvi.mask     = LVIF_TEXT;
         lvi.iItem    = i;
-        lvi.iSubItem = 0;
-        char numBuf[8];
-        if (lt.isSpacer)
-            strcpy(numBuf, "--");
-        else
-            snprintf(numBuf, sizeof(numBuf), "%d", realIdx + 1);
-        lvi.pszText = numBuf;
+        lvi.iSubItem = LYRCOL_NAME;
+        lvi.pszText  = dispName;
         ListView_InsertItem(hList, &lvi);
-
-        if (lt.isSpacer)
-        {
-            ListView_SetItemText(hList, i, 1, const_cast<char*>("--- Spacer ---"));
-        }
-        else
-        {
-            const LayersSettings& cfg = LayersEngine::Get().GetSettings();
-            int limit = cfg.globalMaxChannels > 0 ? cfg.globalMaxChannels : (int)ld.tracks.size();
-            char dispName[160];
-            if (i < limit)
-                snprintf(dispName, sizeof(dispName), "%s", lt.name);
-            else
-                snprintf(dispName, sizeof(dispName), "[%s]", lt.name);
-            ListView_SetItemText(hList, i, 1, dispName);
-            realIdx++;
-        }
     }
 
     if (prevSel >= 0 && prevSel < (int)ld.tracks.size())
@@ -343,9 +369,80 @@ static void RemoveSelectedTrack(HWND hwnd)
             ld.tracks.erase(ld.tracks.begin() + idx);
     }
     LayersEngine::Get().SaveExtState();
+    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
     RefreshTrackList(hwnd);
     RefreshLayerList(hwnd);
 }
+// ---------------------------------------------------------------------------
+// OnTrackListClick – handle a click in one of the Track-Manager-style columns
+//
+// TCP and MCP toggle where the clicked channel appears when the layer is
+// recalled. Spacer adds or removes a spacer slot directly above the clicked
+// channel; on a spacer row it removes that row. Clicks in Name, and clicks on
+// a spacer's TCP/MCP cells, are left to the list view.
+//
+// A toggle applies to the clicked row only, never to the whole selection:
+// these dots sit under the pointer during drag-to-reorder, and a click that
+// silently rewrote every selected row would be far too easy to fire by
+// accident in the middle of a show.
+// ---------------------------------------------------------------------------
+static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt)
+{
+    int n = LayersEngine::Get().GetLayerCount();
+    if (s_selLayer < 0 || s_selLayer >= n) return;
+    LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+
+    LVHITTESTINFO ht = {};
+    ht.pt = pt;
+    ListView_SubItemHitTest(hList, &ht);
+    const int row = ht.iItem;
+    const int col = ht.iSubItem;
+    if (row < 0 || row >= (int)ld.tracks.size()) return;
+    if (col != LYRCOL_TCP && col != LYRCOL_MCP && col != LYRCOL_SPACER) return;
+
+    LayerTrack& lt = ld.tracks[row];
+
+    if (col == LYRCOL_SPACER)
+    {
+        // A spacer row carries no gap of its own — it is the gap. Removing one
+        // is Del or the right-click menu, same as any other row; this cell
+        // only ever adds or removes the gap above a real channel, which is
+        // where the marker is drawn.
+        if (lt.isSpacer) return;
+
+        if (row > 0 && ld.tracks[row - 1].isSpacer)
+        {
+            ld.tracks.erase(ld.tracks.begin() + (row - 1));
+        }
+        else
+        {
+            LayerTrack sp = {};
+            sp.isSpacer = true;
+            strncpy(sp.name, "--- Spacer ---", sizeof(sp.name) - 1);
+            ld.tracks.insert(ld.tracks.begin() + row, sp);
+        }
+        LayersEngine::Get().SaveExtState();
+        // Stored only, like every other edit in this list — it reaches the
+        // project on the layer's next recall, never mid-show under the
+        // pointer.
+        LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+        RefreshTrackList(hwnd);
+        RefreshLayerList(hwnd);
+    }
+    else
+    {
+        if (lt.isSpacer) return;   // a spacer is in neither panel
+        if (col == LYRCOL_TCP) lt.showTcp = !lt.showTcp;
+        else                   lt.showMcp = !lt.showMcp;
+        LayersEngine::Get().SaveExtState();
+        LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+
+        RECT rcRow;
+        if (ListView_GetItemRect(hList, row, &rcRow, LVIR_BOUNDS))
+            InvalidateRect(hList, &rcRow, FALSE);
+    }
+}
+
 static void UpdateStatus(HWND hwnd)
 {
     int active = LayersEngine::Get().GetActiveLayer();
@@ -445,9 +542,10 @@ static void EndTrackDrag(HWND hwnd, bool apply)
                 for (int i = from; i > to; i--) ld.tracks[i] = ld.tracks[i - 1];
             ld.tracks[to] = temp;
             LayersEngine::Get().SaveExtState();
-            // If this is the currently active layer, physically reorder in REAPER
-            if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
-                LayersEngine::Get().PhysicallyReorderLayer(s_selLayer);
+            // Stored only — dragging a row here does not move the project's
+            // tracks. The new order goes live the next time the layer is
+            // recalled.
+            LayersEngine::Get().MarkLayoutEdited(s_selLayer);
         }
         RefreshTrackList(hwnd);
         RefreshLayerList(hwnd);
@@ -467,10 +565,11 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
     case WM_INITDIALOG:
     {
         const LayersSettings& cfg = LayersEngine::Get().GetSettings();
-        CheckRadioButton(hwnd, IDC_LYR_SET_TARGET_MCP, IDC_LYR_SET_TARGET_TCP,
-                         cfg.targetTcp ? IDC_LYR_SET_TARGET_TCP : IDC_LYR_SET_TARGET_MCP);
+        // "Layers control: MCP/TCP" and "Also hide in the other panel" are
+        // gone. A layer drives both panels now, and which of them a given
+        // channel appears in is a per-track choice made in the TCP/MCP columns
+        // of the Layers window.
         CheckDlgButton(hwnd, IDC_LYR_SET_MCPVIS,  cfg.applyMcpVisibility  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_LYR_SET_HIDETCP,  cfg.hideTcpToo          ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,  cfg.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,  cfg.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_LYR_SET_TRIGGERMCP, cfg.triggerMcpSelect  ? BST_CHECKED : BST_UNCHECKED);
@@ -502,9 +601,7 @@ static INT_PTR CALLBACK SettingsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         case IDOK:
         {
             LayersSettings cfg;
-            cfg.targetTcp           = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TARGET_TCP) == BST_CHECKED);
             cfg.applyMcpVisibility  = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_MCPVIS)  == BST_CHECKED);
-            cfg.hideTcpToo          = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_HIDETCP)  == BST_CHECKED);
             cfg.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)  == BST_CHECKED);
             cfg.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)  == BST_CHECKED);
             cfg.triggerMcpSelect    = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TRIGGERMCP) == BST_CHECKED);
@@ -657,7 +754,12 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
         LRESULT r = CallWindowProc(s_origTrackListProc, hList, msg, wParam, lParam);
         LVHITTESTINFO hti = {};
         hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (ListView_HitTest(hList, &hti) >= 0)
+        ListView_SubItemHitTest(hList, &hti);
+        // A press on a TCP/MCP/Spacer cell is a toggle, so it must not also
+        // arm drag-to-reorder: the dots are small and sit mid-row, and a
+        // toggle that dragged the channel somewhere else on the way out would
+        // be the easiest mis-click in the window.
+        if (hti.iItem >= 0 && hti.iSubItem == LYRCOL_NAME)
         {
             s_trkLbTracking = true;
             s_trkLbDownPt   = hti.pt;
@@ -829,12 +931,23 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_SetExtendedListViewStyle(hList,
                     LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
 
+                // Laid out like REAPER's Track Manager: the channel, then a
+                // dot per panel, then the spacer marker. The row number the
+                // first column used to hold is gone — it numbered slots in a
+                // list the user reorders by dragging, so it never said
+                // anything the row's position did not already say.
                 LVCOLUMNA col = {};
                 col.mask = LVCF_TEXT | LVCF_WIDTH;
-                col.cx = 28;  col.pszText = const_cast<char*>("#");
-                ListView_InsertColumn(hList, 0, &col);
-                col.cx = 200; col.pszText = const_cast<char*>("Track Name");
-                ListView_InsertColumn(hList, 1, &col);
+                col.cx = 200; col.pszText = const_cast<char*>("Name");
+                ListView_InsertColumn(hList, LYRCOL_NAME, &col);
+                col.mask |= LVCF_FMT;
+                col.fmt = LVCFMT_CENTER;
+                col.cx = 42; col.pszText = const_cast<char*>("TCP");
+                ListView_InsertColumn(hList, LYRCOL_TCP, &col);
+                col.cx = 42; col.pszText = const_cast<char*>("MCP");
+                ListView_InsertColumn(hList, LYRCOL_MCP, &col);
+                col.cx = 48; col.pszText = const_cast<char*>("Spacer");
+                ListView_InsertColumn(hList, LYRCOL_SPACER, &col);
                 s_origTrackListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)TrackListSubclassProc);
             }
@@ -943,19 +1056,11 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
             AppendMenuA(hMenu, MF_STRING,
                 CTX_LYR_ADD_LAYER, "Add Layer");
-            // Both capture items read whichever panel the Target setting
-            // points at, so the labels have to name that panel. Hardcoding
-            // "MCP" told the user the wrong thing whenever layers were
-            // following the TCP.
-            const char* panel = LayersEngine::Get().GetSettings().targetTcp
-                                ? "TCP" : "MCP";
-            char addLabel[64], updLabel[64];
-            snprintf(addLabel, sizeof(addLabel),
-                     "Add Layer (Current %s Visibility)", panel);
-            snprintf(updLabel, sizeof(updLabel),
-                     "Update Layer (Capture Visible %s Tracks)", panel);
-
-            AppendMenuA(hMenu, MF_STRING, CTX_LYR_ADD_FROM_MCP, addLabel);
+            // Both capture items read the TCP and the MCP together and record
+            // the split per track, so neither label names a panel any more.
+            AppendMenuA(hMenu, MF_STRING, CTX_LYR_ADD_FROM_MCP,
+                        "Add Layer (Current Visibility)");
+            const char* updLabel = "Update Layer (Capture Visible Tracks)";
             AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
                 CTX_LYR_RENAME, "Rename\tF2");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -1016,14 +1121,12 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
-                    bool vis = false;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
-                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
-                    if (pv) vis = *pv;
+                    bool visTcp = false, visMcp = false;
+                    ReadPanelVis(tr, visTcp, visMcp);
                     int spacerVal = 0;
                     int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
                     if (sp) spacerVal = *sp;
-                    if (!vis) continue;
+                    if (!visTcp && !visMcp) continue;
                     GUID* tg = GetTrackGUID(tr);
                     if (!tg) continue;
                     if (spacerVal > 0)
@@ -1035,6 +1138,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    lt.showTcp = visTcp;
+                    lt.showMcp = visMcp;
                     int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
                     if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
@@ -1061,11 +1166,10 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     char prompt[224];
                     snprintf(prompt, sizeof(prompt),
-                        "Update \"%s\" to the tracks currently visible in the %s?\n\n"
+                        "Update \"%s\" to the tracks currently visible in the "
+                        "track panel or the mixer?\n\n"
                         "The layer's existing track list will be replaced.",
-                        ld.name,
-                        LayersEngine::Get().GetSettings().targetTcp
-                            ? "TCP (track panel)" : "MCP (mixer)");
+                        ld.name);
                     if (MessageBoxA(hwnd, prompt, "Layers",
                                     MB_YESNO | MB_ICONQUESTION) != IDYES) break;
                 }
@@ -1075,11 +1179,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
-                    bool vis = true;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
-                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
-                    if (pv) vis = *pv;
-                    if (!vis) continue;
+                    bool visTcp = false, visMcp = false;
+                    ReadPanelVis(tr, visTcp, visMcp);
+                    if (!visTcp && !visMcp) continue;
                     GUID* tg = GetTrackGUID(tr);
                     if (!tg) continue;
                     // Capture any native REAPER spacer above this track
@@ -1093,6 +1195,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    lt.showTcp = visTcp;
+                    lt.showMcp = visMcp;
                     int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
                     if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
@@ -1218,6 +1322,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     std::swap(ld.tracks[item], ld.tracks[item - 1]);
                     LayersEngine::Get().SaveExtState();
+                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
                     RefreshTrackList(hwnd);
                     ListView_SetItemState(hTrackList, item - 1,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1228,6 +1333,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     std::swap(ld.tracks[item], ld.tracks[item + 1]);
                     LayersEngine::Get().SaveExtState();
+                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
                     RefreshTrackList(hwnd);
                     ListView_SetItemState(hTrackList, item + 1,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1240,12 +1346,14 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     sp.isSpacer = true;
                     ld.tracks.insert(ld.tracks.begin() + item, sp);
                     LayersEngine::Get().SaveExtState();
+                    // Stored only — adding a spacer here used to re-apply the
+                    // whole layer to the project. It shows up on the tracks
+                    // the next time the layer is recalled.
+                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
                     RefreshTrackList(hwnd);
                     RefreshLayerList(hwnd);
                     ListView_SetItemState(hTrackList, item,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                    if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
-                        LayersEngine::Get().ReapplyActive();
                 }
                 break;
             case CTX_TRK_SPACER_AFT:
@@ -1256,12 +1364,12 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     sp.isSpacer = true;
                     ld.tracks.insert(ld.tracks.begin() + insertAt, sp);
                     LayersEngine::Get().SaveExtState();
+                    // Stored only — see above.
+                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
                     RefreshTrackList(hwnd);
                     RefreshLayerList(hwnd);
                     ListView_SetItemState(hTrackList, insertAt,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                    if (LayersEngine::Get().GetActiveLayer() == s_selLayer)
-                        LayersEngine::Get().ReapplyActive();
                 }
                 break;
             case CTX_TRK_REMOVE:
@@ -1326,11 +1434,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 {
                     MediaTrack* tr = GetTrack(0, t);
                     if (!tr) continue;
-                    bool vis = true;
-                    bool* pv = (bool*)GetSetMediaTrackInfo(tr,
-                        LayersEngine::Get().GetSettings().targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", nullptr);
-                    if (pv) vis = *pv;
-                    if (!vis) continue;
+                    bool visTcp = false, visMcp = false;
+                    ReadPanelVis(tr, visTcp, visMcp);
+                    if (!visTcp && !visMcp) continue;
                     GUID* tg = GetTrackGUID(tr);
                     if (!tg) continue;
                     // Capture any native REAPER spacer above this track
@@ -1344,6 +1450,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     }
                     LayerTrack lt = {};
                     lt.guid = *tg;
+                    lt.showTcp = visTcp;
+                    lt.showMcp = visMcp;
                     int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr);
                     if (pfc) lt.folderCompact = *pfc;
                     char buf[128] = {};
@@ -1455,6 +1563,107 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         // ---- Track list notifications ------------------------------------
         else if (hdr->idFrom == IDC_LYR_TRACK_LIST)
         {
+            if (hdr->code == NM_CLICK)
+            {
+                NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
+                OnTrackListClick(hwnd, hdr->hwndFrom, nia->ptAction);
+            }
+            else if (hdr->code == NM_CUSTOMDRAW)
+            {
+                // TCP, MCP and Spacer are drawn rather than spelled out: a dot
+                // reads at a glance across a long channel list, and it is the
+                // same shorthand REAPER's own Track Manager uses, so the two
+                // windows can be read the same way.
+                // Every path out of here has to set DWLP_MSGRESULT, because
+                // this case ends in `return TRUE` and the list view then reads
+                // whatever was left there last — which, after one painted
+                // dot, is CDRF_SKIPDEFAULT. Leaving it stale blanked the Name
+                // column, so the result is tracked in one variable and written
+                // once at the bottom.
+                NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lParam;
+                LRESULT res = CDRF_DODEFAULT;
+                switch (cd->nmcd.dwDrawStage)
+                {
+                case CDDS_PREPAINT:
+                    res = CDRF_NOTIFYITEMDRAW;
+                    break;
+
+                case CDDS_ITEMPREPAINT:
+                    res = CDRF_NOTIFYSUBITEMDRAW;
+                    break;
+
+                case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
+                {
+                    const int col = (int)cd->iSubItem;
+                    if (col != LYRCOL_TCP && col != LYRCOL_MCP && col != LYRCOL_SPACER)
+                        break;   // Name draws normally
+
+                    const int row = (int)cd->nmcd.dwItemSpec;
+                    int n = LayersEngine::Get().GetLayerCount();
+                    if (s_selLayer < 0 || s_selLayer >= n) break;
+                    const LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+                    if (row < 0 || row >= (int)ld.tracks.size()) break;
+                    const LayerTrack& lt = ld.tracks[row];
+
+                    HDC  hdc  = cd->nmcd.hdc;
+                    RECT rc   = cd->nmcd.rc;
+                    HWND hLst = hdr->hwndFrom;
+                    const bool sel =
+                        (ListView_GetItemState(hLst, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
+
+                    SetBkColor(hdc, GetSysColor(sel ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rc, "", 0, nullptr);
+
+                    bool on = false;
+                    if      (col == LYRCOL_TCP)    on = !lt.isSpacer && lt.showTcp;
+                    else if (col == LYRCOL_MCP)    on = !lt.isSpacer && lt.showMcp;
+                    // Marked against the channel the gap sits above, the way
+                    // the Track Manager does it. Not also on the spacer row
+                    // itself: that row already draws as a rule across the Name
+                    // column, and two marks for one gap read as two gaps.
+                    else /* LYRCOL_SPACER */       on = !lt.isSpacer && row > 0 &&
+                                                        ld.tracks[row - 1].isSpacer;
+
+                    if (on)
+                    {
+                        const COLORREF fg = GetSysColor(sel ? COLOR_HIGHLIGHTTEXT
+                                                            : COLOR_WINDOWTEXT);
+                        const int cx = (rc.left + rc.right)  / 2;
+                        const int cy = (rc.top  + rc.bottom) / 2;
+
+                        if (col == LYRCOL_SPACER)
+                        {
+                            // A dash, not a dot: a spacer is a gap between
+                            // channels, not a panel the channel lives in, and
+                            // it should not read as a third toggle of the same
+                            // kind as TCP and MCP.
+                            RECT rcd = { cx - 5, cy - 1, cx + 5, cy + 1 };
+                            HBRUSH hb = CreateSolidBrush(fg);
+                            FillRect(hdc, &rcd, hb);
+                            DeleteObject(hb);
+                        }
+                        else
+                        {
+                            const int r = 3;
+                            HBRUSH hb  = CreateSolidBrush(fg);
+                            HPEN   hp  = CreatePen(PS_SOLID, 1, fg);
+                            HGDIOBJ ob = SelectObject(hdc, hb);
+                            HGDIOBJ op = SelectObject(hdc, hp);
+                            Ellipse(hdc, cx - r, cy - r, cx + r + 1, cy + r + 1);
+                            SelectObject(hdc, ob);
+                            SelectObject(hdc, op);
+                            DeleteObject(hb);
+                            DeleteObject(hp);
+                        }
+                    }
+
+                    res = CDRF_SKIPDEFAULT;
+                    break;
+                }
+                }
+                SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
+                return TRUE;
+            }
         }
 
         return TRUE;

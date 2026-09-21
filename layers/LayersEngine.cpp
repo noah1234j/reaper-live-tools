@@ -2,8 +2,10 @@
 // LayersEngine.cpp  –  Channel-strip layer management engine
 //
 // Manages up to 10 named "layers", each containing an ordered list of tracks.
-// Activating a layer sets MCP (and optionally TCP) visibility so only those
-// tracks appear in the mixer, up to a configurable max-channel count.
+// Activating a layer sets both MCP and TCP visibility so only those tracks
+// appear, up to a configurable max-channel count. Each track carries its own
+// showTcp/showMcp, so one layer can hand the mixer and the track panel
+// different channel sets.
 // ---------------------------------------------------------------------------
 #include "LayersEngine.h"
 #include "LayersWnd.h"
@@ -52,9 +54,6 @@ void LayersSettings::Load()
 {
     const char* mv = GetExtState(k_Sec, "lyr_mcpvis");
     applyMcpVisibility  = (mv[0] == '\0') ? true  : (mv[0] != '0');
-
-    const char* ht = GetExtState(k_Sec, "lyr_hidetcp");
-    hideTcpToo          = (ht[0] == '1');
 
     const char* ro = GetExtState(k_Sec, "lyr_reorder");
     reorderTracks       = (ro[0] == '1');
@@ -144,25 +143,27 @@ bool LayersEngine::StrToGuid(const char* s, GUID& out)
 // moving tracks between folders: nothing in the move said "change the folder",
 // the new position simply meant a different one.
 //
-// Reordering must never restructure the project, so a move that would land a
-// track under a different parent is skipped rather than corrected afterwards —
-// there is no "put it back" once the move has happened.
+// Reordering must never restructure the project, so tracks are permuted only
+// among slots that already belong to the same folder parent, and a track that
+// opens or closes a folder is never relocated at all. Folder membership is
+// then a property of how the moves are chosen rather than a check that can be
+// skipped.
 // ---------------------------------------------------------------------------
 
-// Innermost open folder at list position `slot`, counting only tracks other
-// than `moving`. Excluding it makes the current and destination positions
-// directly comparable; it is safe because the caller has already established
-// that `moving` has I_FOLDERDEPTH 0, so lifting it out changes no other
-// track's nesting.
-static MediaTrack* FolderParentForSlot(int slot, MediaTrack* moving)
+// Innermost folder parent for every project index, derived by walking the
+// running I_FOLDERDEPTH total once.
+static void LayersBuildFolderParentMap(std::vector<MediaTrack*>& parentAt)
 {
-    std::vector<MediaTrack*> open;
     const int n = CountTracks(0);
-    int seen = 0;
-    for (int t = 0; t < n && seen < slot; t++)
+    parentAt.assign(n, nullptr);
+
+    std::vector<MediaTrack*> open;
+    for (int t = 0; t < n; t++)
     {
         MediaTrack* tr = GetTrack(0, t);
-        if (!tr || tr == moving) continue;
+        if (!tr) continue;
+        parentAt[t] = open.empty() ? nullptr : open.back();
+
         int fd = 0;
         int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
         if (p) fd = *p;
@@ -170,26 +171,111 @@ static MediaTrack* FolderParentForSlot(int slot, MediaTrack* moving)
             open.push_back(tr);
         else if (fd < 0)
             for (int k = 0; k < -fd && !open.empty(); k++) open.pop_back();
-        seen++;
     }
-    return open.empty() ? nullptr : open.back();
 }
 
-// True when moving `tr` from `curPos` to `dest` would change which folder it
-// belongs to, or when `tr` itself opens or closes one.
-static bool ReorderWouldChangeFolder(MediaTrack* tr, int curPos, int dest)
+// 0-based project position of a track right now.
+static int LayersLiveTrackIndex(MediaTrack* tr)
 {
-    if (!tr) return true;
+    if (!tr) return -1;
+    return (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
+}
 
-    // A folder parent (+1) or a last-child (-n) carries the folder structure
-    // in its own depth value. Relocating one without its siblings rewrites the
-    // tree, so these are never moved at all.
-    int fd = 0;
-    int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
-    if (p) fd = *p;
-    if (fd != 0) return true;
+// ---------------------------------------------------------------------------
+// ApplyLayerTrackOrder – put the layer's tracks into the layer's order
+//
+// A layer records the order of its own channels relative to each other, not
+// where they sit in the project: the slot index of a channel in the Layers
+// window is a row number in that window, and the window lists only the
+// layer's own tracks plus its spacer rows. Recall used to pass that row number
+// straight to ReorderSelectedTracks as an absolute project index, which is why
+// recalling a layer hauled its tracks to the top of the project and shoved
+// everything else down — the whole project got rearranged to reproduce an
+// order the user had only ever expressed among a handful of channels. Spacer
+// rows made it worse, since they occupy a row but no track, so every slot
+// after one was off by a further place.
+//
+// The layer's tracks are instead permuted among the project slots they already
+// occupy. Only channels that are genuinely out of order relative to each other
+// move; every track the layer does not hold keeps its position, so recalling a
+// layer whose order already matches the project performs no moves at all.
+// ---------------------------------------------------------------------------
+static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
+                                 const GUIDTrackMap& projByGUID)
+{
+    std::vector<MediaTrack*> parentAt;
+    LayersBuildFolderParentMap(parentAt);
+    const int nTracks = (int)parentAt.size();
 
-    return FolderParentForSlot(curPos, tr) != FolderParentForSlot(dest, tr);
+    // Candidates, in the layer's own order: tracks the layer holds that are in
+    // the project and carry no folder structure of their own. A non-zero
+    // I_FOLDERDEPTH opens or closes a folder, and moving one without its
+    // siblings rewrites the tree, so those never move.
+    struct Cand { MediaTrack* tr; MediaTrack* parent; };
+    std::vector<Cand> cands;
+    cands.reserve(limit);
+    for (int li = 0; li < limit; li++)
+    {
+        if (layer.tracks[li].isSpacer) continue;   // a row, not a track
+        auto it = projByGUID.find(layer.tracks[li].guid);
+        if (it == projByGUID.end() || !it->second) continue;
+        MediaTrack* tr = it->second;
+
+        const int cur = LayersLiveTrackIndex(tr);
+        if (cur < 0 || cur >= nTracks) continue;
+
+        int fd = 0;
+        int* pfd = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
+        if (pfd) fd = *pfd;
+        if (fd != 0) continue;
+
+        cands.push_back({ tr, parentAt[cur] });
+    }
+    if (cands.size() < 2) return;
+
+    // Group by folder parent. Permuting within a group can only ever put a
+    // track at an index another member of the same group occupies, so the
+    // track keeps its parent by construction.
+    std::vector<MediaTrack*> parents;
+    for (const auto& c : cands)
+        if (std::find(parents.begin(), parents.end(), c.parent) == parents.end())
+            parents.push_back(c.parent);
+
+    for (MediaTrack* parent : parents)
+    {
+        std::vector<MediaTrack*> group;   // already in the layer's order
+        for (const auto& c : cands)
+            if (c.parent == parent) group.push_back(c.tr);
+        if (group.size() < 2) continue;
+
+        for (size_t k = 0; k < group.size(); ++k)
+        {
+            // The slots this group occupies right now, ascending. Read fresh
+            // every step: a move renumbers everything between source and
+            // destination, and acting on stale numbers is exactly what put
+            // tracks in the wrong places before.
+            std::vector<int> slots;
+            slots.reserve(group.size());
+            for (MediaTrack* tr : group)
+            {
+                const int idx = LayersLiveTrackIndex(tr);
+                if (idx >= 0) slots.push_back(idx);
+            }
+            if (slots.size() != group.size()) break;   // list changed underneath
+            std::sort(slots.begin(), slots.end());
+
+            const int dest = slots[k];
+            const int cur  = LayersLiveTrackIndex(group[k]);
+            if (cur < 0 || cur == dest) continue;      // already right: no move
+
+            // Insert-before semantics: a track moving down vacates a slot above
+            // the destination first, so aim one past it.
+            const int beforeIdx = (cur < dest) ? dest + 1 : dest;
+
+            SetOnlyTrackSelected(group[k]);
+            ReorderSelectedTracks(beforeIdx, 0);
+        }
+    }
 }
 
 void LayersEngine::DoApplyLayer(int idx)
@@ -257,8 +343,10 @@ void LayersEngine::DoApplyLayer(int idx)
     if (cfg.applyMcpVisibility)
     {
         // ----- MCP/TCP visibility — O(numTracks) with O(1) map lookup -----
-        const char* primaryAttr = cfg.targetTcp ? "B_SHOWINTCP"   : "B_SHOWINMIXER";
-        const char* otherAttr   = cfg.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP";
+        // Both panels are written on every recall. A track the layer does not
+        // hold is hidden in both; a track it does hold goes wherever its own
+        // showTcp/showMcp say, so one layer can hand the mixer and the track
+        // panel different channel sets.
         int numTracks = CountTracks(0);
         for (int t = 0; t < numTracks; t++)
         {
@@ -270,14 +358,10 @@ void LayersEngine::DoApplyLayer(int idx)
             auto it = layerSlotMap.find(*tg);
             const bool inLayer = (it != layerSlotMap.end());
 
-            bool showPrimary = inLayer;
-            GetSetMediaTrackInfo(track, primaryAttr, &showPrimary);
-
-            if (cfg.hideTcpToo)
-            {
-                bool showOther = inLayer;
-                GetSetMediaTrackInfo(track, otherAttr, &showOther);
-            }
+            bool showTcp = inLayer && layer.tracks[it->second].showTcp;
+            bool showMcp = inLayer && layer.tracks[it->second].showMcp;
+            GetSetMediaTrackInfo(track, "B_SHOWINTCP",   &showTcp);
+            GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMcp);
 
             // Restore folder open/closed state — no second scan needed
             if (inLayer)
@@ -286,25 +370,17 @@ void LayersEngine::DoApplyLayer(int idx)
                 GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
             }
         }
-
-        // ----- Track reorder — O(limit) using IP_TRACKNUMBER for cur pos ----
-        if (cfg.reorderTracks && limit > 0)
-        {
-            for (int li = 0; li < limit; li++)
-            {
-                if (layer.tracks[li].isSpacer) continue;
-                auto it = projByGUID.find(layer.tracks[li].guid);
-                if (it == projByGUID.end()) continue;
-                MediaTrack* tr = it->second;
-                // IP_TRACKNUMBER returns 1-based position directly — no scan needed
-                int curPos = (int)(intptr_t)GetSetMediaTrackInfo(tr, "IP_TRACKNUMBER", nullptr) - 1;
-                if (curPos < 0 || curPos == li) continue;
-                if (ReorderWouldChangeFolder(tr, curPos, li)) continue;
-                SetOnlyTrackSelected(tr);
-                ReorderSelectedTracks(li, 0);
-            }
-        }
     }
+
+    // ---- Track reorder ----------------------------------------------------
+    // Permutes the layer's own channels among the slots they already hold.
+    // Tracks the layer does not list never move.
+    //
+    // Outside the visibility block on purpose: applyMcpVisibility is the switch
+    // for writing the two panels, and a user who has turned it off still asked
+    // for their channel order back.
+    if (cfg.reorderTracks && limit > 0)
+        ApplyLayerTrackOrder(layer, limit, projByGUID);
 
     // ---- Set REAPER visual spacers ----------------------------------------
     // Skipped entirely when the user has turned spacer management off: there
@@ -334,17 +410,19 @@ void LayersEngine::DoApplyLayer(int idx)
         // them leaves the target panel identical and stops the collateral
         // damage in the other one. A track's spacer is restored to the layer's
         // idea of it the moment the layer shows it again.
-        const char* visAttr = cfg.targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER";
         int zeroVal = 0;
         for (int t = 0; t < numAllTracks; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
             if (!tr) continue;
 
-            bool  vis = true;
-            bool* pv  = (bool*)GetSetMediaTrackInfo(tr, visAttr, nullptr);
-            if (pv) vis = *pv;
-            if (!vis) continue;
+            // On screen in either panel counts: the spacer is shared between
+            // the two, so a track still drawn in one of them is one whose
+            // spacer the layer is entitled to rewrite.
+            bool visTcp = true, visMcp = true;
+            if (bool* pt = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) visTcp = *pt;
+            if (bool* pm = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) visMcp = *pm;
+            if (!visTcp && !visMcp) continue;
 
             int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
             if (sp && *sp > 0)
@@ -391,6 +469,9 @@ void LayersEngine::ActivateLayer(int idx)
     int n = (int)m_layers.size();
     if (idx < 0 || idx >= n) return;
     m_activeLayer = idx;
+    // Recalling the layer is what makes a window edit take effect, so the edit
+    // stops being pending here.
+    m_pendingEditUid = 0;
     DoApplyLayer(idx);
     MarkProjectDirty(nullptr);  // active layer saved per-project via SaveConfig
 }
@@ -442,10 +523,11 @@ void LayersEngine::RestoreAllVisible()
     {
         MediaTrack* track = GetTrack(0, t);
         if (!track) continue;
+        // Layers write both panels on apply, so deactivating has to give both
+        // of them back.
         bool show = true;
-        GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINTCP" : "B_SHOWINMIXER", &show);
-        if (m_settings.hideTcpToo)
-            GetSetMediaTrackInfo(track, m_settings.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP", &show);
+        GetSetMediaTrackInfo(track, "B_SHOWINTCP",   &show);
+        GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &show);
         // Same shared I_SPACER flag as on apply: leave it alone unless the
         // user has asked layers to manage spacers.
         if (m_settings.manageSpacers)
@@ -487,92 +569,30 @@ void LayersEngine::MoveLayer(int from, int to)
 // ---------------------------------------------------------------------------
 void LayersEngine::SetSettings(const LayersSettings& s)
 {
-    const bool targetChanged = (s.targetTcp != m_settings.targetTcp);
+    // There is no "which panel do layers control" setting to change any more,
+    // so nothing here has to un-hide a panel layers just stopped driving —
+    // both are written on every apply.
     m_settings = s;
     m_settings.Save();
-    if (targetChanged)
-    {
-        // Un-hide everything in the previously-targeted panel so tracks don't
-        // stay hidden in a panel layers no longer control. (DoApplyLayer will
-        // re-hide it right after if "also hide other panel" is on.)
-        const char* oldAttr = s.targetTcp ? "B_SHOWINMIXER" : "B_SHOWINTCP";
-        int n = CountTracks(0);
-        for (int t = 0; t < n; t++)
-        {
-            MediaTrack* tr = GetTrack(0, t);
-            if (!tr) continue;
-            bool show = true;
-            GetSetMediaTrackInfo(tr, oldAttr, &show);
-        }
-        TrackList_AdjustWindows(false);
-    }
     // Re-apply if active
     if (m_activeLayer >= 0)
         DoApplyLayer(m_activeLayer);
 }
 
 // ---------------------------------------------------------------------------
-// ReapplyActive / PhysicallyReorderLayer
+// MarkLayoutEdited
 // ---------------------------------------------------------------------------
-void LayersEngine::ReapplyActive()
-{
-    if (m_activeLayer >= 0 && m_activeLayer < (int)m_layers.size())
-        DoApplyLayer(m_activeLayer);
-}
-
-void LayersEngine::PhysicallyReorderLayer(int idx)
+// Editing a layer in the Layers window used to reach into the project right
+// away: dragging a row ran a PhysicallyReorderLayer pass that moved tracks and
+// ignored the "reorder tracks" setting while doing it, and adding a spacer row
+// re-applied the whole layer. Editing a layer is not a cue. Both now only
+// change the stored layer, and the next recall of it is what puts the result
+// on the tracks. This records which layer was edited so that the sync pass
+// below leaves it alone in the meantime.
+void LayersEngine::MarkLayoutEdited(int idx)
 {
     if (idx < 0 || idx >= (int)m_layers.size()) return;
-    const LayerDef& layer = m_layers[idx];
-
-    int limit = (int)layer.tracks.size();
-    if (m_settings.globalMaxChannels > 0 && m_settings.globalMaxChannels < limit)
-        limit = m_settings.globalMaxChannels;
-
-    if (limit <= 0) return;
-
-    // Save current selection
-    std::vector<MediaTrack*> prevSel;
-    {
-        int nSel = CountSelectedTracks(0);
-        for (int i = 0; i < nSel; i++)
-            prevSel.push_back(GetSelectedTrack(0, i));
-    }
-
-    for (int li = 0; li < limit; li++)
-    {
-        if (layer.tracks[li].isSpacer) continue;
-        int now = CountTracks(0);
-        int curPos = -1;
-        for (int t = 0; t < now; t++)
-        {
-            MediaTrack* tr = GetTrack(0, t);
-            GUID* tg = GetTrackGUID(tr);
-            if (tg && memcmp(tg, &layer.tracks[li].guid, sizeof(GUID)) == 0)
-            {
-                curPos = t;
-                break;
-            }
-        }
-        if (curPos < 0 || curPos == li) continue;
-        MediaTrack* tr = GetTrack(0, curPos);
-        if (ReorderWouldChangeFolder(tr, curPos, li)) continue;
-        SetOnlyTrackSelected(tr);
-        ReorderSelectedTracks(li, 0);
-    }
-
-    // Restore selection
-    int cur = CountTracks(0);
-    for (int t = 0; t < cur; t++)
-    {
-        MediaTrack* tr = GetTrack(0, t);
-        if (!tr) continue;
-        bool was = std::find(prevSel.begin(), prevSel.end(), tr) != prevSel.end();
-        SetMediaTrackInfo_Value(tr, "I_SELECTED", was ? 1.0 : 0.0);
-    }
-    TrackList_AdjustWindows(false);
-    UpdateArrange();
-    m_suppressCooldown = 10;
+    m_pendingEditUid = m_layers[idx].uid;
 }
 
 // ---------------------------------------------------------------------------
@@ -584,6 +604,14 @@ void LayersEngine::SyncLayerOrderFromReaper(int idx)
 {
     if (idx < 0 || idx >= (int)m_layers.size()) return;
     LayerDef& ld = m_layers[idx];
+
+    // A layer edited in the Layers window is deliberately out of step with the
+    // project until it is recalled. Both halves of this pass read the project
+    // and write the layer — Part 1 sorts the layer's slots into the project's
+    // track order, Part 2 rebuilds its spacer rows from the project's
+    // I_SPACER flags — so either one would silently undo a window edit before
+    // the user ever got to recall it. Nothing to sync until then.
+    if (m_pendingEditUid != 0 && m_pendingEditUid == ld.uid) return;
 
     int numTracks = CountTracks(0);
     bool changed = false;
@@ -1047,6 +1075,7 @@ void LayersEngine::ReplaceAllLayers(const std::vector<LayerDef>& newLayers, int 
             UnregisterLayerAction(ld.uid);
     m_layers.clear();
     m_activeLayer = -1;
+    m_pendingEditUid = 0;
 
     // Add new layers, preserving each incoming uid. Re-minting on every recall
     // would orphan the layer's registered action and every scene reference to
@@ -1192,6 +1221,7 @@ void LayersEngine::ResetForProject()
     m_layers.clear();
     m_nextUid     = 1;
     m_activeLayer = -1;
+    m_pendingEditUid = 0;
 
     // Seed 5 default empty layers for brand-new projects
     for (int i = 0; i < 5; i++)
@@ -1207,25 +1237,30 @@ void LayersEngine::ResetForProject()
 
 // Format:
 //   <LTLAYERS nextuid=N active=N mcpvis=1 hidetcp=0 reorder=0 restore=1
-//   LAYER uid=N maxch=N name="..." tracks={guid}|SPACER|{guid2}
+//   LAYER uid=N maxch=N name="..." tracks={guid}|SPACER|{guid2}:v=2
 //   ...
 //   >
 void LayersEngine::SaveConfig(ProjectStateContext* ctx)
 {
+    // hidetcp and targettcp are retired settings, written as a constant 0 so
+    // the header keeps its field order. The whole line is read back with one
+    // positional sscanf, here and in every already-saved project, so dropping
+    // a field mid-line would silently shift everything after it.
     ctx->AddLine("<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d managespacers=%d",
                  m_nextUid, m_activeLayer,
                  m_settings.applyMcpVisibility  ? 1 : 0,
-                 m_settings.hideTcpToo          ? 1 : 0,
+                 0,
                  m_settings.reorderTracks       ? 1 : 0,
                  m_settings.restoreOnDeactivate ? 1 : 0,
                  m_settings.globalMaxChannels,
                  m_settings.triggerMcpSelect    ? 1 : 0,
-                 m_settings.targetTcp           ? 1 : 0,
+                 0,
                  m_settings.manageSpacers       ? 1 : 0);
 
     for (const auto& ld : m_layers)
     {
-        // Build pipe-separated track list; each entry is GUID:fc=N or SPACER
+        // Build pipe-separated track list; each entry is SPACER or a GUID
+        // with optional :fc=N (folder compact) and :v=N (panel bitmask)
         std::string trackData;
         trackData.reserve(ld.tracks.size() * 48);
         for (const auto& lt : ld.tracks)
@@ -1243,6 +1278,17 @@ void LayersEngine::SaveConfig(ProjectStateContext* ctx)
                     char fc[8];
                     snprintf(fc, sizeof(fc), ":fc=%d", lt.folderCompact);
                     trackData += fc;
+                }
+                // Panel bitmask: 1=TCP, 2=MCP. Omitted for the common "both"
+                // case, which is also what a reader that predates the flags
+                // assumes, so a project only grows this field where it says
+                // something the old format could not.
+                const int vis = (lt.showTcp ? 1 : 0) | (lt.showMcp ? 2 : 0);
+                if (vis != 3)
+                {
+                    char vb[8];
+                    snprintf(vb, sizeof(vb), ":v=%d", vis);
+                    trackData += vb;
                 }
             }
         }
@@ -1269,13 +1315,16 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
 
     m_nextUid = (nextuid >= 1) ? nextuid : 1;
     m_settings.applyMcpVisibility  = (mcpvis  != 0);
-    m_settings.hideTcpToo          = (hidetcp != 0);
     m_settings.reorderTracks       = (reorder != 0);
     m_settings.restoreOnDeactivate = (restore != 0);
     m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
     m_settings.triggerMcpSelect    = (trigmcpsel != 0);
-    m_settings.targetTcp           = (targettcp != 0);
     m_settings.manageSpacers       = (managespacers != 0);
+    // hidetcp and targettcp are parsed only to keep the positional scan lined
+    // up; the settings they fed are gone. A project saved by an older build
+    // with targettcp=1 held a layer set that drove the TCP alone, and it comes
+    // back driving both panels — every track defaults to showTcp && showMcp.
+    (void)hidetcp; (void)targettcp;
     m_layers.clear();
 
     char subline[4096];
@@ -1333,9 +1382,15 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
                     }
                     else if (p[0])
                     {
-                        // Token format: GUID or GUID:fc=N
+                        // Token format: GUID followed by any number of
+                        // ":key=value" attributes — fc (folder compact) and v
+                        // (panel bitmask, 1=TCP 2=MCP). Both are optional and
+                        // order does not matter, so a project written by an
+                        // older build, which only ever emitted ":fc=", reads
+                        // back with v defaulting to 3 (both panels).
                         char guidBuf[40] = {};
-                        int  fc = 0;
+                        int  fc  = 0;
+                        int  vis = 3;
                         const char* colon = strchr(p, ':');
                         if (colon)
                         {
@@ -1345,7 +1400,12 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
                                 memcpy(guidBuf, p, glen);
                                 guidBuf[glen] = '\0';
                             }
-                            sscanf(colon, ":fc=%d", &fc);
+                            for (const char* a = colon; a; a = strchr(a + 1, ':'))
+                            {
+                                int v = 0;
+                                if      (sscanf(a, ":fc=%d", &v) == 1) fc  = v;
+                                else if (sscanf(a, ":v=%d",  &v) == 1) vis = v;
+                            }
                         }
                         else
                         {
@@ -1357,6 +1417,8 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
                             LayerTrack lt = {};
                             lt.guid = g;
                             lt.folderCompact = fc;
+                            lt.showTcp = (vis & 1) != 0;
+                            lt.showMcp = (vis & 2) != 0;
                             ld.tracks.push_back(lt);
                         }
                     }

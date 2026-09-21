@@ -76,7 +76,7 @@
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
-#define LT_VERSION_STR           "v0.0.45-beta"
+#define LT_VERSION_STR           "v0.0.46-beta"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213
@@ -86,8 +86,16 @@
 #define IDC_SAFESLIST            2200
 #define IDC_REFRESH_SAFES        2201
 #define IDC_CLEAR_SAFES          2202
-#define IDC_SAFESLAYERLIST       2203   // layer recall-safe list (own table)
-#define IDC_SAFESLAYERLBL        2204
+// 2203 and 2204 were also handed to IDC_GLOBAL_SAFES_EN / IDC_TRACK_SAFES_EN
+// further down, in a second block of Safes ids added at a different time. Two
+// controls of the SAME dialog sharing an id is not a naming nuisance: the
+// dialog manager hands GetDlgItem whichever one it reaches first, so the
+// WM_SIZE pass asking for the layer-safes label was moving the per-track
+// safes checkbox on top of it and leaving the real label where the template
+// put it. These two move to unused ids; the pair below keeps theirs so no
+// saved layout or binding changes.
+#define IDC_SAFESLAYERLIST       2205   // layer recall-safe list (own table)
+#define IDC_SAFESLAYERLBL        2206
 
 // ---- Live Monitor window --------------------------------------------------
 #define IDD_MONITOR              207
@@ -255,12 +263,13 @@
 #define IDC_LYR_STATUS           2823
 // Layers settings dialog
 #define IDC_LYR_SET_MCPVIS       2824
-#define IDC_LYR_SET_HIDETCP      2825
+// 2825 was IDC_LYR_SET_HIDETCP ("Also hide in the other panel") and 2829/2830
+// were the "Layers control: MCP/TCP" radio pair. Layers drive both panels now
+// and the per-channel choice lives in the window's TCP/MCP columns. The ids
+// stay reserved so a stale .rc cannot quietly re-bind them to something else.
 #define IDC_LYR_SET_REORDER      2826
 #define IDC_LYR_SET_RESTORE      2827
 #define IDC_LYR_SET_TRIGGERMCP   2828
-#define IDC_LYR_SET_TARGET_MCP   2829
-#define IDC_LYR_SET_TARGET_TCP   2830
 #define IDC_LYR_SET_SPACERS      2831   // "Manage visual spacers" checkbox
 
 // ---- Button Map window ---------------------------------------------------

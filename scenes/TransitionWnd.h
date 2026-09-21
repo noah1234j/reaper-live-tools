@@ -43,8 +43,8 @@ void TransitionWnd_OverwriteScene(int index); // re-capture scene at slot index
 
 // Additional headless actions – open/create the window as needed.
 void TransitionWnd_CreateNewScene();          // capture + append a new scene, focus inline rename
-void TransitionWnd_RecallSelectedScene();     // recall whatever is selected in the list
-void TransitionWnd_UpdateSelectedScene();     // re-capture whatever is selected in the list
+void TransitionWnd_RecallSelectedScene();     // recall the first selected scene in the list
+void TransitionWnd_UpdateSelectedScene();     // re-capture the first selected scene in the list
 void TransitionWnd_UpdateLastTouchedScene();  // re-capture the last created/recalled/saved scene
 void TransitionWnd_RecallNextScene();         // recall the first non-spacer scene after the last recalled one
 
@@ -52,6 +52,7 @@ void TransitionWnd_RecallNextScene();         // recall the first non-spacer sce
 void TransitionWnd_SaveCueList(ProjectStateContext* ctx);
 bool TransitionWnd_LoadCueListLine(const char* line);
 void TransitionWnd_ResetCueList();
+void TransitionWnd_ResetTouchedScene();      // forget the last-touched scene (project switch)
 
 // Default transition settings – project-specific persistence
 void TransitionWnd_SaveSettings(ProjectStateContext* ctx);

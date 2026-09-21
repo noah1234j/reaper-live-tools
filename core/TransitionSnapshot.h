@@ -231,6 +231,11 @@ struct CapturedLayerTrack
 {
     GUID guid     = {};
     bool isSpacer = false;
+    // Mirrors LayerTrack::showTcp/showMcp so a scene recall puts a layer's
+    // channels back in the same panels it captured them from. Both default to
+    // true, which is what scenes written before the flags existed meant.
+    bool showTcp  = true;
+    bool showMcp  = true;
 };
 
 struct CapturedLayer

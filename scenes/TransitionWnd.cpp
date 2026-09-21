@@ -31,11 +31,29 @@ static std::unique_ptr<TransitionSnapshot> g_clipboard;
 // Index of the most recently created, recalled, or saved/overwritten scene.
 // Backs the "Update last touched scene" action so a performer can re-capture
 // whatever scene they just interacted with without reselecting it in the list.
+//
+// This is a position, not an identity, so every edit that moves rows around has
+// to move it too: without the fix-ups below it kept its old number and quietly
+// started pointing at whatever scene slid into that slot, so the action
+// overwrote the wrong scene after a delete, a drag-reorder or a paste.
 static int g_lastTouchedIdx = -1;
 static void MarkTouched(int idx)
 {
     if (idx >= 0 && idx < (int)g_snapshots.size())
         g_lastTouchedIdx = idx;
+}
+
+// Call immediately BEFORE erasing row idx from g_snapshots.
+static void TouchedOnErase(int idx)
+{
+    if      (g_lastTouchedIdx == idx) g_lastTouchedIdx = -1;
+    else if (g_lastTouchedIdx >  idx) g_lastTouchedIdx--;
+}
+
+// Call immediately AFTER inserting a row at idx in g_snapshots.
+static void TouchedOnInsert(int idx)
+{
+    if (g_lastTouchedIdx >= idx) g_lastTouchedIdx++;
 }
 
 // Guard: set true when programmatically updating editor fields to prevent
@@ -66,6 +84,13 @@ static bool g_layerComboSafed = false;
 // Row whose label is currently being edited in place, so the deferred
 // reposition in WM_USER + 2 knows which cell to move the edit box over.
 static int g_labelEditItem = -1;
+
+// Pending selection restore for a scene that was just added: the row the
+// rename box is open on, and the row that was selected before the add. The
+// restore is deferred to WM_USER + 3 (posted from LVN_ENDLABELEDIT) because
+// touching a row's state while the in-place edit is open closes the box.
+static int g_addRestoreRow = -1;
+static int g_addRestoreSel = -1;
 
 // Context menu item IDs
 enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE,
@@ -210,6 +235,9 @@ static void ImportScene(HWND hwnd);
 static void DoEndDrag(HWND hwnd);
 static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd);
 static int  GetSelectedListIndex(HWND hwnd);
+static std::vector<int> GetSelectedListIndices(HWND hwnd);
+static void DeleteSnapshotsAt(HWND hwnd, const std::vector<int>& idxs);
+static void RestoreSelectionAfterAdd(HWND hwnd);
 static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 static LRESULT CALLBACK CueLvSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
 static void RefillCueRightList(HWND hRight, const std::vector<int>& list);
@@ -403,6 +431,11 @@ void TransitionWnd_OverwriteScene(int index)
 {
     if (index < 0 || index >= (int)g_snapshots.size()) return;
     g_snapshots[index]->Capture(TS_CAPTURE_ALL);
+    // Capture() leaves m_time alone, so without this the Time column still
+    // showed the original capture and the action looked like it had done
+    // nothing at all — the only feedback a re-capture ever gets. The context
+    // menu's Overwrite and Ctrl+click already stamped it; the actions did not.
+    g_snapshots[index]->m_time = (int)std::time(nullptr);
     MarkTouched(index);
     if (g_wnd && IsWindow(g_wnd))
         RefreshListView(g_wnd);
@@ -422,18 +455,47 @@ void TransitionWnd_CreateNewScene()
     DoSave(hwnd);  // also drops into inline rename with the name field focused/selected
 }
 
+// The list is multi-select, so "the selection" can be several rows. Both
+// helpers below act on the first (topmost) selected row — the alternative,
+// acting on the whole selection, has no sensible meaning for a recall.
+//
+// What comes back from the list is a *row*, and in cue mode a row is a
+// position in g_cueList, not an index into g_snapshots. Mapping it is the
+// reason these go through DoRecall / the mapping below rather than treating
+// the row as a snapshot index, which recalled and overwrote the wrong scene
+// whenever cue mode was on.
+static int SelectedSnapshotIndex(HWND hwnd, int* rowOut)
+{
+    int row = GetSelectedListIndex(hwnd);
+    if (rowOut) *rowOut = row;
+    if (row < 0) return -1;
+    int snapIdx = row;
+    if (g_cueMode)
+        snapIdx = (row < (int)g_cueList.size()) ? g_cueList[row] : -1;
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return -1;
+    if (g_snapshots[snapIdx]->m_isSpacer) return -1;
+    return snapIdx;
+}
+
 void TransitionWnd_RecallSelectedScene()
 {
-    int idx = TransitionWnd_GetSelectedIndex();
-    if (idx < 0 || idx >= (int)g_snapshots.size() || g_snapshots[idx]->m_isSpacer) return;
-    TransitionWnd_RecallScene(idx);
+    // The ListView holds the selection, so the window has to exist for there
+    // to be one; open it on demand like the other headless helpers instead of
+    // failing silently when it happens to be closed.
+    HWND hwnd = EnsureWndOpen();
+    if (!hwnd) return;
+    int row = -1;
+    if (SelectedSnapshotIndex(hwnd, &row) < 0) return;
+    DoRecall(hwnd, row);   // same path as a click: cue mapping, UI refresh, cue advance
 }
 
 void TransitionWnd_UpdateSelectedScene()
 {
-    int idx = TransitionWnd_GetSelectedIndex();
-    if (idx < 0 || idx >= (int)g_snapshots.size() || g_snapshots[idx]->m_isSpacer) return;
-    TransitionWnd_OverwriteScene(idx);
+    HWND hwnd = EnsureWndOpen();
+    if (!hwnd) return;
+    int snapIdx = SelectedSnapshotIndex(hwnd, nullptr);
+    if (snapIdx < 0) return;
+    TransitionWnd_OverwriteScene(snapIdx);
 }
 
 void TransitionWnd_UpdateLastTouchedScene()
@@ -503,6 +565,13 @@ void TransitionWnd_OnProjectLoad()
 void TransitionWnd_ResetCueList()
 {
     g_cueList.clear();
+}
+
+// Loading or switching projects replaces g_snapshots wholesale, so a marker
+// left over from the previous project would point into the new one's list.
+void TransitionWnd_ResetTouchedScene()
+{
+    g_lastTouchedIdx = -1;
 }
 
 void TransitionWnd_SaveCueList(ProjectStateContext* ctx)
@@ -1134,6 +1203,37 @@ static std::vector<int> GetSelectedListIndices(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// DeleteSnapshotsAt - remove the given rows and put the list back in order.
+// Shared by the Delete key and the context menu so a group delete behaves
+// exactly like repeating the single delete, cue list fix-ups included.
+// The caller does any confirming; this just does the work.
+// ---------------------------------------------------------------------------
+static void DeleteSnapshotsAt(HWND hwnd, const std::vector<int>& idxs)
+{
+    if (idxs.empty()) return;
+
+    // Highest index first so the lower ones stay valid, and fix up the cue
+    // list for each removal the same way a single delete does.
+    for (int k = (int)idxs.size() - 1; k >= 0; k--)
+    {
+        const int si = idxs[k];
+        if (si < 0 || si >= (int)g_snapshots.size()) continue;
+        g_cueList.erase(
+            std::remove(g_cueList.begin(), g_cueList.end(), si),
+            g_cueList.end());
+        for (auto& ci : g_cueList)
+            if (ci > si) ci--;
+        TouchedOnErase(si);
+        g_snapshots.erase(g_snapshots.begin() + si);
+    }
+    for (int i = 0; i < (int)g_snapshots.size(); i++)
+        g_snapshots[i]->m_slot = i;
+    RefreshListView(hwnd);
+    LoadEditorFromSnapshot(hwnd, nullptr);
+    Undo_OnStateChangeEx(idxs.size() > 1 ? "Delete Scenes" : "Delete Scene", -1, -1);
+}
+
+// ---------------------------------------------------------------------------
 // GetSelectedSnapshot
 // ---------------------------------------------------------------------------
 static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd)
@@ -1167,6 +1267,8 @@ static void CaptureLayersFromEngine(TransitionSnapshot* snap)
             CapturedLayerTrack clt;
             clt.guid     = lt.guid;
             clt.isSpacer = lt.isSpacer;
+            clt.showTcp  = lt.showTcp;
+            clt.showMcp  = lt.showMcp;
             cl.tracks.push_back(clt);
         }
         snap->m_layers.push_back(cl);
@@ -1466,7 +1568,14 @@ static void RefreshListView(HWND hwnd)
             if (ss->m_time)
             {
                 struct tm* lt = localtime((const time_t*)&ss->m_time);
-                if (lt) strftime(timeBuf, sizeof(timeBuf), "%m/%d %H:%M", lt);
+                if (lt)
+                {
+                    int hour12 = lt->tm_hour % 12;
+                    if (!hour12) hour12 = 12;
+                    snprintf(timeBuf, sizeof(timeBuf), "%d:%02d %s %02d/%02d",
+                        hour12, lt->tm_min, lt->tm_hour < 12 ? "AM" : "PM",
+                        lt->tm_mon + 1, lt->tm_mday);
+                }
             }
             ListView_SetItemText(hList, i, 2, timeBuf);
         }
@@ -1516,21 +1625,67 @@ static void DoSave(HWND hwnd)
     }
     ss->m_slot = slot;
 
+    // Adding a scene must not move the selection: whatever the user had
+    // selected stays selected, and the new row is only renamed, not selected.
+    const int prevSel = GetSelectedListIndex(hwnd);
+
     g_snapshots.push_back(std::move(ss));
     RefreshListView(hwnd);
 
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
     int  newIdx = (int)g_snapshots.size() - 1;
-    ListView_SetItemState(hList, newIdx,
-        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     ListView_EnsureVisible(hList, newIdx, FALSE);
-    LoadEditorFromSnapshot(hwnd, g_snapshots[newIdx].get());
     MarkTouched(newIdx);
 
     Undo_OnStateChangeEx("Save Scene", -1, -1);
 
     // Immediately drop into inline rename so the user can name the new scene.
-    ListView_EditLabel(hList, newIdx);
+    // LVM_EDITLABEL is documented to require the list view to have the focus
+    // already — sent while focus is still on the "New" button it does nothing
+    // at all, which is why adding a scene never opened the rename box even
+    // though F2 and right-click > Rename always did.
+    SetFocus(hList);
+
+    // LVM_EDITLABEL implicitly selects and focuses the row it edits, and the
+    // list is multi-select, so without a restore the new scene ends up
+    // selected alongside the previous one. The restore waits until the edit
+    // finishes: changing a row's selection or focus while the in-place edit
+    // is open closes the box, which is the whole point of opening it.
+    g_addRestoreRow = newIdx;
+    g_addRestoreSel = prevSel;
+
+    if (!ListView_EditLabel(hList, newIdx))
+        RestoreSelectionAfterAdd(hwnd);   // no rename box: restore right away
+}
+
+// ---------------------------------------------------------------------------
+// RestoreSelectionAfterAdd - put the selection back after a newly added
+// scene's rename box has closed. See g_addRestoreRow.
+// ---------------------------------------------------------------------------
+static void RestoreSelectionAfterAdd(HWND hwnd)
+{
+    const int newIdx  = g_addRestoreRow;
+    const int prevSel = g_addRestoreSel;
+    g_addRestoreRow = g_addRestoreSel = -1;
+    if (newIdx < 0) return;
+
+    HWND hList = GetDlgItem(hwnd, IDC_LIST);
+    if (!hList) return;
+
+    ListView_SetItemState(hList, newIdx, 0, LVIS_SELECTED);
+    if (prevSel >= 0 && prevSel < (int)g_snapshots.size())
+    {
+        ListView_SetItemState(hList, prevSel,
+            LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        // Re-selecting a row that is already selected sends no LVN_ITEMCHANGED,
+        // so the editor panel would be left showing the new scene.
+        LoadEditorFromSnapshot(hwnd,
+            g_snapshots[prevSel]->m_isSpacer ? nullptr : g_snapshots[prevSel].get());
+    }
+    else
+    {
+        LoadEditorFromSnapshot(hwnd, nullptr);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1583,6 +1738,8 @@ static void RestoreLayerState(TransitionSnapshot* snap)
             lt.isSpacer    = clt.isSpacer;
             lt.name[0]     = '\0';
             lt.folderCompact = 0;
+            lt.showTcp     = clt.showTcp;
+            lt.showMcp     = clt.showMcp;
             ld.tracks.push_back(lt);
         }
         newLayers.push_back(ld);
@@ -2014,6 +2171,10 @@ static void DoEndDrag(HWND hwnd)
     if (src < 0 || tgt < 0 || tgt == src || src >= (int)g_snapshots.size()) return;
 
     auto moved = std::move(g_snapshots[src]);
+    // A reorder is an erase plus an insert, but the scene itself survives, so
+    // remember whether it was the touched one and re-point at its new row.
+    const bool movedWasTouched = (g_lastTouchedIdx == src);
+    TouchedOnErase(src);
     g_snapshots.erase(g_snapshots.begin() + src);
 
     int insertAt = (tgt > src) ? tgt - 1 : tgt;
@@ -2021,6 +2182,8 @@ static void DoEndDrag(HWND hwnd)
     if (insertAt > (int)g_snapshots.size()) insertAt = (int)g_snapshots.size();
 
     g_snapshots.insert(g_snapshots.begin() + insertAt, std::move(moved));
+    if (movedWasTouched) g_lastTouchedIdx = insertAt;
+    else                 TouchedOnInsert(insertAt);
     for (int i = 0; i < (int)g_snapshots.size(); i++)
         g_snapshots[i]->m_slot = i;
 
@@ -2852,24 +3015,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             if (MessageBoxA(hwnd, prompt, "Live Tools - Scenes",
                             MB_YESNO | MB_ICONQUESTION) == IDYES)
             {
-                // Highest index first so the lower ones stay valid, and fix up
-                // the cue list for each removal the same way a single delete does.
-                for (int k = (int)multiSel.size() - 1; k >= 0; k--)
-                {
-                    const int si = multiSel[k];
-                    if (si < 0 || si >= (int)g_snapshots.size()) continue;
-                    g_cueList.erase(
-                        std::remove(g_cueList.begin(), g_cueList.end(), si),
-                        g_cueList.end());
-                    for (auto& ci : g_cueList)
-                        if (ci > si) ci--;
-                    g_snapshots.erase(g_snapshots.begin() + si);
-                }
-                for (int i = 0; i < (int)g_snapshots.size(); i++)
-                    g_snapshots[i]->m_slot = i;
-                RefreshListView(hwnd);
-                LoadEditorFromSnapshot(hwnd, nullptr);
-                Undo_OnStateChangeEx("Delete Scenes", -1, -1);
+                DeleteSnapshotsAt(hwnd, multiSel);
             }
         }
         return;
@@ -2964,6 +3110,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
                 copy->m_name += " (copy)";
             copy->m_time = (int)std::time(nullptr);
             g_snapshots.insert(g_snapshots.begin() + insertAfter, std::move(copy));
+            TouchedOnInsert(insertAfter);
             for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
             RefreshListView(hwnd);
             HWND hList = GetDlgItem(hwnd, IDC_LIST);
@@ -2995,6 +3142,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
                 g_cueList.end());
             for (auto& ci : g_cueList)
                 if (ci > snapIdx) ci--;
+            TouchedOnErase(snapIdx);
             g_snapshots.erase(g_snapshots.begin() + snapIdx);
             for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
             RefreshListView(hwnd);
@@ -3011,6 +3159,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             {
                 g_cueList.clear();
                 g_snapshots.clear();
+                g_lastTouchedIdx = -1;
                 RefreshListView(hwnd);
                 LoadEditorFromSnapshot(hwnd, nullptr);
                 Undo_OnStateChangeEx("Delete All Scenes", -1, -1);
@@ -3028,7 +3177,13 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
 
     case CTX_RENAME:
         if (hasItem && !isSpacer)
-            ListView_EditLabel(GetDlgItem(hwnd, IDC_LIST), item);
+        {
+            // LVM_EDITLABEL only does anything when the list already has the
+            // focus, and the popup menu has had it until just now.
+            HWND hListR = GetDlgItem(hwnd, IDC_LIST);
+            SetFocus(hListR);
+            ListView_EditLabel(hListR, item);
+        }
         break;
 
     case CTX_ADDSPACER:
@@ -3037,6 +3192,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         auto spacer = std::make_unique<TransitionSnapshot>(insertAfter, "");
         spacer->m_isSpacer = true;
         g_snapshots.insert(g_snapshots.begin() + insertAfter, std::move(spacer));
+        TouchedOnInsert(insertAfter);
         for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
         RefreshListView(hwnd);
         MarkProjectDirty(nullptr);
@@ -3076,6 +3232,7 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                     g_cueList.end());
                 for (auto& ci : g_cueList)
                     if (ci > snapIdx) ci--;
+                TouchedOnErase(snapIdx);
                 g_snapshots.erase(g_snapshots.begin() + snapIdx);
                 for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
                 RefreshListView(dlg);
@@ -3273,20 +3430,25 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
     case WM_KEYDOWN:
         if (wParam == VK_DELETE && !g_cueMode)
         {
-            int selIdx = GetSelectedListIndex(dlg);
-            if (selIdx >= 0 && selIdx < (int)g_snapshots.size())
+            // Delete every selected row, not just the focused one. A single
+            // row goes straight away as it always has; a group asks first,
+            // matching the context menu's "Delete N Scenes".
+            std::vector<int> sel = GetSelectedListIndices(dlg);
+            while (!sel.empty() && sel.back() >= (int)g_snapshots.size())
+                sel.pop_back();
+            if (sel.size() > 1)
             {
-                // Remove from cue list too (update indices)
-                g_cueList.erase(
-                    std::remove(g_cueList.begin(), g_cueList.end(), selIdx),
-                    g_cueList.end());
-                for (auto& ci : g_cueList)
-                    if (ci > selIdx) ci--;
-                g_snapshots.erase(g_snapshots.begin() + selIdx);
-                for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
-                RefreshListView(dlg);
-                LoadEditorFromSnapshot(dlg, nullptr);
-                Undo_OnStateChangeEx("Delete Scene", -1, -1);
+                char prompt[96];
+                snprintf(prompt, sizeof(prompt), "Delete %d scenes?", (int)sel.size());
+                if (MessageBoxA(dlg, prompt, "Live Tools - Scenes",
+                                MB_YESNO | MB_ICONQUESTION) != IDYES)
+                    return 0;
+                DeleteSnapshotsAt(dlg, sel);
+                return 0;
+            }
+            if (sel.size() == 1)
+            {
+                DeleteSnapshotsAt(dlg, sel);
                 return 0;
             }
         }
@@ -3346,7 +3508,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             ListView_InsertColumn(hList, 0, &col);
             col.cx = 110; col.pszText = const_cast<char*>("Name");
             ListView_InsertColumn(hList, 1, &col);
-            col.cx = 75;  col.pszText = const_cast<char*>("Saved");
+            col.cx = 98;  col.pszText = const_cast<char*>("Saved");
             ListView_InsertColumn(hList, 2, &col);
 
             // Subclass the list for reliable drag-drop mouse tracking
@@ -3604,10 +3766,22 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 SetWindowPos(hEdit, nullptr, rc.left, rc.top,
                              rc.right - rc.left, rc.bottom - rc.top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
+            // The edit is created by the list view, which had to be focused
+            // for LVM_EDITLABEL to work at all; make sure the box itself is
+            // what the keyboard is talking to, so typing replaces the
+            // auto-generated name straight away.
+            SetFocus(hEdit);
             SendMessage(hEdit, EM_SETSEL, 0, (LPARAM)-1);
         }
         return TRUE;
     }
+
+    case WM_USER + 3:
+        // Deferred from LVN_ENDLABELEDIT: the rename box on a newly added
+        // scene has closed, so the selection can be put back without the
+        // state change closing the box out from under the user.
+        RestoreSelectionAfterAdd(hwnd);
+        return TRUE;
 
     case WM_USER + 1:
         {
@@ -3877,6 +4051,11 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             {
                 NMLVDISPINFO* di = (NMLVDISPINFO*)lParam;
                 g_labelEditItem = -1;
+                // Posted rather than done here: the list view is still tearing
+                // the edit control down, and RefreshListView below reselects
+                // whatever was selected during the edit.
+                if (g_addRestoreRow >= 0)
+                    PostMessage(hwnd, WM_USER + 3, 0, 0);
                 if (di->item.pszText && di->item.iItem >= 0 &&
                     di->item.iItem < (int)g_snapshots.size())
                 {

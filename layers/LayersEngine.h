@@ -14,10 +14,23 @@
 // ---------------------------------------------------------------------------
 struct LayerTrack
 {
-    GUID guid;
-    char name[128];   // cached display name
-    bool isSpacer;    // true = visual spacer slot, no real track
-    int  folderCompact; // I_FOLDERCOMPACT value (0=open, 1=compact, 2=closed)
+    GUID guid           = {};
+    char name[128]      = {};  // cached display name
+    bool isSpacer       = false; // true = visual spacer slot, no real track
+    int  folderCompact  = 0;   // I_FOLDERCOMPACT value (0=open, 1=compact, 2=closed)
+
+    // Where this channel shows up when the layer is recalled.
+    //
+    // Layers used to drive one panel picked globally ("Layers control:
+    // MCP/TCP"), so every track in every layer went to the same place and a
+    // layer could not, say, keep a submix on the mixer while leaving it out of
+    // the track panel. The choice is per track now and both panels are written
+    // on every recall, which is what the TCP/MCP columns in the Layers window
+    // edit. Both default to true: that is what every track captured before
+    // these flags existed meant, and what an unqualified "add this channel"
+    // still means.
+    bool showTcp        = true;
+    bool showMcp        = true;
 };
 
 // ---------------------------------------------------------------------------
@@ -38,9 +51,15 @@ struct LayerDef
 // ---------------------------------------------------------------------------
 struct LayersSettings
 {
-    bool targetTcp           = false; // false = layers control MCP (mixer), true = TCP (track panel)
+    // Master switch for the whole visibility pass. Off means a layer recall
+    // touches neither panel (reordering and spacers still run).
+    //
+    // There used to be two more settings beside it — a "Layers control:
+    // MCP/TCP" radio pair and "Also hide in the other panel" — which between
+    // them decided which panel a layer drove. Both are gone: a layer now
+    // always writes the TCP and the MCP together, and which of the two a given
+    // channel appears in is stored per track on LayerTrack::showTcp/showMcp.
     bool applyMcpVisibility  = true;
-    bool hideTcpToo          = false; // also apply visibility to the non-target panel
     bool reorderTracks       = false;
     bool restoreOnDeactivate = true;
     int  globalMaxChannels   = 0;   // 0 = unlimited; applies to all layers
@@ -111,8 +130,14 @@ public:
     void UpdateLayerActionDesc(int idx); // refresh desc after a rename
 
     // --- Active-layer helpers ---
-    void ReapplyActive();                     // re-run DoApplyLayer on the active layer
-    void PhysicallyReorderLayer(int idx);     // immediately reorder REAPER tracks to match layer order
+    // Note that a layer's track layout — its track order and its spacer rows —
+    // was edited in the Layers window rather than in REAPER. A window edit is
+    // stored only, never pushed into the project until the layer is recalled,
+    // so until that recall the layer and the project disagree on purpose and
+    // the timer's sync-from-REAPER pass must not "fix" the layer back to what
+    // the project looks like. Cleared on the next recall, which is the thing
+    // that makes the edit live.
+    void MarkLayoutEdited(int idx);
 
     // --- Timer (registered with plugin_register("timer",...)) ---
     static void TimerCallback();
@@ -155,6 +180,7 @@ private:
 
     std::vector<LayerDef>            m_layers;
     int                              m_activeLayer    = -1;
+    int                              m_pendingEditUid = 0;   // uid of a layer edited in the window, not yet recalled
     int                              m_nextUid        = 1;
     int                              m_lastStateCount = -1;  // for timer-based sync
     int                              m_suppressCooldown = 0; // ticks to skip after apply

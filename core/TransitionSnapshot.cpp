@@ -387,6 +387,8 @@ void TransitionSnapshot::Capture(int mask)
                 CapturedLayerTrack clt;
                 clt.guid     = lt.guid;
                 clt.isSpacer = lt.isSpacer;
+                clt.showTcp  = lt.showTcp;
+                clt.showMcp  = lt.showMcp;
                 cl.tracks.push_back(clt);
             }
             m_layers.push_back(cl);
@@ -575,7 +577,14 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                 {
                     char guidStr[40];
                     LayersEngine::GuidToStr(clt.guid, guidStr);
-                    ctx->AddLine("LAYERTRACK %s", guidStr);
+                    // Trailing panel flags are optional on read, so a scene
+                    // that wants both panels still writes the bare old line
+                    // and stays readable by builds that predate them.
+                    if (clt.showTcp && clt.showMcp)
+                        ctx->AddLine("LAYERTRACK %s", guidStr);
+                    else
+                        ctx->AddLine("LAYERTRACK %s %d %d", guidStr,
+                                     clt.showTcp ? 1 : 0, clt.showMcp ? 1 : 0);
                 }
             }
             ctx->AddLine("LAYERDEFEND");
@@ -898,6 +907,15 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                     CapturedLayerTrack clt;
                     clt.isSpacer = false;
                     LayersEngine::StrToGuid(st + 11, clt.guid);
+                    // "LAYERTRACK {guid}" (pre-flags) means both panels; only
+                    // an explicit pair overrides that.
+                    const char* sp = strchr(st + 11, ' ');
+                    int tcp = 1, mcp = 1;
+                    if (sp && sscanf(sp, " %d %d", &tcp, &mcp) == 2)
+                    {
+                        clt.showTcp = (tcp != 0);
+                        clt.showMcp = (mcp != 0);
+                    }
                     cl.tracks.push_back(clt);
                 }
             }

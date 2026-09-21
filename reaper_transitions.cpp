@@ -203,6 +203,7 @@ static void ResetProjectState(bool isUndo)
     g_dcaGroups.clear();
     TransitionEngine::Get().ShadowClear();
     TransitionWnd_ResetCueList();
+    TransitionWnd_ResetTouchedScene();
     TransitionWnd_ResetSettings();
     LayersEngine::Get().ResetForProject();
     LiveLockEngine::Get().ResetSettingsToDefaults();
@@ -608,7 +609,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     if (g_cmdSceneRecallSel)
     {
         memset(&g_sceneRecallSelAccel, 0, sizeof(g_sceneRecallSelAccel));
-        g_sceneRecallSelAccel.desc      = "Live Tools: Scenes - Recall selected scene";
+        g_sceneRecallSelAccel.desc      = "Live Tools: Scenes - Recall first selected scene";
         g_sceneRecallSelAccel.accel.cmd = (WORD)g_cmdSceneRecallSel;
         plugin_register("gaccel", &g_sceneRecallSelAccel);
     }

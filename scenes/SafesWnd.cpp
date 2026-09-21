@@ -162,6 +162,64 @@ static void ToggleBit(int row, int bit)
 }
 
 // ---------------------------------------------------------------------------
+// SyncGlobalCheckboxes - push g_globalSafeMask (and the other globals this
+// dialog owns) back out to the controls.
+//
+// The dialog is created once at startup and only hidden on close, so
+// WM_INITDIALOG runs before any project has been loaded. Everything that
+// changes the mask from outside - a project load, an undo, a project-tab
+// switch - therefore left these checkboxes showing whatever the previous
+// project had. A project that saved the Layers safe came back with the mask
+// set and the box unchecked, which greyed out the scene layer dropdown with
+// nothing in the UI to explain it; checking and unchecking the box was the
+// only way to get the mask to agree with what was on screen again.
+// ---------------------------------------------------------------------------
+static void SyncGlobalCheckboxes(HWND hDlg)
+{
+    if (!hDlg) return;
+
+    CheckDlgButton(hDlg, IDC_GSAFE_VOL,    (g_globalSafeMask & TS_VOL)   ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_PAN,    (g_globalSafeMask & TS_PAN)   ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_MUTE,   (g_globalSafeMask & TS_MUTE)  ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_SOLO,   (g_globalSafeMask & TS_SOLO)  ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_PHASE,  (g_globalSafeMask & TS_PHASE) ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_FX,     (g_globalSafeMask & (TS_FXPARAMS|TS_FXCHAIN)) ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_VIS,    (g_globalSafeMask & TS_VIS)         ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_NAME,   (g_globalSafeMask & TS_TRACKNAME)   ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (g_globalSafeMask & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (g_globalSafeMask & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (g_globalSafeMask & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS)      ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  (g_globalSafeMask & TS_FXSLOTS)     ? BST_CHECKED : BST_UNCHECKED);
+
+    // Slot positions only exist on REAPER v7.75+; disable rather than hide
+    // so the control keeps its place in the row on older builds.
+    if (!LT_SlotHintsSupported())
+        EnableWindow(GetDlgItem(hDlg, IDC_GSAFE_SLOTS), FALSE);
+
+    // "All Tracks" checkbox - checked if every track row has all per-track bits set
+    {
+        bool allSet = !g_rows.empty();
+        for (int i = 0; allSet && i < (int)g_rows.size(); ++i)
+            if ((GetRowMask(i) & k_ptAllBits) != k_ptAllBits) allSet = false;
+        CheckDlgButton(hDlg, IDC_GSAFE_ALL, allSet ? BST_CHECKED : BST_UNCHECKED);
+    }
+
+    CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
+        g_trackSafesEnabled ? BST_CHECKED : BST_UNCHECKED);
+}
+
+// Same, for the paths that change the globals from outside the dialog: a
+// no-op while the window has not been created yet.
+static void SyncDlgFromState()
+{
+    if (!g_hDlg) return;
+    SyncGlobalCheckboxes(g_hDlg);
+    if (g_hLayerList) InvalidateRect(g_hLayerList, nullptr, FALSE);
+    if (g_hList)      InvalidateRect(g_hList,      nullptr, FALSE);
+}
+
+// ---------------------------------------------------------------------------
 // Layer safe list: one fixed row per slot.
 //
 // Slots by index rather than one row per existing layer: a scene recall
@@ -544,36 +602,9 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         // Subclass the ListView itself for drag-to-check
         SetWindowSubclass(g_hList, SafesListSubclassProc, 2, 0);
 
-        // Initialize global safe param checkboxes from g_globalSafeMask
-        CheckDlgButton(hDlg, IDC_GSAFE_VOL,    (g_globalSafeMask & TS_VOL)   ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_PAN,    (g_globalSafeMask & TS_PAN)   ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_MUTE,   (g_globalSafeMask & TS_MUTE)  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_SOLO,   (g_globalSafeMask & TS_SOLO)  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_PHASE,  (g_globalSafeMask & TS_PHASE) ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_FX,     (g_globalSafeMask & (TS_FXPARAMS|TS_FXCHAIN)) ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_VIS,    (g_globalSafeMask & TS_VIS)         ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_NAME,   (g_globalSafeMask & TS_TRACKNAME)   ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (g_globalSafeMask & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (g_globalSafeMask & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (g_globalSafeMask & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (g_globalSafeMask & TS_LAYERS) ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  (g_globalSafeMask & TS_FXSLOTS)     ? BST_CHECKED : BST_UNCHECKED);
-        // Slot positions only exist on REAPER v7.75+; disable rather than hide
-        // so the control keeps its place in the row on older builds.
-        if (!LT_SlotHintsSupported())
-            EnableWindow(GetDlgItem(hDlg, IDC_GSAFE_SLOTS), FALSE);
-
-        // "All Tracks" checkbox – checked if every track row has all per-track bits set
-        {
-            bool allSet = !g_rows.empty();
-            for (int i = 0; allSet && i < (int)g_rows.size(); ++i)
-                if ((GetRowMask(i) & k_ptAllBits) != k_ptAllBits) allSet = false;
-            CheckDlgButton(hDlg, IDC_GSAFE_ALL, allSet ? BST_CHECKED : BST_UNCHECKED);
-        }
-
-        // Per-track enable toggle
-        CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
-            g_trackSafesEnabled ? BST_CHECKED : BST_UNCHECKED);
+        // Initialize every global control from the state it mirrors. This is
+        // the same pass used whenever that state changes from outside.
+        SyncGlobalCheckboxes(hDlg);
 
         return TRUE;
     }
@@ -655,6 +686,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             RebuildRows();
             PopulateList();
             PopulateLayerList();
+            SyncGlobalCheckboxes(hDlg);
             break;
 
         case IDC_CLEAR_SAFES:
@@ -662,20 +694,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             g_layerSafeMask  = 0;
             g_trackSafes.clear();
             if (g_hLayerList) InvalidateRect(g_hLayerList, nullptr, FALSE);
-            CheckDlgButton(hDlg, IDC_GSAFE_VOL,    BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_PAN,    BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_MUTE,   BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_SOLO,   BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_PHASE,  BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_FX,     BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_VIS,    BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_NAME,   BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  BST_UNCHECKED);
-            CheckDlgButton(hDlg, IDC_GSAFE_ALL,    BST_UNCHECKED);
+            SyncGlobalCheckboxes(hDlg);
             if (g_hList) InvalidateRect(g_hList, nullptr, FALSE);
             MarkProjectDirty(nullptr);
             break;
@@ -917,6 +936,8 @@ void SafesWnd_Refresh()
     if (!g_hDlg) return;
     RebuildRows();
     if (g_hList) PopulateList();
+    PopulateLayerList();
+    SyncGlobalCheckboxes(g_hDlg);
 }
 
 void SafesWnd_AddSelectedTracksToSafes()
@@ -981,6 +1002,7 @@ void SafesWnd_ResetForProject()
     g_layerSafeMask     = 0;
     g_trackSafesEnabled = true;
     g_trackSafes.clear();
+    SyncDlgFromState();
 }
 
 bool SafesWnd_ProcessLine(const char* line)
@@ -988,13 +1010,16 @@ bool SafesWnd_ProcessLine(const char* line)
     if (!line) return false;
     while (*line == ' ' || *line == '\t') ++line;
 
+    // Each of these restores state the dialog is already showing, so the
+    // controls have to follow the line in rather than keep the outgoing
+    // project's values.
     int val = 0;
     if (sscanf(line, "LTSAFEGLOBAL %d", &val) == 1)
-        { g_globalSafeMask = val; return true; }
+        { g_globalSafeMask = val; SyncDlgFromState(); return true; }
     if (sscanf(line, "LTSAFELAYERS %d", &val) == 1)
-        { g_layerSafeMask = val; return true; }
+        { g_layerSafeMask = val; SyncDlgFromState(); return true; }
     if (sscanf(line, "LTSAFETRACKSEN %d", &val) == 1)
-        { g_trackSafesEnabled = (val != 0); return true; }
+        { g_trackSafesEnabled = (val != 0); SyncDlgFromState(); return true; }
 
     char sguid[80] = {};
     if (sscanf(line, "LTSAFETRACK %79s %d", sguid, &val) == 2)
