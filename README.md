@@ -1,6 +1,15 @@
-> **⚠ BETA — v0.0.46-beta**
-> This plugin is functional and actively used, but it is **not yet production-hardened**.
-> Expect rough edges, missing polish, and the occasional crash or unexpected behaviour.
+> **⚠ DEV BRANCH — v0.0.47-dev.1**
+> This is the work-in-progress branch. It is less tested than a stable release, behaviour can
+> change between dev builds, and a project saved by one may not open the same way in another.
+> **Do not use it on a show.** For the stable release, see the [`main` branch](../../tree/main).
+>
+> Install dev builds through ReaPack:
+> `https://raw.githubusercontent.com/noah1234j/reaper-live-tools/dev/index-dev.xml`
+>
+> The dev package installs the same `reaper_transitions.dll` as the stable **Live Tools**
+> package, so ReaPack will not keep both — uninstall Live Tools first, and reinstall it from
+> the stable repository to go back.
+>
 > **Back up your REAPER projects before using scene recall on anything critical.**
 > Bug reports and feedback are welcome — please [open an issue](../../issues) on GitHub.
 
