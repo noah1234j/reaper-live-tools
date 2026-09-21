@@ -77,6 +77,45 @@ static const int TS_CAPTURE_ALL = (TS_MIX | TS_FXCHAIN | TS_LAYOUT | TS_SENDS);
 bool LT_SlotHintsSupported();
 
 // ---------------------------------------------------------------------------
+// Safes storage
+//
+// One safes definition = a global mask that applies to every track, plus an
+// optional per-track override list. Three of these exist:
+//
+//   * the project set   (g_globalSafeMask / g_trackSafes, kept as loose
+//                        globals because the engine has always read them there)
+//   * the subscene set  (g_subsceneSafes – applies to every subscene recall)
+//   * a per-scene set   (TransitionSnapshot::m_safes)
+//
+// The per-scene and subscene sets are additive on top of the project set by
+// default; a scene can opt out with replaceGlobal, which makes its own set the
+// whole story for that one recall.
+// ---------------------------------------------------------------------------
+struct TrackSafeEntry {
+    GUID guid;
+    int  mask; // TS_* bits that are safe on this track
+};
+
+struct SafeSet
+{
+    bool enabled           = false;  // set participates in recall at all
+    bool replaceGlobal     = false;  // ignore the project set for this recall
+    int  globalMask        = 0;      // TS_* bits safe on every track
+    bool trackSafesEnabled = true;   // master switch for the per-track list
+    std::vector<TrackSafeEntry> trackSafes;
+
+    bool IsEmpty() const { return globalMask == 0 && trackSafes.empty(); }
+    void Clear() { globalMask = 0; trackSafes.clear(); }
+};
+
+// Default safes applied to every subscene recall: a subscene is a variation on
+// its parent's mix, not a restructure, so the things that define the project's
+// shape — track order, track names, and the plugin chains — stay put unless the
+// user unchecks them in Safes ▸ Subscenes.
+static const int kSubsceneSafeDefaults =
+    TS_TRACKORDER | TS_TRACKNAME | TS_FXPARAMS | TS_FXCHAIN | TS_FXSLOTS;
+
+// ---------------------------------------------------------------------------
 // Taper laws for timed transitions
 // ---------------------------------------------------------------------------
 enum TaperLaw
@@ -264,6 +303,16 @@ public:
 
     // ---- Data fields -------------------------------------------------------
     bool        m_isSpacer = false;  // if true, this row is a visual separator with no track data
+
+    // Subscene: a variation that lives under the nearest preceding ordinary
+    // scene in g_snapshots. The parent link is positional rather than stored,
+    // so drag-reordering a row reparents it with no extra bookkeeping, and a
+    // deleted parent leaves its children attached to whatever precedes them.
+    bool        m_isSub    = false;
+
+    // Per-scene safes. Only consulted when m_safes.enabled; see SafeSet.
+    SafeSet     m_safes;
+
     int         m_slot     = 0;
     std::string m_name;
     std::string m_notes;

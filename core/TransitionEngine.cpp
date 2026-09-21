@@ -90,14 +90,86 @@ extern bool g_skipUnchangedParams;
 extern bool g_shadowParams;
 extern bool g_chunkAllInstant;
 
+// Subscene safes and the recall-scoped scene overlay (see TransitionEngine.h)
+SafeSet g_subsceneSafes = [] {
+    SafeSet s;
+    s.enabled    = true;
+    s.globalMask = kSubsceneSafeDefaults;
+    return s;
+}();
+
+const SafeSet* g_activeSceneSafes  = nullptr;
+bool           g_activeIsSubscene  = false;
+
+SceneSafeScope::SceneSafeScope(const SafeSet* sceneSafes, bool isSubscene)
+    : m_prevSet(g_activeSceneSafes), m_prevSub(g_activeIsSubscene)
+{
+    g_activeSceneSafes = sceneSafes;
+    g_activeIsSubscene = isSubscene;
+}
+
+SceneSafeScope::~SceneSafeScope()
+{
+    g_activeSceneSafes = m_prevSet;
+    g_activeIsSubscene = m_prevSub;
+}
+
+// One set's contribution for one track.
+static int SafeSetMaskFor(const SafeSet& set, const GUID& guid)
+{
+    int m = set.globalMask;
+    if (set.trackSafesEnabled)
+    {
+        for (const auto& e : set.trackSafes)
+            if (IsEqualGUID(e.guid, guid)) { m |= e.mask; break; }
+    }
+    return m;
+}
+
+// True when the active scene set has asked to stand alone for this recall.
+static bool SceneSafesReplaceGlobal()
+{
+    return g_activeSceneSafes
+        && g_activeSceneSafes->enabled
+        && g_activeSceneSafes->replaceGlobal;
+}
+
 int GetEffectiveSafeMask(const GUID& guid)
 {
-    int safe = g_globalSafeMask;
-    if (g_trackSafesEnabled)
+    int safe = 0;
+
+    if (!SceneSafesReplaceGlobal())
     {
-        for (const auto& e : g_trackSafes)
-            if (IsEqualGUID(e.guid, guid)) { safe |= e.mask; break; }
+        safe = g_globalSafeMask;
+        if (g_trackSafesEnabled)
+        {
+            for (const auto& e : g_trackSafes)
+                if (IsEqualGUID(e.guid, guid)) { safe |= e.mask; break; }
+        }
+        if (g_activeIsSubscene && g_subsceneSafes.enabled)
+            safe |= SafeSetMaskFor(g_subsceneSafes, guid);
     }
+
+    if (g_activeSceneSafes && g_activeSceneSafes->enabled)
+        safe |= SafeSetMaskFor(*g_activeSceneSafes, guid);
+
+    return safe;
+}
+
+int GetEffectiveGlobalSafeMask()
+{
+    int safe = 0;
+
+    if (!SceneSafesReplaceGlobal())
+    {
+        safe = g_globalSafeMask;
+        if (g_activeIsSubscene && g_subsceneSafes.enabled)
+            safe |= g_subsceneSafes.globalMask;
+    }
+
+    if (g_activeSceneSafes && g_activeSceneSafes->enabled)
+        safe |= g_activeSceneSafes->globalMask;
+
     return safe;
 }
 

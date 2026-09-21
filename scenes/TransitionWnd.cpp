@@ -96,7 +96,8 @@ static int g_addRestoreSel = -1;
 enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE,
        CTX_NEW, CTX_RECALL_CTX, CTX_COPY_CTX, CTX_PASTE_CTX,
        CTX_EXPORT, CTX_IMPORT, CTX_ADDSPACER, CTX_SCENE_SETTINGS,
-       CTX_CUE_REMOVE, CTX_DELETE_ALL };
+       CTX_CUE_REMOVE, CTX_DELETE_ALL,
+       CTX_ADDSUB, CTX_SCENE_SAFES, CTX_SUB_SAFES, CTX_PROMOTE };
 
 // Docker context menu IDs
 enum { CTX_DOCK = 200, CTX_CLOSE };
@@ -136,6 +137,13 @@ bool g_recallLog                  = false;  // write a per-recall trace to live_
 static double g_defaultDuration = 0.0;
 static int    g_defaultTaper    = TAPER_SCURVE;
 static double g_defaultTaperExp = 2.0;
+
+// The same, for newly created subscenes. Separate because a subscene is a
+// small move within a song rather than a change of scene, and usually wants a
+// different (often shorter) fade than the scene changes around it.
+static double g_defaultSubDuration = 0.0;
+static int    g_defaultSubTaper    = TAPER_SCURVE;
+static double g_defaultSubTaperExp = 2.0;
 
 // Drag-drop state
 static int        g_dragSrc     = -1;
@@ -230,6 +238,7 @@ static void DoRecall(HWND hwnd, int index);
 static void DoSave(HWND hwnd);
 static void ShowContextMenu(HWND hwnd, int item, POINT pt);
 static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap);
+static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene);
 static void ExportScene(HWND hwnd, int item);
 static void ImportScene(HWND hwnd);
 static void DoEndDrag(HWND hwnd);
@@ -391,6 +400,11 @@ void TransitionWnd_RecallScene(int index)
     ResolveSceneLayer(snap);   // migrate pre-uid scenes; drop dangling references
     // m_duration == 0 means instant
     double duration = snap->m_duration;
+
+    // Same per-recall safes overlay the windowed path installs — a scene
+    // recalled from a key, MIDI or OSC binding has to obey the same rules.
+    SceneSafeScope safeScope(snap->m_safes.enabled ? &snap->m_safes : nullptr,
+                             snap->m_isSub);
     if (g_placeMarker)
     {
         double pos = GetPlayPosition();
@@ -613,6 +627,9 @@ void TransitionWnd_ResetSettings()
     g_defaultDuration    = 0.0;
     g_defaultTaper       = TAPER_SCURVE;
     g_defaultTaperExp    = 2.0;
+    g_defaultSubDuration = 0.0;
+    g_defaultSubTaper    = TAPER_SCURVE;
+    g_defaultSubTaperExp = 2.0;
     g_placeMarker        = false;
     g_storeActiveLayer   = true;
     g_stopRecBeforeRecall = false;
@@ -649,6 +666,16 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_singleClickRecall  = (singleClick != 0);
         g_altClickDelete     = (altDelete != 0);
         g_ctrlClickOverwrite = (ctrlOverwrite != 0);
+        return true;
+    }
+    if (strncmp(line, "LTSUBDEFSETTINGS ", 17) == 0)
+    {
+        double dur = 0.0, taperExp = 2.0;
+        int taper = TAPER_SCURVE;
+        sscanf(line + 17, "%lf %d %lf", &dur, &taper, &taperExp);
+        g_defaultSubDuration = (dur >= 0.0) ? dur : 0.0;
+        g_defaultSubTaper    = (taper >= 0 && taper <= TAPER_CUSTOM) ? taper : TAPER_SCURVE;
+        g_defaultSubTaperExp = (taperExp > 0.0) ? taperExp : 2.0;
         return true;
     }
     if (strncmp(line, "LTSTOREACTIVELAYER ", 19) == 0)
@@ -759,6 +786,8 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_singleClickRecall ? 1 : 0,
                  g_altClickDelete ? 1 : 0,
                  g_ctrlClickOverwrite ? 1 : 0);
+    ctx->AddLine("LTSUBDEFSETTINGS %.4f %d %.4f",
+                 g_defaultSubDuration, g_defaultSubTaper, g_defaultSubTaperExp);
     // Its own line rather than a field on LTDEFSETTINGS: a missing field would
     // read as 0, and this setting defaults to on.
     ctx->AddLine("LTSTOREACTIVELAYER %d", g_storeActiveLayer ? 1 : 0);
@@ -1177,6 +1206,89 @@ static LRESULT CALLBACK NotesGripProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // ---------------------------------------------------------------------------
+// Subscene parentage
+//
+// A subscene belongs to the nearest ordinary scene above it in g_snapshots.
+// The link is purely positional: nothing stores a parent id, so dragging a row
+// reparents it, deleting a parent hands its children to whatever precedes
+// them, and a copy/paste needs no fix-up at all. The cost is that these three
+// helpers are the only definition of the relationship — everything that cares
+// about it goes through them rather than re-deriving it.
+// ---------------------------------------------------------------------------
+
+// Index of the scene a row belongs to, or -1 when there is none (the row is
+// itself a scene, is a spacer, or no scene precedes it).
+static int ParentSceneIndex(int idx)
+{
+    if (idx < 0 || idx >= (int)g_snapshots.size()) return -1;
+    if (!g_snapshots[idx]->m_isSub) return -1;
+    for (int i = idx - 1; i >= 0; --i)
+    {
+        if (g_snapshots[i]->m_isSpacer) continue;
+        if (!g_snapshots[i]->m_isSub)   return i;
+    }
+    return -1;
+}
+
+// One past the last row that belongs to the scene at parentIdx — where a new
+// subscene of that scene goes, and the end of the range a delete takes with
+// it. A spacer inside the block is decoration and does not end it, which is
+// the same thing ParentSceneIndex says when it reads upwards.
+static int SubsceneBlockEnd(int parentIdx)
+{
+    if (parentIdx < 0 || parentIdx >= (int)g_snapshots.size())
+        return (int)g_snapshots.size();
+    int end = parentIdx + 1;
+    for (int i = parentIdx + 1; i < (int)g_snapshots.size(); ++i)
+    {
+        if (g_snapshots[i]->m_isSpacer) continue;
+        if (!g_snapshots[i]->m_isSub)   break;
+        end = i + 1;
+    }
+    return end;
+}
+
+// How many subscenes hang off the scene at idx. Counts subscenes, not rows —
+// SubsceneBlockEnd's range can also contain spacers.
+static int SubsceneCount(int idx)
+{
+    if (idx < 0 || idx >= (int)g_snapshots.size()) return 0;
+    if (g_snapshots[idx]->m_isSpacer || g_snapshots[idx]->m_isSub) return 0;
+    int n = 0;
+    for (int i = idx + 1; i < (int)g_snapshots.size(); ++i)
+    {
+        if (g_snapshots[i]->m_isSpacer) continue;
+        if (!g_snapshots[i]->m_isSub)   break;
+        ++n;
+    }
+    return n;
+}
+
+// Human-readable identification for the safes popup and menu labels:
+// "Scene 3  \"Verse\"" / "Subscene 3.2  \"Solo\"".
+static std::string SceneDisplayLabel(int idx)
+{
+    if (idx < 0 || idx >= (int)g_snapshots.size()) return "";
+
+    int sceneNum = 0, subNum = 0;
+    for (int i = 0; i <= idx; ++i)
+    {
+        if (g_snapshots[i]->m_isSpacer) continue;
+        if (g_snapshots[i]->m_isSub) ++subNum;
+        else { ++sceneNum; subNum = 0; }
+    }
+
+    char buf[400];
+    if (g_snapshots[idx]->m_isSub)
+        snprintf(buf, sizeof(buf), "Subscene %d.%d  \"%s\"",
+                 sceneNum, subNum, g_snapshots[idx]->m_name.c_str());
+    else
+        snprintf(buf, sizeof(buf), "Scene %d  \"%s\"",
+                 sceneNum, g_snapshots[idx]->m_name.c_str());
+    return buf;
+}
+
+// ---------------------------------------------------------------------------
 // GetSelectedListIndex
 // ---------------------------------------------------------------------------
 static int GetSelectedListIndex(HWND hwnd)
@@ -1524,7 +1636,8 @@ static void RefreshListView(HWND hwnd)
             ListView_SetItemText(hList, ci, 1, const_cast<char*>(ss->m_name.c_str()));
 
             char origBuf[16];
-            snprintf(origBuf, sizeof(origBuf), "S%d", snapIdx + 1);
+            snprintf(origBuf, sizeof(origBuf), "%s%d",
+                     ss->m_isSub ? "s" : "S", snapIdx + 1);
             ListView_SetItemText(hList, ci, 2, origBuf);
         }
 
@@ -1539,7 +1652,11 @@ static void RefreshListView(HWND hwnd)
     }
 
     // --- Scenes mode ---
+    // Scenes are numbered 1, 2, 3...; a subscene takes its parent's number
+    // with its own position appended (2.1, 2.2) and its name is drawn indented
+    // under it, so the grouping reads off the list without a tree control.
     int sceneNum = 1;  // running scene number (spacers don't count)
+    int subNum   = 0;  // position within the current scene's subscenes
     for (int i = 0; i < (int)g_snapshots.size(); i++)
     {
         const auto& ss = g_snapshots[i];
@@ -1557,12 +1674,27 @@ static void RefreshListView(HWND hwnd)
         }
         else
         {
-            char slotBuf[16];
-            snprintf(slotBuf, sizeof(slotBuf), "%d", sceneNum++);
+            char slotBuf[24];
+            std::string nameCell;
+            if (ss->m_isSub)
+            {
+                // A subscene before any scene has nothing to hang off; number
+                // it from 0 rather than pretending it belongs to scene 1.
+                snprintf(slotBuf, sizeof(slotBuf), "%d.%d", sceneNum - 1, ++subNum);
+                // U+2514 U+2500 (box-drawing corner) + space, as UTF-8.
+                nameCell = "   \xE2\x94\x94\xE2\x94\x80 ";
+                nameCell += ss->m_name;
+            }
+            else
+            {
+                snprintf(slotBuf, sizeof(slotBuf), "%d", sceneNum++);
+                subNum   = 0;
+                nameCell = ss->m_name;
+            }
             lvi.pszText = slotBuf;
             ListView_InsertItem(hList, &lvi);
 
-            ListView_SetItemText(hList, i, 1, const_cast<char*>(ss->m_name.c_str()));
+            ListView_SetItemText(hList, i, 1, const_cast<char*>(nameCell.c_str()));
 
             char timeBuf[32] = "";
             if (ss->m_time)
@@ -1590,28 +1722,41 @@ static void RefreshListView(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
-// DoSave – capture and add new snapshot
+// DoSaveAt – capture and insert a new scene or subscene at a given row
+//
+// insertAt < 0 appends. A subscene captures exactly what a scene does: what
+// makes it a subscene is which safes apply when it is recalled (the subscene
+// set, plus whatever its own per-scene safes say), not a smaller capture —
+// so switching a row between the two kinds never loses data.
 // ---------------------------------------------------------------------------
-static void DoSave(HWND hwnd)
+static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene)
 {
+    if (insertAt < 0 || insertAt > (int)g_snapshots.size())
+        insertAt = (int)g_snapshots.size();
+
     // Always auto-generate an incremented name; user renames inline via the list.
+    const char* kind = asSubscene ? "Subscene" : "Scene";
     char name[256] = {};
     {
+        // "Scene %d" does not match "Subscene 4", so the two kinds number
+        // independently, which is what the list's own numbering implies.
+        char fmt[32];
+        snprintf(fmt, sizeof(fmt), "%s %%d", kind);
         int maxN = (int)g_snapshots.size();
         for (auto& s : g_snapshots) {
             int n = 0;
-            if (sscanf(s->m_name.c_str(), "Scene %d", &n) == 1 && n > maxN)
+            if (sscanf(s->m_name.c_str(), fmt, &n) == 1 && n > maxN)
                 maxN = n;
         }
-        snprintf(name, sizeof(name), "Scene %d", maxN + 1);
+        snprintf(name, sizeof(name), "%s %d", kind, maxN + 1);
     }
 
-    int slot = (int)g_snapshots.size();
-    auto ss  = std::make_unique<TransitionSnapshot>(slot, name);
-    // Use global default transition settings; user adjusts per-scene via context menu
-    ss->m_duration = g_defaultDuration;
-    ss->m_taper    = g_defaultTaper;
-    ss->m_taperExp = g_defaultTaperExp;
+    auto ss  = std::make_unique<TransitionSnapshot>(insertAt, name);
+    ss->m_isSub = asSubscene;
+    // Use the matching global defaults; user adjusts per-scene via context menu
+    ss->m_duration = asSubscene ? g_defaultSubDuration : g_defaultDuration;
+    ss->m_taper    = asSubscene ? g_defaultSubTaper    : g_defaultTaper;
+    ss->m_taperExp = asSubscene ? g_defaultSubTaperExp : g_defaultTaperExp;
     ss->Capture(TS_CAPTURE_ALL);  // also captures full layer state
 
     // Seed the new scene's layer assignment from whatever is active, if the
@@ -1623,21 +1768,27 @@ static void DoSave(HWND hwnd)
         ss->m_layerIdx = le.GetActiveLayer();
         ss->m_layerUid = le.GetLayerUid(ss->m_layerIdx);
     }
-    ss->m_slot = slot;
 
     // Adding a scene must not move the selection: whatever the user had
     // selected stays selected, and the new row is only renamed, not selected.
     const int prevSel = GetSelectedListIndex(hwnd);
 
-    g_snapshots.push_back(std::move(ss));
+    g_snapshots.insert(g_snapshots.begin() + insertAt, std::move(ss));
+    TouchedOnInsert(insertAt);
+    // Everything below the insert point shifted, so the cue list's positional
+    // references have to shift with it or they start pointing one scene early.
+    for (auto& ci : g_cueList)
+        if (ci >= insertAt) ci++;
+    for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
+
     RefreshListView(hwnd);
 
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
-    int  newIdx = (int)g_snapshots.size() - 1;
+    int  newIdx = insertAt;
     ListView_EnsureVisible(hList, newIdx, FALSE);
     MarkTouched(newIdx);
 
-    Undo_OnStateChangeEx("Save Scene", -1, -1);
+    Undo_OnStateChangeEx(asSubscene ? "Save Subscene" : "Save Scene", -1, -1);
 
     // Immediately drop into inline rename so the user can name the new scene.
     // LVM_EDITLABEL is documented to require the list view to have the focus
@@ -1652,10 +1803,16 @@ static void DoSave(HWND hwnd)
     // finishes: changing a row's selection or focus while the in-place edit
     // is open closes the box, which is the whole point of opening it.
     g_addRestoreRow = newIdx;
-    g_addRestoreSel = prevSel;
+    g_addRestoreSel = (prevSel >= insertAt) ? prevSel + 1 : prevSel;
 
     if (!ListView_EditLabel(hList, newIdx))
         RestoreSelectionAfterAdd(hwnd);   // no rename box: restore right away
+}
+
+// Append a new ordinary scene — what the New button and the headless action do.
+static void DoSave(HWND hwnd)
+{
+    DoSaveAt(hwnd, -1, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -1697,7 +1854,10 @@ static void RestoreSelectionAfterAdd(HWND hwnd)
 static void RestoreLayerState(TransitionSnapshot* snap)
 {
     if (!snap) return;
-    if (g_globalSafeMask & TS_LAYERS) return;
+    // Not g_globalSafeMask directly: a subscene or a scene with its own safes
+    // can add TS_LAYERS for this one recall, and the layer restore has to see
+    // that as much as the engine does.
+    if (GetEffectiveGlobalSafeMask() & TS_LAYERS) return;
     if (snap->m_layers.empty()) return;
 
     // Number any pre-uid layers so the reference below is by uid, not index,
@@ -1790,6 +1950,12 @@ static void DoRecall(HWND hwnd, int listIndex)
     ResolveSceneLayer(snap);   // migrate pre-uid scenes; drop dangling references
     // m_duration == 0 means instant (set via the Scene Settings popup)
     double duration = snap->m_duration;
+
+    // Safes for this one recall: the subscene set if this is a subscene, plus
+    // the scene's own set. Scoped across RestoreLayerState too, which reads
+    // the same state after the engine has returned.
+    SceneSafeScope safeScope(snap->m_safes.enabled ? &snap->m_safes : nullptr,
+                             snap->m_isSub);
 
     // Place a named marker at the play cursor position if option is enabled
     if (g_placeMarker)
@@ -2206,6 +2372,10 @@ struct SnapSettingsData
     int         taper    = TAPER_SCURVE;
     double      taperExp = 2.0;
     bool        instant  = false;   // true when duration == 0
+
+    // In only: window caption, so the popup says which row it belongs to and
+    // whether that row is a scene or a subscene.
+    std::string title;
 };
 
 // ---------------------------------------------------------------------------
@@ -2219,6 +2389,8 @@ static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPara
     {
         SnapSettingsData* d = reinterpret_cast<SnapSettingsData*>(lParam);
         SetWindowLongPtr(hwnd, DWLP_USER, (LONG_PTR)d);
+
+        if (!d->title.empty()) SetWindowTextA(hwnd, d->title.c_str());
 
         // Populate taper combobox
         const char* taperItems[] = {
@@ -2452,7 +2624,10 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             "Linear", "S-Curve", "Logarithmic", "Exponential", "Custom..."
         };
         for (const char* n : taperItems)
-            SendDlgItemMessage(hwnd, IDC_GSET_TAPER, CB_ADDSTRING, 0, (LPARAM)n);
+        {
+            SendDlgItemMessage(hwnd, IDC_GSET_TAPER,     CB_ADDSTRING, 0, (LPARAM)n);
+            SendDlgItemMessage(hwnd, IDC_GSET_SUB_TAPER, CB_ADDSTRING, 0, (LPARAM)n);
+        }
 
         bool instant = (g_defaultDuration == 0.0);
         CheckDlgButton(hwnd, IDC_GSET_INSTANT, instant ? BST_CHECKED : BST_UNCHECKED);
@@ -2505,11 +2680,50 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER),       !instant);
         EnableWindow(GetDlgItem(hwnd, IDC_GSET_TAPER_CUSTOM),
                      !instant && g_defaultTaper == TAPER_CUSTOM);
+
+        // ---- New subscene defaults --------------------------------------
+        {
+            bool subInstant = (g_defaultSubDuration == 0.0);
+            CheckDlgButton(hwnd, IDC_GSET_SUB_INSTANT, subInstant ? BST_CHECKED : BST_UNCHECKED);
+
+            snprintf(buf, sizeof(buf), "%.2f", subInstant ? 2.0 : g_defaultSubDuration);
+            SetDlgItemText(hwnd, IDC_GSET_SUB_DURATION, buf);
+
+            int subSel = (g_defaultSubTaper >= 0 && g_defaultSubTaper <= TAPER_CUSTOM)
+                         ? g_defaultSubTaper : TAPER_SCURVE;
+            SendDlgItemMessage(hwnd, IDC_GSET_SUB_TAPER, CB_SETCURSEL, subSel, 0);
+
+            snprintf(buf, sizeof(buf), "%.2f", g_defaultSubTaperExp);
+            SetDlgItemText(hwnd, IDC_GSET_SUB_TAPER_CUSTOM, buf);
+
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_DURATION), !subInstant);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER),    !subInstant);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER_CUSTOM),
+                         !subInstant && g_defaultSubTaper == TAPER_CUSTOM);
+        }
         return TRUE;
     }
     case WM_COMMAND:
     {
         int id = LOWORD(wParam), evt = HIWORD(wParam);
+        if (id == IDC_GSET_SUB_INSTANT)
+        {
+            bool si = (IsDlgButtonChecked(hwnd, IDC_GSET_SUB_INSTANT) == BST_CHECKED);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_DURATION), !si);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER),    !si);
+            int sel = (int)SendDlgItemMessage(hwnd, IDC_GSET_SUB_TAPER, CB_GETCURSEL, 0, 0);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER_CUSTOM),
+                         !si && sel == TAPER_CUSTOM);
+            return TRUE;
+        }
+        if (id == IDC_GSET_SUB_TAPER && evt == CBN_SELCHANGE)
+        {
+            int sel = (int)SendDlgItemMessage(hwnd, IDC_GSET_SUB_TAPER, CB_GETCURSEL, 0, 0);
+            bool si = (IsDlgButtonChecked(hwnd, IDC_GSET_SUB_INSTANT) == BST_CHECKED);
+            EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER_CUSTOM),
+                         !si && sel == TAPER_CUSTOM);
+            return TRUE;
+        }
         if (id == IDC_GSET_INSTANT)
         {
             bool instant = (IsDlgButtonChecked(hwnd, IDC_GSET_INSTANT) == BST_CHECKED);
@@ -2553,6 +2767,26 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             GetDlgItemText(hwnd, IDC_GSET_TAPER_CUSTOM, exBuf, sizeof(exBuf));
             double ex = atof(exBuf);
             g_defaultTaperExp = (ex > 0.0) ? ex : 2.0;
+
+            // ---- New subscene defaults ----------------------------------
+            if (IsDlgButtonChecked(hwnd, IDC_GSET_SUB_INSTANT) == BST_CHECKED)
+            {
+                g_defaultSubDuration = 0.0;
+            }
+            else
+            {
+                char sbuf[64] = {};
+                GetDlgItemText(hwnd, IDC_GSET_SUB_DURATION, sbuf, sizeof(sbuf));
+                double sdur = atof(sbuf);
+                g_defaultSubDuration = (sdur > 0.0) ? sdur : 2.0;
+            }
+            g_defaultSubTaper = (int)SendDlgItemMessage(hwnd, IDC_GSET_SUB_TAPER, CB_GETCURSEL, 0, 0);
+            if (g_defaultSubTaper < 0 || g_defaultSubTaper > TAPER_CUSTOM)
+                g_defaultSubTaper = TAPER_SCURVE;
+            char sexBuf[64] = {};
+            GetDlgItemText(hwnd, IDC_GSET_SUB_TAPER_CUSTOM, sexBuf, sizeof(sexBuf));
+            double sex = atof(sexBuf);
+            g_defaultSubTaperExp = (sex > 0.0) ? sex : 2.0;
 
             g_placeMarker         = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER)            == BST_CHECKED);
             g_storeActiveLayer    = (IsDlgButtonChecked(hwnd, IDC_GSET_STORE_LAYER)       == BST_CHECKED);
@@ -3030,16 +3264,36 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     }
     else
     {
+        const bool isSub  = hasItem && !isSpacer && g_snapshots[snapIdx]->m_isSub;
+        const bool isReal = hasItem && !isSpacer;   // a scene or a subscene
+
         AppendMenu(hMenu, MF_STRING, CTX_NEW, "New");
+        AppendMenu(hMenu, MF_STRING | (!isReal ? MF_GRAYED : 0), CTX_ADDSUB,
+                   isSub ? "Add Subscene (sibling)" : "Add Subscene");
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_RECALL_CTX, "Recall");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | (!hasItem ? MF_GRAYED : 0), CTX_RENAME, "Rename\tF2");
+        if (isSub)
+            AppendMenu(hMenu, MF_STRING, CTX_PROMOTE, "Promote to Scene");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_COPY_CTX,  "Copy");
         AppendMenu(hMenu, MF_STRING | (!hasClip ? MF_GRAYED : 0), CTX_PASTE_CTX, "Paste");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_OVERWRITE, "Overwrite");
-        AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_SCENE_SETTINGS, "Scene Settings...");
+        AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_SCENE_SETTINGS,
+                   isSub ? "Subscene Settings..." : "Scene Settings...");
+
+        // Safes: this row's own set, and (for subscenes) the set that applies
+        // to every subscene, which lives on its own tab of the Safes window.
+        {
+            char safeLabel[64];
+            snprintf(safeLabel, sizeof(safeLabel), "%s Safes...",
+                     isSub ? "Per-Subscene" : "Per-Scene");
+            UINT flags = MF_STRING | (!isReal ? MF_GRAYED : 0);
+            if (isReal && g_snapshots[snapIdx]->m_safes.enabled) flags |= MF_CHECKED;
+            AppendMenu(hMenu, flags, CTX_SCENE_SAFES, safeLabel);
+        }
+        AppendMenu(hMenu, MF_STRING, CTX_SUB_SAFES, "Subscene Global Safes...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | (!hasItem ? MF_GRAYED : 0), CTX_DELETE, "Delete");
         AppendMenu(hMenu, MF_STRING | (g_snapshots.empty() ? MF_GRAYED : 0), CTX_DELETE_ALL, "Delete All Scenes");
@@ -3057,6 +3311,52 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     {
     case CTX_NEW:
         DoSave(hwnd);
+        break;
+
+    case CTX_ADDSUB:
+        if (hasItem && !isSpacer)
+        {
+            // The new subscene goes at the end of its parent's block, whether
+            // the click landed on the scene or on one of its subscenes, so
+            // repeatedly adding builds 1.1, 1.2, 1.3 in order either way.
+            const int parent = g_snapshots[snapIdx]->m_isSub
+                               ? ParentSceneIndex(snapIdx)
+                               : snapIdx;
+            const int insertAt = (parent >= 0) ? SubsceneBlockEnd(parent)
+                                               : snapIdx + 1;
+            DoSaveAt(hwnd, insertAt, true);
+        }
+        break;
+
+    case CTX_PROMOTE:
+        if (hasItem && !isSpacer && g_snapshots[snapIdx]->m_isSub)
+        {
+            g_snapshots[snapIdx]->m_isSub = false;
+            RefreshListView(hwnd);
+            Undo_OnStateChangeEx("Promote Subscene to Scene", -1, -1);
+        }
+        break;
+
+    case CTX_SCENE_SAFES:
+        if (hasItem && !isSpacer)
+        {
+            TransitionSnapshot* snap = g_snapshots[snapIdx].get();
+            char title[512];
+            snprintf(title, sizeof(title), "Safes for %s",
+                     SceneDisplayLabel(snapIdx).c_str());
+            if (SafesWnd_EditSceneSafes(hwnd, snap->m_safes, title))
+            {
+                // Opening the editor at all is the usual way a scene gets its
+                // own safes, so switch the feature on the moment anything is
+                // set rather than making the user find a second checkbox.
+                if (!snap->m_safes.IsEmpty()) snap->m_safes.enabled = true;
+                MarkProjectDirty(nullptr);
+            }
+        }
+        break;
+
+    case CTX_SUB_SAFES:
+        SafesWnd_ShowSubsceneTab();
         break;
 
     case CTX_RECALL_CTX:
@@ -3081,6 +3381,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             d.taper    = snap->m_taper;
             d.taperExp = snap->m_taperExp;
             d.instant  = (snap->m_duration == 0.0);
+            d.title    = SceneDisplayLabel(snapIdx) + " - Settings";
             if (DialogBoxParam(g_hInstance,
                                MAKEINTRESOURCE(IDD_SNAP_SETTINGS),
                                hwnd,
@@ -3106,6 +3407,11 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             int insertAfter = hasItem ? snapIdx + 1 : (int)g_snapshots.size();
             auto copy = std::make_unique<TransitionSnapshot>(*g_clipboard);
             copy->m_slot = insertAfter;
+            // Pasting under a scene makes a scene, pasting under a subscene
+            // makes a subscene: the row the user pointed at is the intent,
+            // more reliably than whatever the copy happened to be.
+            if (hasItem && !isSpacer)
+                copy->m_isSub = g_snapshots[snapIdx]->m_isSub;
             if (copy->m_name.find(" (copy)") == std::string::npos)
                 copy->m_name += " (copy)";
             copy->m_time = (int)std::time(nullptr);
@@ -3136,14 +3442,40 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     case CTX_DELETE:
         if (hasItem)
         {
-            // Remove from cue list too (update indices)
+            // Deleting a scene that has subscenes: they would otherwise fall
+            // through to whatever scene precedes them, which is never what was
+            // meant and is not obvious from the list afterwards. Ask, and let
+            // "No" be the deliberate choice to keep them.
+            int count = 1;
+            const int nsub = SubsceneCount(snapIdx);
+            if (nsub > 0)
+            {
+                char prompt[256];
+                snprintf(prompt, sizeof(prompt),
+                    "\"%s\" has %d subscene%s.\n\n"
+                    "Yes  - delete the scene and its subscenes\n"
+                    "No   - delete only the scene (subscenes move under the scene above)",
+                    g_snapshots[snapIdx]->m_name.c_str(), nsub, nsub == 1 ? "" : "s");
+                int r = MessageBoxA(hwnd, prompt, "Live Tools - Scenes",
+                                    MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (r == IDCANCEL) break;
+                // The whole block, not 1 + nsub: a spacer the user drew
+                // between two subscenes is part of what they are deleting.
+                if (r == IDYES) count = SubsceneBlockEnd(snapIdx) - snapIdx;
+            }
+
+            // Remove the deleted rows from the cue list, then close the gap
+            // the erase leaves in every index above them.
             g_cueList.erase(
-                std::remove(g_cueList.begin(), g_cueList.end(), snapIdx),
-                g_cueList.end());
+                std::remove_if(g_cueList.begin(), g_cueList.end(), [&](int ci) {
+                    return ci >= snapIdx && ci < snapIdx + count;
+                }), g_cueList.end());
             for (auto& ci : g_cueList)
-                if (ci > snapIdx) ci--;
-            TouchedOnErase(snapIdx);
-            g_snapshots.erase(g_snapshots.begin() + snapIdx);
+                if (ci >= snapIdx + count) ci -= count;
+
+            for (int n = 0; n < count; ++n) TouchedOnErase(snapIdx);
+            g_snapshots.erase(g_snapshots.begin() + snapIdx,
+                              g_snapshots.begin() + snapIdx + count);
             for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
             RefreshListView(hwnd);
             LoadEditorFromSnapshot(hwnd, nullptr);

@@ -97,6 +97,26 @@
 #define IDC_SAFESLAYERLIST       2205   // layer recall-safe list (own table)
 #define IDC_SAFESLAYERLBL        2206
 
+// Tab strip across the top of the Safes window: Project safes vs the safes
+// applied to every subscene recall. Both tabs drive the same grid.
+#define IDC_SAFES_TABS           2270
+
+// ---- Scene / Subscene safes popup (IDD_SCENE_SAFES) -----------------------
+// Same grid as the Safes window minus the layer table, opened from a scene's
+// context menu. Shares the IDC_GSAFE_* / IDC_SAFESLIST / IDC_TRACK_SAFES_EN
+// ids above so one dialog proc drives both templates.
+#define IDD_SCENE_SAFES          230
+#define IDC_SCSAFE_TITLE         2271   // "Safes for scene: <name>" banner
+#define IDC_SCSAFE_ENABLE        2272   // master enable for this scene's safes
+#define IDC_SCSAFE_REPLACE       2273   // ignore project safes for this scene
+#define IDC_SCSAFE_CLOSE         2274   // Close button
+
+// ---- Subscene transition defaults (Global Settings) -----------------------
+#define IDC_GSET_SUB_INSTANT     2275
+#define IDC_GSET_SUB_DURATION    2276
+#define IDC_GSET_SUB_TAPER       2277
+#define IDC_GSET_SUB_TAPER_CUSTOM 2278
+
 // ---- Live Monitor window --------------------------------------------------
 #define IDD_MONITOR              207
 #define IDD_MONITOR_SETTINGS     212

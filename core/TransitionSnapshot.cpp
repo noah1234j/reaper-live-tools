@@ -549,6 +549,28 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
     // Per-snapshot transition settings
     ctx->AddLine("DURATION %.4f %d %.4f", m_duration, (int)m_taper, m_taperExp);
 
+    // Subscene flag. Omitted for ordinary scenes so the format is unchanged
+    // for every project that does not use subscenes.
+    if (m_isSub)
+        ctx->AddLine("SUB 1");
+
+    // Per-scene safes. Written only when there is something to write; a scene
+    // with the feature switched off and no entries stays byte-identical to
+    // what older builds produced.
+    if (m_safes.enabled || !m_safes.IsEmpty())
+    {
+        ctx->AddLine("SAFES %d %d %d %d",
+                     m_safes.enabled ? 1 : 0,
+                     m_safes.replaceGlobal ? 1 : 0,
+                     m_safes.globalMask,
+                     m_safes.trackSafesEnabled ? 1 : 0);
+        for (const auto& e : m_safes.trackSafes)
+        {
+            if (e.mask == 0) continue;
+            ctx->AddLine("SAFETRACK %s %d", GuidToString(e.guid).c_str(), e.mask);
+        }
+    }
+
     // Active layer index (old-format compat; always written)
     if (m_layerIdx >= 0)
         ctx->AddLine("LAYER %d", m_layerIdx);
@@ -929,6 +951,29 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             ss->m_duration = dur >= 0.0 ? dur : 2.0;
             ss->m_taper    = tap;
             ss->m_taperExp = ex > 0.0 ? ex  : 2.0;
+        }
+        else if (strncmp(trimmed, "SUB ", 4) == 0)
+        {
+            int v = 0;
+            sscanf(trimmed + 4, "%d", &v);
+            ss->m_isSub = (v != 0);
+        }
+        else if (strncmp(trimmed, "SAFES ", 6) == 0)
+        {
+            int en = 0, repl = 0, gmask = 0, tren = 1;
+            sscanf(trimmed + 6, "%d %d %d %d", &en, &repl, &gmask, &tren);
+            ss->m_safes.enabled           = (en != 0);
+            ss->m_safes.replaceGlobal     = (repl != 0);
+            ss->m_safes.globalMask        = gmask;
+            ss->m_safes.trackSafesEnabled = (tren != 0);
+            ss->m_safes.trackSafes.clear();
+        }
+        else if (strncmp(trimmed, "SAFETRACK ", 10) == 0)
+        {
+            char sguid[64] = "";
+            int  smask = 0;
+            if (sscanf(trimmed + 10, "%63s %d", sguid, &smask) == 2)
+                ss->m_safes.trackSafes.push_back({ StringToGuid(sguid), smask });
         }
         else if (strncmp(trimmed, "NOTES ", 6) == 0)
         {

@@ -31,15 +31,48 @@ static const int kLayerSafeCount = 10;
 extern int  g_layerSafeMask;
 extern bool g_trackSafesEnabled;
 
-struct TrackSafeEntry {
-    GUID guid;
-    int  mask; // TS_* bits that are safe on this track
-};
+// TrackSafeEntry and SafeSet live in TransitionSnapshot.h so a snapshot can
+// carry its own set without depending on the engine.
 extern std::vector<TrackSafeEntry> g_trackSafes;
 
-// Returns per-track effective safe mask (global OR track-specific),
-// honouring the enable flags.
+// ---------------------------------------------------------------------------
+// Subscene safes: one extra set OR'd in for every subscene recall. Seeded with
+// kSubsceneSafeDefaults so a fresh project already protects order/names/plugins.
+// Edited from the Subscenes tab of the Safes window.
+// ---------------------------------------------------------------------------
+extern SafeSet g_subsceneSafes;
+
+// ---------------------------------------------------------------------------
+// Recall-scoped overlay, installed by SceneSafeScope for the duration of one
+// recall. GetEffectiveSafeMask reads it; nothing else should touch it.
+// ---------------------------------------------------------------------------
+extern const SafeSet* g_activeSceneSafes;
+extern bool           g_activeIsSubscene;
+
+// RAII installer. Covers the whole recall — the engine call *and* everything
+// the UI does afterwards that consults safes (layer restore, most notably) —
+// so construct it in the caller, not inside Recall().
+class SceneSafeScope
+{
+public:
+    SceneSafeScope(const SafeSet* sceneSafes, bool isSubscene);
+    ~SceneSafeScope();
+private:
+    const SafeSet* m_prevSet;
+    bool           m_prevSub;
+    SceneSafeScope(const SceneSafeScope&) = delete;
+    SceneSafeScope& operator=(const SceneSafeScope&) = delete;
+};
+
+// Returns per-track effective safe mask: the project set, the subscene set
+// (subscene recalls only) and the active scene set OR'd together, honouring
+// each set's enable flags and replaceGlobal.
 int GetEffectiveSafeMask(const GUID& guid);
+
+// The track-independent part of the same computation — what a caller with no
+// particular track in hand (the layer restore, the layer combo's enable state)
+// should test TS_LAYERS and friends against.
+int GetEffectiveGlobalSafeMask();
 
 // ---------------------------------------------------------------------------
 // TransitionEngine

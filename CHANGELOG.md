@@ -1,5 +1,27 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Per-scene safes**: Right-click a scene and choose **Per-Scene Safes...** to open the same safes grid the Safes window shows, minus the layer table, bound to that one scene. Anything checked there is protected for that scene's recalls only — a vocal channel that must not move when Verse 2 comes back, without safing it for the rest of the show. The popup names the scene it belongs to across the top and in its title bar, and the context-menu entry carries a checkmark while a scene has safes of its own.
+
+  By default a scene's safes are **added** to the project safes. **Replace project safes** in the popup makes that scene's set the whole story for its recalls instead, so a scene can deliberately recall something the project has safed globally.
+
+  A scene's safes live inside the scene, in the `.RPP` — exported and imported with it, copied with a copy/paste, and written only when there is something to write, so a project that does not use them is byte-identical to what older builds produced.
+
+- **Subscenes**: Right-click a scene and choose **Add Subscene** to put a variation underneath it. Subscenes are numbered after their parent (2.1, 2.2) and drawn indented under it in the scene list, and a subscene's context menu is the scene menu with subscene wording — Recall, Overwrite, Subscene Settings, Per-Subscene Safes, plus **Promote to Scene**.
+
+  Parentage is positional: a subscene belongs to the nearest ordinary scene above it. Dragging a row therefore reparents it with nothing to keep in sync, and deleting a scene that has subscenes asks whether to take them with it or leave them to the scene above. **Add Subscene** always appends to the end of its parent's block, whether the click landed on the scene or on one of its existing subscenes.
+
+  Subscenes recall through the same engine as scenes and capture exactly as much, so promoting one loses nothing. What makes a subscene different is which safes apply to it.
+
+- **Subscene global safes**: The Safes window now has two tabs — **Project** and **Subscenes**. The Subscenes tab holds a second safes set that is OR'd in for every subscene recall, on top of the project safes. It starts with **Order**, **Name**, **FX** and **Slots** checked, so a subscene by default changes the mix without changing the project's shape: track order, track names and the plugin chains come from the parent scene and stay put. Uncheck any of them to let subscenes recall those too.
+
+  The layer recall-safe table stays on the Project tab: layers are project-level, and a subscene has no set of its own to protect.
+
+- **Separate default transition for new subscenes**: Global Settings has a **New Subscene Defaults** group alongside New Scene Defaults, with its own instant/duration/taper/exponent. A new subscene takes those; a new scene takes the scene defaults. Both are saved per-project.
+
 ## [v0.0.46-beta] — 2026-09-21
 
 ### Changed
