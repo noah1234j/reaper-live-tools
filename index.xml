@@ -2,26 +2,70 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.46" author="noah1234j" time="2026-09-21T21:37:51Z">
+        <changelog>Changed
+
+- Layers: the channel list is now laid out like REAPER's Track Manager, and a layer drives both panels: The selected layer's channel list has columns Name / TCP / MCP / Spacer. A dot under TCP or MCP means the layer shows that channel in that panel; click a dot to toggle it. The Spacer cell adds or removes the gap above a channel, marked with a dash against the channel it sits above. Rows still drag to reorder, and every edit is stored and applied on the layer's next recall, not under the pointer. The old row-number column is gone — it numbered slots in a list the user reorders by hand, so it never said anything the row's position did not already say.
+
+  The "Layers control: MCP / TCP" radio pair and "Also hide in the other panel" are removed from Layers Settings. A layer now writes the track panel and the mixer together on every recall, and which of the two a given channel appears in is the per-channel choice made in those columns. The remaining "Apply track visibility (TCP and MCP)" checkbox is unchanged as the master switch for the whole visibility pass.
+
+  Capturing a layer ("Add Layer (Current Visibility)", "Update Layer (Capture Visible Tracks)") reads both panels instead of whichever one the setting pointed at, and records the split per channel — so a project where a submix sits on the mixer but not in the track panel captures that, rather than flattening it to one panel.
+
+  Existing projects and scenes load unchanged: a channel with no stored panel flags means both panels, which is what every layer captured before this meant. A project saved by an older build with the target set to TCP comes back driving both panels; re-capture the layer, or click the dots, to narrow it again. Projects and scenes stay readable by older builds, which ignore the new per-channel field.
+
+- Action renamed: "Scenes - Recall selected scene" is now "Scenes - Recall first selected scene": The scene list became multi-select in v0.0.40, so "the selection" can be several rows. The action acts on the topmost selected one, and the name now says so. Existing key/MIDI/OSC bindings are unaffected — the command id (LT_SCENE_RECALL_SELECTED) is unchanged; only the text in the Actions list moves.
+
+- Layers: editing a layer in the Layers window no longer changes the project: Reordering a layer's tracks (drag, or Move Up / Move Down) and adding a spacer row now edit the stored layer and nothing else. The project's tracks change the next time that layer is recalled, not while its list is being edited — editing a layer mid-show used to rearrange the mixer under the performer's hands the moment a row was dropped.
+
+  The drag path went through its own PhysicallyReorderLayer pass, which ignored the "reorder tracks" setting entirely: tracks moved on a drag even with reordering switched off. Adding a spacer re-applied the whole layer, which with reordering on moved tracks as a side effect of adding a spacer. Both are gone; recall is the only thing that writes a layer to the project, and it honours the reorder and spacer settings as it always has.
+
+  A layer edited this way is also held back from the sync-from-REAPER timer until that recall. Without it an edit made while its layer is active would be undone a moment later — the timer sorts a layer's slots into the project's track order and rebuilds its spacer rows from the project's spacer flags, so the edit would have looked like it did nothing at all.
+
+Bug Fixes
+
+- Safes: the global safe checkboxes went stale, greying out the scene layer dropdown for no visible reason: The Safes window is built once when the plugin loads and only hidden when closed, so its global checkboxes were filled in before any project existed and never read again. Every later change to the global safe mask from outside the window — loading a project, undo, or switching project tabs — left the boxes showing the previous project's values.
+
+  The most visible symptom was the layer dropdown in the Scenes window. It greys out while the Layers global safe is set, because recall skips layer state entirely and picking a layer would promise something that will not happen. Reopening a project that had the Layers safe saved restored the safe but not its checkbox, so the dropdown was dead with the box sitting unchecked. Checking the box and unchecking it again was the only way out, and that worked because it forced the mask to match what was on screen, not because the box had been wrong to begin with.
+
+  All of the global controls — the parameter checkboxes, “All Tracks”, and the per-track enable — are now re-read from the state they mirror on every project load, undo, tab switch and Clear, from a single pass shared with the window's own setup. The layer safe table and the track grid repaint with them.
+
+- Safes: the "Enable Per-Track Safes" checkbox sat on top of the layer-safes heading: Two controls of the Safes dialog were given the same id (2204) by two separate blocks of resource definitions. A dialog hands GetDlgItem whichever control carrying that id it reaches first, so the resize pass that positions the "Layer Recall Safes" heading was moving the per-track safes checkbox to the heading's coordinates instead, and the heading itself stayed wherever the dialog template had put it. The layer-safes list and heading now use ids of their own.
+
+- Layers: recalling a layer with "Reorder tracks" on rearranged the whole project: A layer records the order of its own channels relative to each other — a row number in the Layers window, where the list is the layer's own tracks plus its spacer rows. Recall passed that row number straight to REAPER as an absolute project index, so recalling a layer hauled its tracks to the top of the project and pushed everything else down: a saved order expressed among a handful of channels rearranged every track in the project. Spacer rows made it worse, since a spacer takes a row but no track, so every channel after one was off by a further place.
+
+  A layer's tracks are now permuted among the project slots they already occupy. Only channels that are genuinely out of order relative to each other move, every track the layer does not list keeps its position, and recalling a layer whose order already matches the project performs no moves at all.
+
+  Three related defects went with it, all of them already fixed on the scenes side: destinations were computed once instead of re-read before each move, so one skipped move put every later one out by a place; downward moves landed a slot short, because ReorderSelectedTracks inserts *before* the index it is given and a track moving down vacates a slot above its destination first; and folder membership was policed by refusing moves after the fact rather than by construction. Tracks are now permuted only among slots that already share a folder parent, and a track whose I_FOLDERDEPTH opens or closes a folder is never relocated, so a recall cannot restructure the project's folders.
+
+  Reordering also no longer rides on the "Apply MCP/TCP visibility" switch. That setting governs writing the two panels; turning it off used to silently disable the channel order too, which is not what it says it does.
+
+- Scenes: "Update last touched scene" looked like it did nothing, and could update the wrong scene: Re-capturing a scene through any of the update actions left the list completely unchanged, because Capture() does not touch the scene's timestamp and only the context-menu Overwrite and Ctrl+click stamped it themselves. The Time column kept showing the original capture, so the action gave no sign it had run — the re-capture was happening, it just could not be seen. All three update paths ("Update last touched scene", "Update selected scene", and the per-slot LT_SAVE_SCENE_nn actions) now stamp the capture time, and the Time column updates in place.
+
+  The "last touched" marker was also a bare row number that nothing maintained. Deleting a scene above it, dragging a scene to a new position, or pasting a scene left it pointing at whichever scene had moved into that slot, so the next update overwrote the wrong one. It now follows the scene through deletes, reorders, pastes and spacer inserts, and is cleared when a project is loaded or all scenes are deleted rather than carrying a stale row number into the new list.
+
+  Note that the Time column shows the originating scene number instead of a time while cue mode is on, so a re-capture is not visible there.
+
+- Scenes: adding a scene now drops into the rename box, with the name selected: Clicking New was supposed to open the inline rename on the new row so the auto-generated name (Scene 5) could be typed straight over. It never did — LVM_EDITLABEL only does anything when the list view already has the keyboard focus, and after a button click the focus is on the button. F2 and right-click &gt; Rename always worked because the focus is in the list by the time either runs. The list is now focused before the edit is opened, from New, from the "Create new scene" action, and from the context menu, where the popup has held the focus until the moment it closes. The box opens over the Name column with the whole name selected and the keyboard pointed at it, so the first keystroke replaces it.
+
+- Scenes: adding a scene no longer leaves two scenes selected: With a scene selected, "Add new scene" selected the new row as well — the list is multi-select, so nothing cleared the previous selection and both stayed highlighted. Adding a scene now leaves the selection (and the editor panel) exactly where it was. LVM_EDITLABEL implicitly selects and focuses the row it edits, so the previous selection is put back when the rename finishes rather than while the box is still open — changing a row's selection or focus mid-edit closes the box, which would undo the fix above.
+
+- Scenes: "Recall first selected scene" and "Update selected scene" acted on the wrong scene in cue mode, and did nothing with the window closed: Both actions read the selected *list row* and used it directly as an index into the scene list. Those agree in scenes mode, but a cue-mode row is a position in the cue list, so with cue mode on the actions recalled — and, worse, overwrote — whichever scene happened to sit at that position in the scene list instead. Both now map row → scene the way a click does, and skip spacer rows in either mode.
+
+  Recall also ran a second, near-duplicate copy of the recall path rather than the one a click goes through, so it missed the cue-list auto-advance. It now calls the same DoRecall a click does, which is also the only copy that can stay correct.
+
+  Neither action did anything at all when the Scenes window was closed, because the selection lives in the ListView and there was nothing to ask. They now open the window on demand, like the other headless action helpers already did.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.46-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.45" author="noah1234j" time="2026-09-11T21:07:54Z">
         <changelog>Changed
 
-- Scenes no longer reorder tracks on recall: Recalling a scene now leaves the project's track order exactly as it is; everything else about the recall is unchanged.
+- Scenes no longer reorder tracks on recall: Track reordering is switched off in both recall paths. Recalling a scene now leaves the project's track order exactly as it is; everything else about the recall is unchanged.
 
-  The rewritten pass shipped in v0.0.43 still misplaces tracks, and it only ever covered the instant path. A recall with a transition time runs a different pass, which was never rewritten and still carries all four of the original defects - destination taken from the loop counter, no insert-before correction for downward moves, a folder check that lets a folder parent be moved away from its children, and a single pass that never verifies where anything landed.
+  The rewritten pass shipped in v0.0.43 still misplaces tracks, and it only ever covered the instant path. A recall with a transition time runs a different pass, which was never rewritten and still carries all four of the original defects — destination taken from the loop counter, no insert-before correction for downward moves, a folder check that lets a folder parent be moved away from its children, and a single pass that never verifies where anything landed.
 
-  Scenes still capture and store track order, so no scene needs re-saving and nothing is lost from existing scenes. When the pass is correct, re-enabling it restores the feature.
+  Scenes still capture and store track order, so no scene needs re-saving and nothing is lost from existing scenes. When the pass is correct, re-enabling it restores the feature. The switch is g_trackReorderEnabled in core/TransitionEngine.cpp.
 
-  Not affected: track reordering in Layers, which is a separate code path and still active.
-
-Performance
-
-- Scenes: mute, solo and phase are no longer written when the track already holds the value: REAPER recomputes routing state on each of those writes - about a millisecond apiece - while reading the current value is free. A scene change moves a handful of tracks at most, so on a large project nearly all of those writes were setting a value that was already there. Each now reads first and writes only on a difference.
-
-Removed
-
-- Temporary action "Live Tools: DEBUG - Reorder benchmark" removed: The diagnostic added in v0.0.42 did its job and is gone from the action list.
-
-This release also carries the v0.0.44-beta changes, which were never published separately.</changelog>
+  Not affected: track reordering in Layers, which is a separate code path and still active.</changelog>
         <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.45-beta/reaper_transitions.dll</source>
       </version>
       <version name="0.0.43" author="noah1234j" time="2026-09-11T18:52:54Z">
