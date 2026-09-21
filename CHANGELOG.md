@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [v0.0.47-dev.1] — 2026-09-21  (dev branch)
 
 ### Added
 
