@@ -97,7 +97,8 @@ enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE,
        CTX_NEW, CTX_RECALL_CTX, CTX_COPY_CTX, CTX_PASTE_CTX,
        CTX_EXPORT, CTX_IMPORT, CTX_ADDSPACER, CTX_SCENE_SETTINGS,
        CTX_CUE_REMOVE, CTX_DELETE_ALL,
-       CTX_ADDSUB, CTX_SCENE_SAFES, CTX_SUB_SAFES, CTX_PROMOTE };
+       CTX_ADDSUB, CTX_SCENE_SAFES, CTX_SUB_SAFES, CTX_PROMOTE,
+       CTX_TOGGLE_FOLD, CTX_COLLAPSE_ALL, CTX_EXPAND_ALL };
 
 // Docker context menu IDs
 enum { CTX_DOCK = 200, CTX_CLOSE };
@@ -244,7 +245,12 @@ static void ImportScene(HWND hwnd);
 static void DoEndDrag(HWND hwnd);
 static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd);
 static int  GetSelectedListIndex(HWND hwnd);
+static int  GetSelectedSnapIndex(HWND hwnd);
 static std::vector<int> GetSelectedListIndices(HWND hwnd);
+// Row <-> g_snapshots mapping; see the block above GetSelectedListIndex.
+static int  RowToSnap(int row);
+static int  SnapToRow(int snapIdx);
+static bool IsHiddenByCollapse(int idx);
 static void DeleteSnapshotsAt(HWND hwnd, const std::vector<int>& idxs);
 static void RestoreSelectionAfterAdd(HWND hwnd);
 static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -383,8 +389,10 @@ int TransitionWnd_IsVisible()
 
 int TransitionWnd_GetSelectedIndex()
 {
+    // Callers (the meter bridge's delta display) index g_snapshots with this,
+    // so it owes them a snapshot index, not the row it happens to sit on.
     if (!g_wnd || !IsWindow(g_wnd)) return -1;
-    return GetSelectedListIndex(g_wnd);
+    return GetSelectedSnapIndex(g_wnd);
 }
 
 void TransitionWnd_RefreshList()
@@ -427,9 +435,13 @@ void TransitionWnd_RecallScene(int index)
     RestoreLayerState(snap);
     if (g_wnd && IsWindow(g_wnd))
     {
-        HWND hList = GetDlgItem(g_wnd, IDC_LIST);
-        ListView_SetItemState(hList, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(hList, index, FALSE);
+        HWND hList  = GetDlgItem(g_wnd, IDC_LIST);
+        const int r = SnapToRow(index);
+        if (r >= 0)
+        {
+            ListView_SetItemState(hList, r, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(hList, r, FALSE);
+        }
         // Repaint the sidebar so the "Layer:" readout matches what was just
         // recalled; nothing else refreshed it after a recall.
         LoadEditorFromSnapshot(g_wnd, snap);
@@ -483,9 +495,9 @@ static int SelectedSnapshotIndex(HWND hwnd, int* rowOut)
     int row = GetSelectedListIndex(hwnd);
     if (rowOut) *rowOut = row;
     if (row < 0) return -1;
-    int snapIdx = row;
-    if (g_cueMode)
-        snapIdx = (row < (int)g_cueList.size()) ? g_cueList[row] : -1;
+    int snapIdx = g_cueMode
+                  ? ((row < (int)g_cueList.size()) ? g_cueList[row] : -1)
+                  : RowToSnap(row);
     if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return -1;
     if (g_snapshots[snapIdx]->m_isSpacer) return -1;
     return snapIdx;
@@ -524,7 +536,10 @@ void TransitionWnd_RecallNextScene()
     if (g_snapshots.empty()) return;
     int next = TransitionEngine::Get().GetCurrentSlot() + 1;
     if (next < 0) next = 0;
-    while (next < (int)g_snapshots.size() && g_snapshots[next]->m_isSpacer)
+    // Skip spacers, and subscenes folded away under a collapsed parent: "next"
+    // means the next row the performer can see.
+    while (next < (int)g_snapshots.size() &&
+           (g_snapshots[next]->m_isSpacer || IsHiddenByCollapse(next)))
         ++next;
     if (next < (int)g_snapshots.size())
         TransitionWnd_RecallScene(next);
@@ -1289,6 +1304,136 @@ static std::string SceneDisplayLabel(int idx)
 }
 
 // ---------------------------------------------------------------------------
+// SetItemTextU8 - put UTF-8 text into a list view cell.
+//
+// The scene list is created with CreateWindowExA, so ListView_SetItemText
+// sends LVM_SETITEMTEXTA and the control reads the bytes in the system ANSI
+// codepage: UTF-8 in, mojibake out, which is what turned the subscene indent
+// into "a""a"EUR and had been quietly mangling the spacer rows since they
+// were added. A list view implements both the A and W forms of the message
+// whatever the window was created as, so handing it UTF-16 takes the codepage
+// out of the loop entirely.
+// ---------------------------------------------------------------------------
+static void SetItemTextU8(HWND hList, int item, int subItem, const char* utf8)
+{
+    if (!hList || !utf8) return;
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+    if (wlen <= 0)
+    {
+        // Not valid UTF-8 (nothing here produces that, but a bad conversion
+        // must not silently blank the cell) - fall back to the ANSI path.
+        ListView_SetItemText(hList, item, subItem, const_cast<char*>(utf8));
+        return;
+    }
+    std::vector<WCHAR> w((size_t)wlen);
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w.data(), wlen);
+
+    LVITEMW lv = {};
+    lv.iSubItem = subItem;
+    lv.pszText  = w.data();
+    if (!SendMessageW(hList, LVM_SETITEMTEXTW, (WPARAM)item, (LPARAM)&lv))
+    {
+        // A control that refuses the W form would otherwise leave the cell
+        // blank, which is worse than the mojibake this exists to avoid.
+        ListView_SetItemText(hList, item, subItem, const_cast<char*>(utf8));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row <-> snapshot mapping
+//
+// Until scenes could be collapsed, a row in the scene list *was* an index into
+// g_snapshots and the whole file treated the two as interchangeable. Folding a
+// scene's subscenes away breaks that: the rows are now whatever is visible.
+// RefreshListView rebuilds this table, and everything that starts from a row
+// goes through RowToSnap rather than assuming.
+//
+// Cue mode is unaffected - there a row has always been a position in
+// g_cueList, which does the same job.
+// ---------------------------------------------------------------------------
+static std::vector<int> g_rowToSnap;
+
+// True when idx is a subscene whose parent scene is folded away.
+static bool IsHiddenByCollapse(int idx)
+{
+    if (idx < 0 || idx >= (int)g_snapshots.size()) return false;
+    if (!g_snapshots[idx]->m_isSub) return false;
+    const int parent = ParentSceneIndex(idx);
+    return parent >= 0 && g_snapshots[parent]->m_collapsed;
+}
+
+static int RowToSnap(int row)
+{
+    if (row < 0 || row >= (int)g_rowToSnap.size()) return -1;
+    const int si = g_rowToSnap[row];
+    return (si >= 0 && si < (int)g_snapshots.size()) ? si : -1;
+}
+
+static int SnapToRow(int snapIdx)
+{
+    for (int r = 0; r < (int)g_rowToSnap.size(); ++r)
+        if (g_rowToSnap[r] == snapIdx) return r;
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// Collapse toggling
+//
+// The disclosure arrow is the first two characters of the Name cell rather
+// than a real tree control: the list has been a plain LVS_REPORT since the
+// start and every one of its behaviours (drag reorder, in-place rename, the
+// click-to-recall options) is built on that. ArrowHitTest decides whether a
+// click landed on the arrow by measuring against the Name column's own rect,
+// so it keeps working when the column is resized or the splitter moves.
+// ---------------------------------------------------------------------------
+static const int kArrowZoneWidth = 16;
+
+// Snapshot index of the collapsible scene whose arrow is under pt, or -1.
+static int ArrowHitTest(HWND hList, POINT pt)
+{
+    if (g_cueMode) return -1;
+
+    LVHITTESTINFO ht = {};
+    ht.pt = pt;
+    ListView_SubItemHitTest(hList, &ht);
+    if (ht.iItem < 0 || ht.iSubItem != 1) return -1;
+
+    const int si = RowToSnap(ht.iItem);
+    if (si < 0) return -1;
+    if (g_snapshots[si]->m_isSpacer || g_snapshots[si]->m_isSub) return -1;
+    if (SubsceneCount(si) <= 0) return -1;
+
+    RECT rc = {};
+    if (!ListView_GetSubItemRect(hList, ht.iItem, 1, LVIR_BOUNDS, &rc)) return -1;
+    return (pt.x >= rc.left && pt.x < rc.left + kArrowZoneWidth) ? si : -1;
+}
+
+static void SetCollapsed(HWND dlg, int snapIdx, bool collapsed)
+{
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return;
+    if (g_snapshots[snapIdx]->m_collapsed == collapsed) return;
+    g_snapshots[snapIdx]->m_collapsed = collapsed;
+    RefreshListView(dlg);
+    MarkProjectDirty(nullptr);
+}
+
+static void SetAllCollapsed(HWND dlg, bool collapsed)
+{
+    bool any = false;
+    for (int i = 0; i < (int)g_snapshots.size(); ++i)
+    {
+        if (g_snapshots[i]->m_isSpacer || g_snapshots[i]->m_isSub) continue;
+        if (SubsceneCount(i) <= 0) continue;
+        if (g_snapshots[i]->m_collapsed == collapsed) continue;
+        g_snapshots[i]->m_collapsed = collapsed;
+        any = true;
+    }
+    if (!any) return;
+    RefreshListView(dlg);
+    MarkProjectDirty(nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // GetSelectedListIndex
 // ---------------------------------------------------------------------------
 static int GetSelectedListIndex(HWND hwnd)
@@ -1296,6 +1441,17 @@ static int GetSelectedListIndex(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
     if (!hList) return -1;
     return ListView_GetNextItem(hList, -1, LVNI_SELECTED);
+}
+
+// The same, mapped to g_snapshots. Scenes mode only — in cue mode a row is a
+// cue position and the caller has to decide what it wants.
+static int GetSelectedSnapIndex(HWND hwnd)
+{
+    const int row = GetSelectedListIndex(hwnd);
+    if (row < 0) return -1;
+    if (g_cueMode)
+        return (row < (int)g_cueList.size()) ? g_cueList[row] : -1;
+    return RowToSnap(row);
 }
 
 // ---------------------------------------------------------------------------
@@ -1311,6 +1467,18 @@ static std::vector<int> GetSelectedListIndices(HWND hwnd)
     int i = -1;
     while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) >= 0)
         out.push_back(i);
+    return out;
+}
+
+// The same, mapped to g_snapshots and with unmappable rows dropped.
+static std::vector<int> GetSelectedSnapIndices(HWND hwnd)
+{
+    std::vector<int> out;
+    for (int row : GetSelectedListIndices(hwnd))
+    {
+        const int si = RowToSnap(row);
+        if (si >= 0) out.push_back(si);
+    }
     return out;
 }
 
@@ -1350,7 +1518,7 @@ static void DeleteSnapshotsAt(HWND hwnd, const std::vector<int>& idxs)
 // ---------------------------------------------------------------------------
 static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd)
 {
-    int idx = GetSelectedListIndex(hwnd);
+    int idx = GetSelectedSnapIndex(hwnd);
     if (idx < 0 || idx >= (int)g_snapshots.size()) return nullptr;
     return g_snapshots[idx].get();
 }
@@ -1478,7 +1646,7 @@ static void UpdateLayerComboEnable(HWND hwnd)
     }
 
     // Otherwise it follows the selected row: spacers have no layer to recall.
-    int idx = GetSelectedListIndex(hwnd);
+    int idx = GetSelectedSnapIndex(hwnd);
     const bool usable = (idx >= 0 && idx < (int)g_snapshots.size() &&
                          !g_snapshots[idx]->m_isSpacer);
     EnableWindow(hCb, usable ? TRUE : FALSE);
@@ -1595,12 +1763,17 @@ static void RefreshListView(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
     if (!hList) return;
 
-    int selBefore = GetSelectedListIndex(hwnd);
+    // Remember the selection as a scene, not a row: collapsing or expanding
+    // anything above it changes its row number but not which scene it is.
+    const int selRowBefore  = GetSelectedListIndex(hwnd);
+    const int selSnapBefore = g_cueMode ? -1 : RowToSnap(selRowBefore);
 
     ListView_DeleteAllItems(hList);
 
     if (g_cueMode)
     {
+        g_rowToSnap.clear();   // cue mode maps through g_cueList instead
+
         // Remove stale indices (scenes that were deleted)
         g_cueList.erase(
             std::remove_if(g_cueList.begin(), g_cueList.end(), [](int idx) {
@@ -1642,11 +1815,11 @@ static void RefreshListView(HWND hwnd)
         }
 
         int listSize = (int)g_cueList.size();
-        if (selBefore >= 0 && selBefore < listSize)
+        if (selRowBefore >= 0 && selRowBefore < listSize)
         {
-            ListView_SetItemState(hList, selBefore,
+            ListView_SetItemState(hList, selRowBefore,
                 LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            ListView_EnsureVisible(hList, selBefore, FALSE);
+            ListView_EnsureVisible(hList, selRowBefore, FALSE);
         }
         return;
     }
@@ -1655,22 +1828,43 @@ static void RefreshListView(HWND hwnd)
     // Scenes are numbered 1, 2, 3...; a subscene takes its parent's number
     // with its own position appended (2.1, 2.2) and its name is drawn indented
     // under it, so the grouping reads off the list without a tree control.
+    // A scene with subscenes carries a disclosure arrow in the Name cell; the
+    // rows it hides while collapsed are simply not inserted, which is why the
+    // row number and the g_snapshots index part company here.
+    g_rowToSnap.clear();
+    g_rowToSnap.reserve(g_snapshots.size());
+
     int sceneNum = 1;  // running scene number (spacers don't count)
     int subNum   = 0;  // position within the current scene's subscenes
     for (int i = 0; i < (int)g_snapshots.size(); i++)
     {
         const auto& ss = g_snapshots[i];
 
+        // Numbering has to run over every scene, visible or not, or the rows
+        // below a collapsed block would renumber as it folds.
+        int thisNum = 0, thisSub = 0;
+        if (!ss->m_isSpacer)
+        {
+            if (ss->m_isSub) { thisNum = sceneNum - 1; thisSub = ++subNum; }
+            else             { thisNum = sceneNum++;   subNum  = 0;        }
+        }
+
+        if (IsHiddenByCollapse(i)) continue;
+
+        const int row = (int)g_rowToSnap.size();
+        g_rowToSnap.push_back(i);
+
         LVITEM lvi = {};
         lvi.mask  = LVIF_TEXT;
-        lvi.iItem = i;
+        lvi.iItem = row;
 
         if (ss->m_isSpacer)
         {
             lvi.pszText = const_cast<char*>("");
             ListView_InsertItem(hList, &lvi);
-            ListView_SetItemText(hList, i, 1, const_cast<char*>("  \xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80"));
-            ListView_SetItemText(hList, i, 2, const_cast<char*>(""));
+            SetItemTextU8(hList, row, 1,
+                "  \xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80\xE2\x94\x80");
+            SetItemTextU8(hList, row, 2, "");
         }
         else
         {
@@ -1680,21 +1874,35 @@ static void RefreshListView(HWND hwnd)
             {
                 // A subscene before any scene has nothing to hang off; number
                 // it from 0 rather than pretending it belongs to scene 1.
-                snprintf(slotBuf, sizeof(slotBuf), "%d.%d", sceneNum - 1, ++subNum);
-                // U+2514 U+2500 (box-drawing corner) + space, as UTF-8.
-                nameCell = "   \xE2\x94\x94\xE2\x94\x80 ";
+                snprintf(slotBuf, sizeof(slotBuf), "%d.%d", thisNum, thisSub);
+                // Indent, then U+2514 U+2500 (box-drawing corner), as UTF-8.
+                nameCell = "     \xE2\x94\x94\xE2\x94\x80 ";
                 nameCell += ss->m_name;
             }
             else
             {
-                snprintf(slotBuf, sizeof(slotBuf), "%d", sceneNum++);
-                subNum   = 0;
-                nameCell = ss->m_name;
+                snprintf(slotBuf, sizeof(slotBuf), "%d", thisNum);
+
+                // Disclosure arrow, and the hidden count while folded. Two
+                // leading characters either way so names stay aligned down
+                // the column whether or not a scene has subscenes.
+                const int nsub = SubsceneCount(i);
+                if (nsub > 0)
+                    nameCell = ss->m_collapsed ? "\xE2\x96\xB8 " : "\xE2\x96\xBE ";
+                else
+                    nameCell = "  ";
+                nameCell += ss->m_name;
+                if (nsub > 0 && ss->m_collapsed)
+                {
+                    char badge[24];
+                    snprintf(badge, sizeof(badge), "  (%d)", nsub);
+                    nameCell += badge;
+                }
             }
             lvi.pszText = slotBuf;
             ListView_InsertItem(hList, &lvi);
 
-            ListView_SetItemText(hList, i, 1, const_cast<char*>(nameCell.c_str()));
+            SetItemTextU8(hList, row, 1, nameCell.c_str());
 
             char timeBuf[32] = "";
             if (ss->m_time)
@@ -1709,15 +1917,20 @@ static void RefreshListView(HWND hwnd)
                         lt->tm_mon + 1, lt->tm_mday);
                 }
             }
-            ListView_SetItemText(hList, i, 2, timeBuf);
+            SetItemTextU8(hList, row, 2, timeBuf);
         }
     }
 
-    if (selBefore >= 0 && selBefore < (int)g_snapshots.size())
+    // The selected scene may have moved row, or been folded away with its
+    // parent — in which case the parent inherits the selection.
+    int selRow = (selSnapBefore >= 0) ? SnapToRow(selSnapBefore) : -1;
+    if (selRow < 0 && selSnapBefore >= 0 && IsHiddenByCollapse(selSnapBefore))
+        selRow = SnapToRow(ParentSceneIndex(selSnapBefore));
+    if (selRow >= 0)
     {
-        ListView_SetItemState(hList, selBefore,
+        ListView_SetItemState(hList, selRow,
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(hList, selBefore, FALSE);
+        ListView_EnsureVisible(hList, selRow, FALSE);
     }
 }
 
@@ -1771,7 +1984,8 @@ static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene)
 
     // Adding a scene must not move the selection: whatever the user had
     // selected stays selected, and the new row is only renamed, not selected.
-    const int prevSel = GetSelectedListIndex(hwnd);
+    // Held as a snapshot index, because the insert below renumbers rows.
+    const int prevSelSnap = GetSelectedSnapIndex(hwnd);
 
     g_snapshots.insert(g_snapshots.begin() + insertAt, std::move(ss));
     TouchedOnInsert(insertAt);
@@ -1784,8 +1998,9 @@ static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene)
     RefreshListView(hwnd);
 
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
-    int  newIdx = insertAt;
-    ListView_EnsureVisible(hList, newIdx, FALSE);
+    const int newIdx = insertAt;
+    const int newRow = SnapToRow(newIdx);
+    if (newRow >= 0) ListView_EnsureVisible(hList, newRow, FALSE);
     MarkTouched(newIdx);
 
     Undo_OnStateChangeEx(asSubscene ? "Save Subscene" : "Save Scene", -1, -1);
@@ -1803,9 +2018,9 @@ static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene)
     // finishes: changing a row's selection or focus while the in-place edit
     // is open closes the box, which is the whole point of opening it.
     g_addRestoreRow = newIdx;
-    g_addRestoreSel = (prevSel >= insertAt) ? prevSel + 1 : prevSel;
+    g_addRestoreSel = (prevSelSnap >= insertAt) ? prevSelSnap + 1 : prevSelSnap;
 
-    if (!ListView_EditLabel(hList, newIdx))
+    if (newRow < 0 || !ListView_EditLabel(hList, newRow))
         RestoreSelectionAfterAdd(hwnd);   // no rename box: restore right away
 }
 
@@ -1829,10 +2044,16 @@ static void RestoreSelectionAfterAdd(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
     if (!hList) return;
 
-    ListView_SetItemState(hList, newIdx, 0, LVIS_SELECTED);
-    if (prevSel >= 0 && prevSel < (int)g_snapshots.size())
+    // Both are snapshot indices; the rows they sit on are whatever the list
+    // looks like now.
+    const int newRow = SnapToRow(newIdx);
+    if (newRow >= 0) ListView_SetItemState(hList, newRow, 0, LVIS_SELECTED);
+
+    const int prevRow = (prevSel >= 0 && prevSel < (int)g_snapshots.size())
+                        ? SnapToRow(prevSel) : -1;
+    if (prevRow >= 0)
     {
-        ListView_SetItemState(hList, prevSel,
+        ListView_SetItemState(hList, prevRow,
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         // Re-selecting a row that is already selected sends no LVN_ITEMCHANGED,
         // so the editor panel would be left showing the new scene.
@@ -1940,7 +2161,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     }
     else
     {
-        snapIdx = listIndex;
+        snapIdx = RowToSnap(listIndex);
     }
 
     if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return;
@@ -2160,10 +2381,14 @@ static void DoRecall(HWND hwnd, int listIndex)
     else
     {
         // Scenes mode: update list selection to reflect current scene
-        HWND hList = GetDlgItem(hwnd, IDC_LIST);
-        ListView_SetItemState(hList, snapIdx,
-            LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(hList, snapIdx, FALSE);
+        HWND hList  = GetDlgItem(hwnd, IDC_LIST);
+        const int r = SnapToRow(snapIdx);
+        if (r >= 0)
+        {
+            ListView_SetItemState(hList, r,
+                LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(hList, r, FALSE);
+        }
     }
 
     // A recall can change the whole layer set. Repaint the sidebar so the
@@ -2302,10 +2527,14 @@ static void ImportScene(HWND hwnd)
     RefreshListView(hwnd);
 
     HWND hList  = GetDlgItem(hwnd, IDC_LIST);
-    int  newIdx = (int)g_snapshots.size() - 1;
-    ListView_SetItemState(hList, newIdx,
-        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(hList, newIdx, FALSE);
+    const int newIdx = (int)g_snapshots.size() - 1;
+    const int newRow = SnapToRow(newIdx);
+    if (newRow >= 0)
+    {
+        ListView_SetItemState(hList, newRow,
+            LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(hList, newRow, FALSE);
+    }
     LoadEditorFromSnapshot(hwnd, g_snapshots[newIdx].get());
     Undo_OnStateChangeEx("Import Scene", -1, -1);
 }
@@ -2329,34 +2558,80 @@ static void DoEndDrag(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
     ListView_SetItemState(hList, -1, 0, LVIS_DROPHILITED);
 
-    int src = g_dragSrc;
-    int tgt = g_dragTarget;
+    const int srcRow = g_dragSrc;
+    const int tgtRow = g_dragTarget;
     g_dragSrc    = -1;
     g_dragTarget = -1;
 
-    if (src < 0 || tgt < 0 || tgt == src || src >= (int)g_snapshots.size()) return;
+    if (srcRow < 0 || tgtRow < 0 || tgtRow == srcRow) return;
 
-    auto moved = std::move(g_snapshots[src]);
-    // A reorder is an erase plus an insert, but the scene itself survives, so
-    // remember whether it was the touched one and re-point at its new row.
-    const bool movedWasTouched = (g_lastTouchedIdx == src);
-    TouchedOnErase(src);
-    g_snapshots.erase(g_snapshots.begin() + src);
+    const int src = RowToSnap(srcRow);
+    const int tgt = RowToSnap(tgtRow);
+    if (src < 0 || tgt < 0) return;
 
-    int insertAt = (tgt > src) ? tgt - 1 : tgt;
+    // A scene travels with its subscenes. Dragging the parent out from under
+    // them and leaving them to re-parent onto whatever scene happened to be
+    // above is never what the drag meant, and it is not visible afterwards.
+    // The block is the scene plus everything SubsceneBlockEnd counts as its
+    // own, which includes any spacer the user drew between two subscenes.
+    const int blockStart = src;
+    const int blockEnd   = (!g_snapshots[src]->m_isSpacer && !g_snapshots[src]->m_isSub)
+                           ? SubsceneBlockEnd(src) : src + 1;
+    const int blockLen   = blockEnd - blockStart;
+
+    // Dropping a block onto one of its own rows is a no-op, not a move.
+    if (tgt >= blockStart && tgt < blockEnd) return;
+
+    std::vector<std::unique_ptr<TransitionSnapshot>> moved;
+    moved.reserve((size_t)blockLen);
+    for (int i = blockStart; i < blockEnd; ++i)
+        moved.push_back(std::move(g_snapshots[i]));
+
+    // A reorder is an erase plus an insert, but the scenes themselves survive,
+    // so remember where the touched one sat inside the block and re-point at
+    // it once the block has landed.
+    const int touchedOffset = (g_lastTouchedIdx >= blockStart && g_lastTouchedIdx < blockEnd)
+                              ? g_lastTouchedIdx - blockStart : -1;
+    if (touchedOffset < 0)
+        for (int i = blockStart; i < blockEnd; ++i) TouchedOnErase(blockStart);
+
+    g_snapshots.erase(g_snapshots.begin() + blockStart,
+                      g_snapshots.begin() + blockEnd);
+
+    // The drop lands before the target row; anything after the removed block
+    // has shifted down by its length.
+    int insertAt = (tgt > blockStart) ? tgt - blockLen : tgt;
     if (insertAt < 0) insertAt = 0;
     if (insertAt > (int)g_snapshots.size()) insertAt = (int)g_snapshots.size();
 
-    g_snapshots.insert(g_snapshots.begin() + insertAt, std::move(moved));
-    if (movedWasTouched) g_lastTouchedIdx = insertAt;
-    else                 TouchedOnInsert(insertAt);
+    for (int k = 0; k < blockLen; ++k)
+        g_snapshots.insert(g_snapshots.begin() + insertAt + k, std::move(moved[k]));
+
+    if (touchedOffset >= 0) g_lastTouchedIdx = insertAt + touchedOffset;
+    else for (int k = 0; k < blockLen; ++k) TouchedOnInsert(insertAt);
+
+    // The cue list points at positions, so every entry that was inside the
+    // block travels with it and everything the block passed over shifts by
+    // its length. Cue spacers (-1) are left alone.
+    for (auto& ci : g_cueList)
+    {
+        if (ci < 0) continue;
+        if (ci >= blockStart && ci < blockEnd)      ci += insertAt - blockStart;
+        else if (ci >= blockEnd && ci < insertAt + blockLen) ci -= blockLen;
+        else if (ci >= insertAt && ci < blockStart) ci += blockLen;
+    }
+
     for (int i = 0; i < (int)g_snapshots.size(); i++)
         g_snapshots[i]->m_slot = i;
 
     RefreshListView(hwnd);
-    ListView_SetItemState(hList, insertAt,
-        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(hList, insertAt, FALSE);
+    const int newRow = SnapToRow(insertAt);
+    if (newRow >= 0)
+    {
+        ListView_SetItemState(hList, newRow,
+            LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        ListView_EnsureVisible(hList, newRow, FALSE);
+    }
     if (insertAt < (int)g_snapshots.size() && !g_snapshots[insertAt]->m_isSpacer)
         LoadEditorFromSnapshot(hwnd, g_snapshots[insertAt].get());
 }
@@ -3217,7 +3492,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     }
     else
     {
-        snapIdx = item;
+        snapIdx = RowToSnap(item);
     }
 
     bool hasItem   = (snapIdx >= 0 && snapIdx < (int)g_snapshots.size());
@@ -3231,7 +3506,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     // exactly one scene, and silently applying them to the first of a
     // selection would be worse than not offering them.
     const std::vector<int> multiSel = isCueMode ? std::vector<int>()
-                                                : GetSelectedListIndices(hwnd);
+                                                : GetSelectedSnapIndices(hwnd);
     if (!isCueMode && multiSel.size() > 1)
     {
         char delLabel[48];
@@ -3301,6 +3576,18 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         AppendMenu(hMenu, MF_STRING, CTX_IMPORT, "Import...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING, CTX_ADDSPACER, "Add Spacer");
+
+        // Folding. The arrow in the Name column does the same thing for one
+        // scene; these are for the keyboard and for doing the whole list.
+        {
+            const int nsub = hasItem ? SubsceneCount(snapIdx) : 0;
+            if (nsub > 0)
+                AppendMenu(hMenu, MF_STRING, CTX_TOGGLE_FOLD,
+                           g_snapshots[snapIdx]->m_collapsed ? "Expand Subscenes"
+                                                             : "Collapse Subscenes");
+            AppendMenu(hMenu, MF_STRING, CTX_COLLAPSE_ALL, "Collapse All");
+            AppendMenu(hMenu, MF_STRING, CTX_EXPAND_ALL,   "Expand All");
+        }
     }
 
     int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -3324,6 +3611,9 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
                                : snapIdx;
             const int insertAt = (parent >= 0) ? SubsceneBlockEnd(parent)
                                                : snapIdx + 1;
+            // Adding into a folded scene would put the new row — and its
+            // rename box — somewhere the user cannot see.
+            if (parent >= 0) g_snapshots[parent]->m_collapsed = false;
             DoSaveAt(hwnd, insertAt, true);
         }
         break;
@@ -3358,6 +3648,14 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
     case CTX_SUB_SAFES:
         SafesWnd_ShowSubsceneTab();
         break;
+
+    case CTX_TOGGLE_FOLD:
+        if (hasItem)
+            SetCollapsed(hwnd, snapIdx, !g_snapshots[snapIdx]->m_collapsed);
+        break;
+
+    case CTX_COLLAPSE_ALL: SetAllCollapsed(hwnd, true);  break;
+    case CTX_EXPAND_ALL:   SetAllCollapsed(hwnd, false); break;
 
     case CTX_RECALL_CTX:
         if (hasItem && !isSpacer) DoRecall(hwnd, item);
@@ -3417,12 +3715,18 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             copy->m_time = (int)std::time(nullptr);
             g_snapshots.insert(g_snapshots.begin() + insertAfter, std::move(copy));
             TouchedOnInsert(insertAfter);
+            for (auto& ci : g_cueList)
+                if (ci >= insertAfter) ci++;
             for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
             RefreshListView(hwnd);
-            HWND hList = GetDlgItem(hwnd, IDC_LIST);
-            ListView_SetItemState(hList, insertAfter,
-                LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-            ListView_EnsureVisible(hList, insertAfter, FALSE);
+            HWND hList  = GetDlgItem(hwnd, IDC_LIST);
+            const int r = SnapToRow(insertAfter);
+            if (r >= 0)
+            {
+                ListView_SetItemState(hList, r,
+                    LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                ListView_EnsureVisible(hList, r, FALSE);
+            }
             LoadEditorFromSnapshot(hwnd, g_snapshots[insertAfter].get());
             Undo_OnStateChangeEx("Paste Scene", -1, -1);
         }
@@ -3525,6 +3829,8 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         spacer->m_isSpacer = true;
         g_snapshots.insert(g_snapshots.begin() + insertAfter, std::move(spacer));
         TouchedOnInsert(insertAfter);
+        for (auto& ci : g_cueList)
+            if (ci >= insertAfter) ci++;
         for (int i = 0; i < (int)g_snapshots.size(); i++) g_snapshots[i]->m_slot = i;
         RefreshListView(hwnd);
         MarkProjectDirty(nullptr);
@@ -3549,16 +3855,26 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
     {
     case WM_LBUTTONDOWN:
     {
+        // Disclosure arrow → fold this scene's subscenes away, or bring them
+        // back. Checked before everything else so the arrow never doubles as
+        // a recall, a delete or the start of a drag.
+        {
+            POINT ptA = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            const int arrowSnap = ArrowHitTest(hList, ptA);
+            if (arrowSnap >= 0)
+            {
+                SetCollapsed(dlg, arrowSnap, !g_snapshots[arrowSnap]->m_collapsed);
+                return 0;
+            }
+        }
         // Alt+click → delete scene (scenes mode only)
         if (g_altClickDelete && !g_cueMode)
         {
             LVHITTESTINFO htiMod = {};
             htiMod.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            int clickedMod = ListView_HitTest(hList, &htiMod);
-            if ((GetKeyState(VK_MENU) & 0x8000) && clickedMod >= 0 &&
-                clickedMod < (int)g_snapshots.size())
+            int snapIdx = RowToSnap(ListView_HitTest(hList, &htiMod));
+            if ((GetKeyState(VK_MENU) & 0x8000) && snapIdx >= 0)
             {
-                int snapIdx = clickedMod;
                 g_cueList.erase(
                     std::remove(g_cueList.begin(), g_cueList.end(), snapIdx),
                     g_cueList.end());
@@ -3578,9 +3894,8 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
         {
             LVHITTESTINFO htiMod = {};
             htiMod.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            int clickedMod = ListView_HitTest(hList, &htiMod);
-            if (clickedMod >= 0 && clickedMod < (int)g_snapshots.size() &&
-                !g_snapshots[clickedMod]->m_isSpacer)
+            int clickedMod = RowToSnap(ListView_HitTest(hList, &htiMod));
+            if (clickedMod >= 0 && !g_snapshots[clickedMod]->m_isSpacer)
             {
                 g_snapshots[clickedMod]->Capture(TS_CAPTURE_ALL);
                 g_snapshots[clickedMod]->m_time = (int)std::time(nullptr);
@@ -3690,8 +4005,12 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
         LVHITTESTINFO hti = {};
         hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         int item = ListView_HitTest(hList, &hti);
-        int safeItem = (item >= 0 && item < (int)g_snapshots.size()) ? item : -1;
-        if (safeItem >= 0 && !g_snapshots[safeItem]->m_isSpacer)
+        // A row, kept as one for the menu and the selection below; -1 when it
+        // does not map to a scene (past the end of the list).
+        const int rbSnap = g_cueMode ? -1 : RowToSnap(item);
+        int safeItem = (g_cueMode ? (item >= 0 && item < (int)g_cueList.size())
+                                  : (rbSnap >= 0)) ? item : -1;
+        if (safeItem >= 0 && rbSnap >= 0 && !g_snapshots[rbSnap]->m_isSpacer)
         {
             // Right-clicking inside a selection keeps it, so the menu can act
             // on the group; right-clicking outside one selects just that row.
@@ -3703,7 +4022,7 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                 ListView_SetItemState(hList, safeItem,
                     LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
             }
-            LoadEditorFromSnapshot(dlg, g_snapshots[safeItem].get());
+            LoadEditorFromSnapshot(dlg, g_snapshots[rbSnap].get());
         }
         POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hList, &ptScreen);
@@ -3740,9 +4059,9 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
         }
         // Single-click recall: fire on release when no drag, no modifiers,
         // and the mouse didn't move past the drag threshold (wasTracking).
+        const int clickSnap = g_cueMode ? -1 : RowToSnap(s_lbDownItem);
         if (g_singleClickRecall && wasTracking && s_lbDownItem >= 0 &&
-            s_lbDownItem < (int)g_snapshots.size() &&
-            !g_snapshots[s_lbDownItem]->m_isSpacer &&
+            (g_cueMode || (clickSnap >= 0 && !g_snapshots[clickSnap]->m_isSpacer)) &&
             !(GetKeyState(VK_MENU)    & 0x8000) &&
             !(GetKeyState(VK_CONTROL) & 0x8000) &&
             !(GetKeyState(VK_SHIFT)   & 0x8000))
@@ -3765,7 +4084,7 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
             // Delete every selected row, not just the focused one. A single
             // row goes straight away as it always has; a group asks first,
             // matching the context menu's "Delete N Scenes".
-            std::vector<int> sel = GetSelectedListIndices(dlg);
+            std::vector<int> sel = GetSelectedSnapIndices(dlg);
             while (!sel.empty() && sel.back() >= (int)g_snapshots.size())
                 sel.pop_back();
             if (sel.size() > 1)
@@ -4139,7 +4458,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         // ---- Snapshot editor live-update handlers -----------------------
         if (id == IDC_SNAPNOTES && evt == EN_CHANGE && !g_syncingEditor)
         {
-            int idx = GetSelectedListIndex(hwnd);
+            int idx = GetSelectedSnapIndex(hwnd);
             if (idx >= 0 && idx < (int)g_snapshots.size())
             {
                 char buf[4096] = {};
@@ -4151,7 +4470,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
         if (id == IDC_SNAP_LAYER && evt == CBN_SELCHANGE && !g_syncingEditor)
         {
-            int idx = GetSelectedListIndex(hwnd);
+            int idx = GetSelectedSnapIndex(hwnd);
             if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
             {
                 TransitionSnapshot* snap = g_snapshots[idx].get();
@@ -4255,10 +4574,9 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     const int slot = TransitionEngine::Get().GetCurrentSlot();
                     // In cue mode a row is a cue position, so map it back to
                     // the snapshot it points at before comparing.
-                    int rowSnap = row;
-                    if (g_cueMode)
-                        rowSnap = (row >= 0 && row < (int)g_cueList.size())
-                                  ? g_cueList[row] : -1;
+                    int rowSnap = g_cueMode
+                        ? ((row >= 0 && row < (int)g_cueList.size()) ? g_cueList[row] : -1)
+                        : RowToSnap(row);
                     if (g_sceneBoldFont && rowSnap >= 0 && rowSnap == slot)
                     {
                         SelectObject(cd->nmcd.hdc, g_sceneBoldFont);
@@ -4283,11 +4601,11 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             else if (hdr->code == LVN_ITEMCHANGED)
             {
                 NMLISTVIEW* nlv = (NMLISTVIEW*)lParam;
-                if ((nlv->uNewState & LVIS_SELECTED) && nlv->iItem >= 0 &&
-                    nlv->iItem < (int)g_snapshots.size())
+                const int si = g_cueMode ? -1 : RowToSnap(nlv->iItem);
+                if ((nlv->uNewState & LVIS_SELECTED) && si >= 0)
                 {
-                    if (!g_snapshots[nlv->iItem]->m_isSpacer)
-                        LoadEditorFromSnapshot(hwnd, g_snapshots[nlv->iItem].get());
+                    if (!g_snapshots[si]->m_isSpacer)
+                        LoadEditorFromSnapshot(hwnd, g_snapshots[si].get());
                     else
                         LoadEditorFromSnapshot(hwnd, nullptr);
                 }
@@ -4296,8 +4614,8 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             {
                 // Block label editing on spacer rows
                 NMLVDISPINFO* di = (NMLVDISPINFO*)lParam;
-                if (di->item.iItem >= 0 && di->item.iItem < (int)g_snapshots.size() &&
-                    g_snapshots[di->item.iItem]->m_isSpacer)
+                const int si = g_cueMode ? -1 : RowToSnap(di->item.iItem);
+                if (si < 0 || g_snapshots[si]->m_isSpacer)
                 {
                     SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
                     return TRUE;
@@ -4308,14 +4626,15 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 // the index. Seed it with the name instead and move it onto
                 // the Name column, deferred because the list view sizes the
                 // edit control after this notification returns.
-                if (di->item.iItem >= 0 && di->item.iItem < (int)g_snapshots.size())
                 {
                     HWND hEdit = ListView_GetEditControl(hdr->hwndFrom);
                     if (hEdit)
                     {
-                        SetWindowText(hEdit,
-                            g_snapshots[di->item.iItem]->m_name.c_str());
-                        g_labelEditItem = di->item.iItem;
+                        // The stored name, not the cell text: the cell carries
+                        // the disclosure arrow and the subscene indent, and
+                        // neither belongs in the rename box.
+                        SetWindowText(hEdit, g_snapshots[si]->m_name.c_str());
+                        g_labelEditItem = di->item.iItem;   // a row: it positions the box
                         PostMessage(hwnd, WM_USER + 2, 0, 0);
                     }
                 }
@@ -4326,18 +4645,21 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 // Returning TRUE prevents the ListView from generating WM_CONTEXTMENU,
                 // so REAPER's hook never intercepts it and shows the dock menu.
                 NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
-                int item = (nia->iItem >= 0 && nia->iItem < (int)g_snapshots.size())
-                               ? nia->iItem : -1;
+                // A row for ShowContextMenu (which maps it itself); the scene
+                // it points at for everything done here.
+                const int rcSnap = g_cueMode ? -1 : RowToSnap(nia->iItem);
+                int item = (g_cueMode ? (nia->iItem >= 0 && nia->iItem < (int)g_cueList.size())
+                                      : (rcSnap >= 0)) ? nia->iItem : -1;
                 // ptAction is in list-client coordinates
                 POINT ptScreen = nia->ptAction;
                 ClientToScreen(hdr->hwndFrom, &ptScreen);
 
-                if (item >= 0 && !g_snapshots[item]->m_isSpacer)
+                if (item >= 0 && rcSnap >= 0 && !g_snapshots[rcSnap]->m_isSpacer)
                 {
                     HWND hListN = GetDlgItem(hwnd, IDC_LIST);
                     ListView_SetItemState(hListN, item,
                         LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                    LoadEditorFromSnapshot(hwnd, g_snapshots[item].get());
+                    LoadEditorFromSnapshot(hwnd, g_snapshots[rcSnap].get());
                 }
                 // Set flag before ShowContextMenu so any REAPER-posted
                 // WM_CONTEXTMENU arriving during TrackPopupMenu is eaten.
@@ -4388,10 +4710,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 // whatever was selected during the edit.
                 if (g_addRestoreRow >= 0)
                     PostMessage(hwnd, WM_USER + 3, 0, 0);
-                if (di->item.pszText && di->item.iItem >= 0 &&
-                    di->item.iItem < (int)g_snapshots.size())
+                const int si = g_cueMode ? -1 : RowToSnap(di->item.iItem);
+                if (di->item.pszText && si >= 0)
                 {
-                    g_snapshots[di->item.iItem]->m_name = di->item.pszText;
+                    g_snapshots[si]->m_name = di->item.pszText;
                     // FALSE: do not let the list write the typed text into the
                     // item label ("#"). RefreshListView rebuilds the row with
                     // the name in the right column.

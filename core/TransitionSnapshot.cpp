@@ -554,6 +554,11 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
     if (m_isSub)
         ctx->AddLine("SUB 1");
 
+    // Folded-away subscenes. Display state, but saving it is the difference
+    // between reopening the show as you left it and reopening it flat.
+    if (m_collapsed)
+        ctx->AddLine("COLLAPSED 1");
+
     // Per-scene safes. Written only when there is something to write; a scene
     // with the feature switched off and no entries stays byte-identical to
     // what older builds produced.
@@ -957,6 +962,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             int v = 0;
             sscanf(trimmed + 4, "%d", &v);
             ss->m_isSub = (v != 0);
+        }
+        else if (strncmp(trimmed, "COLLAPSED ", 10) == 0)
+        {
+            int v = 0;
+            sscanf(trimmed + 10, "%d", &v);
+            ss->m_collapsed = (v != 0);
         }
         else if (strncmp(trimmed, "SAFES ", 6) == 0)
         {

@@ -310,6 +310,11 @@ public:
     // deleted parent leaves its children attached to whatever precedes them.
     bool        m_isSub    = false;
 
+    // Scene rows only: the scene's subscenes are folded away in the list.
+    // Purely a display state, but a persisted one — a show built from thirty
+    // scenes is unusable if every subscene springs open on load.
+    bool        m_collapsed = false;
+
     // Per-scene safes. Only consulted when m_safes.enabled; see SafeSet.
     SafeSet     m_safes;
 
