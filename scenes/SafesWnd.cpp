@@ -141,6 +141,7 @@ struct SafesPane {
     int      tab      = 0;       // 0 = Project, 1 = Subscenes
     SafeSet* sceneSet = nullptr; // popup only: the snapshot's own set
     bool     dirty    = false;   // popup only: did the user change anything
+    HFONT    hBanner  = nullptr; // popup only: bold font for the banner
 
     // Drag-to-check state
     bool s_cbDragActive   = false;
@@ -1130,9 +1131,10 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
             if (hf && GetObject(hf, sizeof(lf), &lf))
             {
                 lf.lfWeight = FW_BOLD;
-                HFONT hBold = CreateFontIndirect(&lf);
-                if (hBold)
-                    SendDlgItemMessage(hDlg, IDC_SCSAFE_TITLE, WM_SETFONT, (WPARAM)hBold, TRUE);
+                p->hBanner = CreateFontIndirect(&lf);
+                if (p->hBanner)
+                    SendDlgItemMessage(hDlg, IDC_SCSAFE_TITLE, WM_SETFONT,
+                                       (WPARAM)p->hBanner, TRUE);
             }
         }
 
@@ -1250,6 +1252,7 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         if (p)
         {
             SetWindowLongPtr(hDlg, DWLP_USER, 0);
+            if (p->hBanner) DeleteObject(p->hBanner);
             delete p;
         }
         break;
