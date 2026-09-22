@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.0.47-dev.2] — 2026-09-22  (dev branch)
+
+### Changed
+
+- **The cue list now says which scene a subscene belongs to**: A cue list is a flat performance order, so a subscene appeared in it under its own name with nothing around it to say what it varies — "Solo" on its own, three cues after the scene it belongs to. Subscenes are now shown there as **Verse 2 › Solo**, parent first, in the cue list, the cue setup dialog's scene list, and the cue order it builds.
+
+  The third column of the cue list showed the raw storage position of the scene ("S4"), which matched nothing visible anywhere else — not the scene numbers in the scene list, and not the slot numbers the recall actions use. It now shows the same number the scene list does (`3`, or `3.2` for a subscene), and its heading changes from "Saved" to "Scene" in cue mode, which is what it has always actually held there. The same number replaces "S4" in the cue setup dialog.
+
+  Scene numbering is computed once for the whole list and shared by all four places that quote it, rather than each deriving its own.
+
 ## [v0.0.47-dev.1] — 2026-09-21  (dev branch)
 
 ### Added

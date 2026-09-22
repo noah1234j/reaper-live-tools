@@ -248,6 +248,9 @@ static int  GetSelectedListIndex(HWND hwnd);
 static int  GetSelectedSnapIndex(HWND hwnd);
 static std::vector<int> GetSelectedListIndices(HWND hwnd);
 // Row <-> g_snapshots mapping; see the block above GetSelectedListIndex.
+static void RebuildSceneNumbers();
+static const char* SceneNumber(int idx);
+static std::string CueNameLabel(int idx);
 static int  RowToSnap(int row);
 static int  SnapToRow(int snapIdx);
 static bool IsHiddenByCollapse(int idx);
@@ -1279,27 +1282,79 @@ static int SubsceneCount(int idx)
     return n;
 }
 
+// ---------------------------------------------------------------------------
+// Scene numbering
+//
+// The number shown against a row: "3" for a scene, "3.2" for its second
+// subscene, empty for a spacer. Computed for the whole list at once and kept
+// here so the scene list, the cue list, the cue setup dialog and the menu
+// labels all quote the same number — they each used to derive their own, and
+// the cue list's was a raw g_snapshots index that matched nothing on screen.
+// ---------------------------------------------------------------------------
+static std::vector<std::string> g_sceneNumbers;
+
+static void RebuildSceneNumbers()
+{
+    g_sceneNumbers.assign(g_snapshots.size(), std::string());
+    int sceneNum = 0, subNum = 0;
+    for (int i = 0; i < (int)g_snapshots.size(); ++i)
+    {
+        if (g_snapshots[i]->m_isSpacer) continue;
+
+        char buf[32];
+        if (g_snapshots[i]->m_isSub)
+        {
+            // A subscene above every scene has no parent to borrow from;
+            // number it from 0 rather than pretending it belongs to scene 1.
+            snprintf(buf, sizeof(buf), "%d.%d", sceneNum, ++subNum);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "%d", ++sceneNum);
+            subNum = 0;
+        }
+        g_sceneNumbers[i] = buf;
+    }
+}
+
+static const char* SceneNumber(int idx)
+{
+    if (idx < 0 || idx >= (int)g_sceneNumbers.size()) return "";
+    return g_sceneNumbers[idx].c_str();
+}
+
+// ---------------------------------------------------------------------------
+// CueNameLabel - the name to show where there is no indentation to carry the
+// parent/child relationship: the cue list and the cue setup dialog.
+//
+// A cue list is a flat performance order, so a subscene appears there on its
+// own with nothing around it to say which scene it varies. Naming the parent
+// inline is the only place that information can go.
+// ---------------------------------------------------------------------------
+static std::string CueNameLabel(int idx)
+{
+    if (idx < 0 || idx >= (int)g_snapshots.size()) return "";
+    const std::string& name = g_snapshots[idx]->m_name;
+    if (!g_snapshots[idx]->m_isSub) return name;
+
+    const int parent = ParentSceneIndex(idx);
+    if (parent < 0) return name;
+
+    // U+203A single right-pointing angle quote, as UTF-8.
+    return g_snapshots[parent]->m_name + " \xE2\x80\xBA " + name;
+}
+
 // Human-readable identification for the safes popup and menu labels:
 // "Scene 3  \"Verse\"" / "Subscene 3.2  \"Solo\"".
 static std::string SceneDisplayLabel(int idx)
 {
     if (idx < 0 || idx >= (int)g_snapshots.size()) return "";
-
-    int sceneNum = 0, subNum = 0;
-    for (int i = 0; i <= idx; ++i)
-    {
-        if (g_snapshots[i]->m_isSpacer) continue;
-        if (g_snapshots[i]->m_isSub) ++subNum;
-        else { ++sceneNum; subNum = 0; }
-    }
+    RebuildSceneNumbers();
 
     char buf[400];
-    if (g_snapshots[idx]->m_isSub)
-        snprintf(buf, sizeof(buf), "Subscene %d.%d  \"%s\"",
-                 sceneNum, subNum, g_snapshots[idx]->m_name.c_str());
-    else
-        snprintf(buf, sizeof(buf), "Scene %d  \"%s\"",
-                 sceneNum, g_snapshots[idx]->m_name.c_str());
+    snprintf(buf, sizeof(buf), "%s %s  \"%s\"",
+             g_snapshots[idx]->m_isSub ? "Subscene" : "Scene",
+             SceneNumber(idx), g_snapshots[idx]->m_name.c_str());
     return buf;
 }
 
@@ -1768,7 +1823,17 @@ static void RefreshListView(HWND hwnd)
     const int selRowBefore  = GetSelectedListIndex(hwnd);
     const int selSnapBefore = g_cueMode ? -1 : RowToSnap(selRowBefore);
 
+    RebuildSceneNumbers();
     ListView_DeleteAllItems(hList);
+
+    // Third column means different things in the two modes: when a scene was
+    // saved, or which scene a cue points at. Say which.
+    {
+        LVCOLUMN lvc = {};
+        lvc.mask     = LVCF_TEXT;
+        lvc.pszText  = const_cast<char*>(g_cueMode ? "Scene" : "Saved");
+        ListView_SetColumn(hList, 2, &lvc);
+    }
 
     if (g_cueMode)
     {
@@ -1800,18 +1865,19 @@ static void RefreshListView(HWND hwnd)
                 continue;
             }
 
-            const auto& ss = g_snapshots[snapIdx];
-
             char slotBuf[16];
             snprintf(slotBuf, sizeof(slotBuf), "%d", ci + 1);
             lvi.pszText = slotBuf;
             ListView_InsertItem(hList, &lvi);
-            ListView_SetItemText(hList, ci, 1, const_cast<char*>(ss->m_name.c_str()));
 
-            char origBuf[16];
-            snprintf(origBuf, sizeof(origBuf), "%s%d",
-                     ss->m_isSub ? "s" : "S", snapIdx + 1);
-            ListView_SetItemText(hList, ci, 2, origBuf);
+            // A cue list is flat, so a subscene carries its parent's name
+            // inline — there is no indentation here to say what it varies.
+            SetItemTextU8(hList, ci, 1, CueNameLabel(snapIdx).c_str());
+
+            // The same number the scene list shows ("3", or "3.2" for a
+            // subscene), not the raw g_snapshots index it used to print,
+            // which matched nothing the user could see.
+            SetItemTextU8(hList, ci, 2, SceneNumber(snapIdx));
         }
 
         int listSize = (int)g_cueList.size();
@@ -1834,20 +1900,9 @@ static void RefreshListView(HWND hwnd)
     g_rowToSnap.clear();
     g_rowToSnap.reserve(g_snapshots.size());
 
-    int sceneNum = 1;  // running scene number (spacers don't count)
-    int subNum   = 0;  // position within the current scene's subscenes
     for (int i = 0; i < (int)g_snapshots.size(); i++)
     {
         const auto& ss = g_snapshots[i];
-
-        // Numbering has to run over every scene, visible or not, or the rows
-        // below a collapsed block would renumber as it folds.
-        int thisNum = 0, thisSub = 0;
-        if (!ss->m_isSpacer)
-        {
-            if (ss->m_isSub) { thisNum = sceneNum - 1; thisSub = ++subNum; }
-            else             { thisNum = sceneNum++;   subNum  = 0;        }
-        }
 
         if (IsHiddenByCollapse(i)) continue;
 
@@ -1868,21 +1923,15 @@ static void RefreshListView(HWND hwnd)
         }
         else
         {
-            char slotBuf[24];
             std::string nameCell;
             if (ss->m_isSub)
             {
-                // A subscene before any scene has nothing to hang off; number
-                // it from 0 rather than pretending it belongs to scene 1.
-                snprintf(slotBuf, sizeof(slotBuf), "%d.%d", thisNum, thisSub);
                 // Indent, then U+2514 U+2500 (box-drawing corner), as UTF-8.
                 nameCell = "     \xE2\x94\x94\xE2\x94\x80 ";
                 nameCell += ss->m_name;
             }
             else
             {
-                snprintf(slotBuf, sizeof(slotBuf), "%d", thisNum);
-
                 // Disclosure arrow, and the hidden count while folded. Two
                 // leading characters either way so names stay aligned down
                 // the column whether or not a scene has subscenes.
@@ -1899,7 +1948,7 @@ static void RefreshListView(HWND hwnd)
                     nameCell += badge;
                 }
             }
-            lvi.pszText = slotBuf;
+            lvi.pszText = const_cast<char*>(SceneNumber(i));
             ListView_InsertItem(hList, &lvi);
 
             SetItemTextU8(hList, row, 1, nameCell.c_str());
@@ -3308,6 +3357,7 @@ static LRESULT CALLBACK CueLvSubclassProc(HWND hList, UINT msg,
 // ---------------------------------------------------------------------------
 static void RefillCueRightList(HWND hRight, const std::vector<int>& list)
 {
+    RebuildSceneNumbers();
     ListView_DeleteAllItems(hRight);
     for (int ci = 0; ci < (int)list.size(); ci++)
     {
@@ -3328,8 +3378,9 @@ static void RefillCueRightList(HWND hRight, const std::vector<int>& list)
         char buf[16]; snprintf(buf, sizeof(buf), "%d", ci + 1);
         lvi.pszText = buf;
         ListView_InsertItem(hRight, &lvi);
-        ListView_SetItemText(hRight, ci, 1,
-            const_cast<char*>(g_snapshots[snapIdx]->m_name.c_str()));
+        // Parent name inline for subscenes: nothing else in a cue order says
+        // which scene one belongs to.
+        SetItemTextU8(hRight, ci, 1, CueNameLabel(snapIdx).c_str());
     }
 }
 
@@ -3399,6 +3450,7 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             ListView_InsertItem(s_cueLeft, &spacerLvi);
             ListView_SetItemText(s_cueLeft, 0, 1, const_cast<char*>("--- spacer ---"));
 
+            RebuildSceneNumbers();
             int row = 1;
             for (int i = 0; i < (int)g_snapshots.size(); i++)
             {
@@ -3407,11 +3459,11 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 lvi.mask   = LVIF_TEXT | LVIF_PARAM;
                 lvi.iItem  = row++;
                 lvi.lParam = (LPARAM)i;
-                char buf[16]; snprintf(buf, sizeof(buf), "S%d", i + 1);
-                lvi.pszText = buf;
+                // The scene list's own number ("3", "3.2"), not the raw
+                // g_snapshots index this used to print as "S4".
+                lvi.pszText = const_cast<char*>(SceneNumber(i));
                 ListView_InsertItem(s_cueLeft, &lvi);
-                ListView_SetItemText(s_cueLeft, row - 1, 1,
-                    const_cast<char*>(g_snapshots[i]->m_name.c_str()));
+                SetItemTextU8(s_cueLeft, row - 1, 1, CueNameLabel(i).c_str());
             }
         }
 
@@ -4155,7 +4207,9 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
             LVCOLUMN col = {};
             col.mask = LVCF_TEXT | LVCF_WIDTH;
-            col.cx = 28;  col.pszText = const_cast<char*>("#");
+            // Wide enough for a two-part subscene number ("12.3"); the Name
+            // column stretches to absorb whatever this and "Saved" leave.
+            col.cx = 40;  col.pszText = const_cast<char*>("#");
             ListView_InsertColumn(hList, 0, &col);
             col.cx = 110; col.pszText = const_cast<char*>("Name");
             ListView_InsertColumn(hList, 1, &col);
