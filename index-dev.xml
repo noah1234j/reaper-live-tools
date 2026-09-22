@@ -2,6 +2,16 @@
 <index version="1" name="Live Tools (dev)">
   <category name="Extensions">
     <reapack name="reaper_transitions_dev.ext" type="extension" desc="Live Tools (dev branch) - unreleased builds, not for show use">
+      <version name="0.0.47.4" author="noah1234j" time="2026-09-22T13:36:21Z">
+        <changelog>Changed
+
+- Layers: the TCP/MCP dots follow the pointer while the button is down: Ticking a dozen channels into a layer was a dozen separate clicks. Press on a dot and drag, and every cell the pointer crosses takes the same state — down a column to put a run of channels in the layer, or across a row to set both panels at once. The direction comes from the cell the drag starts on: press an empty dot and the drag fills, press a filled one and it clears, so one gesture can never do both. Same behaviour the Safes grid's checkboxes have.
+
+  A dot is written to a definite state now rather than flipped, which is what stops a drag undoing itself when the pointer wanders back over a row it already passed. Clicking a dot no longer changes which rows are selected either — it is an edit, not a way of choosing rows, and it used to clobber a multi-selection.
+
+- Layers: the Spacer column is hidden for now: The column and its right-click entry are gone from the window. Nothing behind it changed — a layer that already carries spacers keeps them, they are still saved, and recall still applies them when Manage spacers is on. The Name column takes the freed width. One switch in the source puts the column back.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.47-dev.4/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.47.3" author="noah1234j" time="2026-09-22T13:24:16Z">
         <changelog>Changed
 
