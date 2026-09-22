@@ -1,5 +1,15 @@
 # Changelog
 
+## [v0.0.47-dev.4] — 2026-09-22  (dev branch)
+
+### Changed
+
+- **Layers: the TCP/MCP dots follow the pointer while the button is down**: Ticking a dozen channels into a layer was a dozen separate clicks. Press on a dot and drag, and every cell the pointer crosses takes the same state — down a column to put a run of channels in the layer, or across a row to set both panels at once. The direction comes from the cell the drag starts on: press an empty dot and the drag fills, press a filled one and it clears, so one gesture can never do both. Same behaviour the Safes grid's checkboxes have.
+
+  A dot is written to a definite state now rather than flipped, which is what stops a drag undoing itself when the pointer wanders back over a row it already passed. Clicking a dot no longer changes which rows are selected either — it is an edit, not a way of choosing rows, and it used to clobber a multi-selection.
+
+- **Layers: the Spacer column is hidden for now**: The column and its right-click entry are gone from the window. Nothing behind it changed — a layer that already carries spacers keeps them, they are still saved, and recall still applies them when **Manage spacers** is on. The Name column takes the freed width. One switch in the source puts the column back.
+
 ## [v0.0.47-dev.3] — 2026-09-22  (dev branch)
 
 ### Changed

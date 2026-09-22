@@ -1,4 +1,4 @@
-> **⚠ DEV BRANCH — v0.0.47-dev.3**
+> **⚠ DEV BRANCH — v0.0.47-dev.4**
 > This is the work-in-progress branch. It is less tested than a stable release, behaviour can
 > change between dev builds, and a project saved by one may not open the same way in another.
 > **Do not use it on a show.** For the stable release, see the [`main` branch](../../tree/main).

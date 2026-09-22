@@ -84,6 +84,36 @@ enum {
     LYRCOL_SPACER = 3,
 };
 
+// The Spacer column is hidden for now. Everything behind it still works and
+// is still stored — a layer that already carries spacers keeps them, and
+// recall still applies them when "Manage spacers" is on — so this is the one
+// switch that puts the column and its menu entry back.
+static const bool kShowSpacerColumn = false;
+
+// Columns that hold a clickable dot.
+static bool IsDotCol(int col)
+{
+    if (col == LYRCOL_TCP || col == LYRCOL_MCP) return true;
+    return kShowSpacerColumn && col == LYRCOL_SPACER;
+}
+
+// Drag-to-toggle across the dot columns.
+//
+// Ticking a dozen channels into a layer one click at a time is the single
+// most common thing this window is for, so the dots follow the pointer while
+// the button is down, the way the Safes grid's checkboxes do. The direction
+// is decided by the first cell — press on an empty dot and the drag fills,
+// press on a filled one and it clears — so a drag can never do both at once.
+static bool s_dotDragActive   = false;
+static bool s_dotDragOn       = false;  // what the drag is writing
+static int  s_dotDragLastRow  = -1;
+static int  s_dotDragLastCol  = -1;
+// Adding or removing a channel changes the slot list's shape, which the
+// bracketed slot-limit marks and the layer list's channel count are drawn
+// from. Rebuilding those per cell would be wasted work and would fight the
+// drag, so it is deferred to the button coming up.
+static bool s_dotDragDirty    = false;
+
 // ---------------------------------------------------------------------------
 // Track list rows
 //
@@ -235,6 +265,8 @@ static void DeleteSelectedLayer(HWND hwnd);
 static void DeleteAllLayers(HWND hwnd);
 static void RemoveSelectedTrack(HWND hwnd);
 static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt);
+static bool ApplyDotCell(HWND hwnd, HWND hList, int row, int col, bool on,
+                         bool deferRebuild);
 
 // ---------------------------------------------------------------------------
 // ReadPanelVis - where a track is on screen right now
@@ -535,103 +567,156 @@ static void RemoveSelectedTrack(HWND hwnd)
     RefreshLayerList(hwnd);
 }
 // ---------------------------------------------------------------------------
-// OnTrackListClick – handle a click in one of the Track-Manager-style columns
+// The Track-Manager-style dot columns
 //
-// TCP and MCP toggle where the clicked channel appears when the layer is
-// recalled — and, because a row is a project track rather than a slot the
-// layer owns, they are also what puts a channel into the layer and takes it
-// out. Lighting either dot on a channel the layer does not hold adds it;
-// clearing its last dot removes it, so an entry in LayerDef::tracks keeps
-// meaning exactly "this layer shows this channel somewhere".
+// A cell is written to a definite state rather than flipped, because the drag
+// (see TrackListSubclassProc) picks one direction from the cell it starts on
+// and writes that to every cell it crosses. A flip per cell would undo itself
+// the moment the pointer wandered back over a row it had already passed.
 //
-// Spacer adds or removes the gap above the clicked channel, and only works on
-// a channel the layer holds: a gap above something it does not show has
-// nowhere to be.
+// A write applies to the cell under the pointer only, never to the whole
+// selection: an edit that silently rewrote every selected row would be far
+// too easy to fire by accident in the middle of a show.
+// ---------------------------------------------------------------------------
+
+// Current state of one dot cell.
+static bool DotState(const LayerDef& ld, const GUID& g, int col)
+{
+    const int idx = FindLayerTrackIdx(ld, g);
+    if (idx < 0) return false;
+    if (col == LYRCOL_TCP)    return ld.tracks[idx].showTcp;
+    if (col == LYRCOL_MCP)    return ld.tracks[idx].showMcp;
+    /* LYRCOL_SPACER */       return idx > 0 && ld.tracks[idx - 1].isSpacer;
+}
+
+// ---------------------------------------------------------------------------
+// SetDotCell - write one dot cell to a definite state.
 //
-// A toggle applies to the clicked row only, never to the whole selection: a
-// click that silently rewrote every selected row would be far too easy to
-// fire by accident in the middle of a show.
+// TCP and MCP are also what membership is, because a row is a project track
+// rather than a slot the layer owns: lighting either one on a channel the
+// layer does not hold adds it, and clearing a channel's last dot removes it.
+// That is not a new rule, only a visible one — recall has always computed
+// showTcp as (in layer && showTcp), so a member with no dots and a non-member
+// were already the same thing.
+//
+// Returns true when the slot list changed shape, i.e. a channel joined or
+// left the layer, so the caller knows the list needs rebuilding rather than
+// just the one row repainting.
+// ---------------------------------------------------------------------------
+static bool SetDotCell(LayerDef& ld, const LyrRow& row, int col, bool on)
+{
+    const GUID& g = row.guid;
+
+    if (col == LYRCOL_SPACER)
+    {
+        // A gap above a channel the layer does not show has nowhere to be.
+        if (FindLayerTrackIdx(ld, g) < 0) return false;
+        SetLayerSpacerAbove(ld, g, on);
+        return true;
+    }
+
+    LayerTrack* lt = FindLayerTrack(ld, g);
+    if (!lt)
+    {
+        if (!on) return false;              // already not in the layer
+        LayerTrack nt = {};
+        nt.guid    = g;
+        snprintf(nt.name, sizeof(nt.name), "%s", row.name);
+        nt.showTcp = (col == LYRCOL_TCP);
+        nt.showMcp = (col == LYRCOL_MCP);
+        ld.tracks.push_back(nt);
+        NormalizeLayerOrder(ld);
+        return true;
+    }
+
+    if (col == LYRCOL_TCP)
+    {
+        if (lt->showTcp == on) return false;
+        lt->showTcp = on;
+    }
+    else
+    {
+        if (lt->showMcp == on) return false;
+        lt->showMcp = on;
+    }
+
+    if (!lt->showTcp && !lt->showMcp)
+    {
+        // Last dot cleared: the layer shows this channel nowhere, which is the
+        // same thing as not holding it. Drop the slot rather than leave a
+        // member that does nothing and still counts against the slot limit.
+        const int idx = FindLayerTrackIdx(ld, g);
+        if (idx >= 0)
+        {
+            // Take the gap above it too — a spacer left behind would attach
+            // itself to whichever channel ends up below it.
+            if (idx > 0 && ld.tracks[idx - 1].isSpacer)
+                ld.tracks.erase(ld.tracks.begin() + (idx - 1),
+                                ld.tracks.begin() + (idx + 1));
+            else
+                ld.tracks.erase(ld.tracks.begin() + idx);
+        }
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// ApplyDotCell - write one cell and repaint its row.
+//
+// Every edit here is stored only: it reaches the project on the layer's next
+// recall, never mid-show under the pointer. `deferRebuild` is for the drag,
+// which rebuilds once at the end instead of per cell.
+//
+// Returns true when the list needs rebuilding.
+// ---------------------------------------------------------------------------
+static bool ApplyDotCell(HWND hwnd, HWND hList, int row, int col, bool on,
+                         bool deferRebuild)
+{
+    int n = LayersEngine::Get().GetLayerCount();
+    if (s_selLayer < 0 || s_selLayer >= n) return false;
+    if (row < 0 || row >= (int)s_trackRows.size()) return false;
+    if (!IsDotCol(col)) return false;
+
+    LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+    const bool shapeChanged = SetDotCell(ld, s_trackRows[row], col, on);
+
+    LayersEngine::Get().SaveExtState();
+    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+
+    RECT rcRow;
+    if (ListView_GetItemRect(hList, row, &rcRow, LVIR_BOUNDS))
+        InvalidateRect(hList, &rcRow, FALSE);
+
+    if (shapeChanged && !deferRebuild)
+    {
+        RefreshTrackList(hwnd);
+        RefreshLayerList(hwnd);
+    }
+    else if (!deferRebuild)
+    {
+        RefreshLayerList(hwnd);   // channel count may still have moved
+    }
+    return shapeChanged;
+}
+
+// ---------------------------------------------------------------------------
+// OnTrackListClick - a plain click on a dot cell, i.e. a drag of one cell.
 // ---------------------------------------------------------------------------
 static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt)
 {
     int n = LayersEngine::Get().GetLayerCount();
     if (s_selLayer < 0 || s_selLayer >= n) return;
-    LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
 
     LVHITTESTINFO ht = {};
     ht.pt = pt;
     ListView_SubItemHitTest(hList, &ht);
-    const int row = ht.iItem;
-    const int col = ht.iSubItem;
-    if (row < 0 || row >= (int)s_trackRows.size()) return;
-    if (col != LYRCOL_TCP && col != LYRCOL_MCP && col != LYRCOL_SPACER) return;
+    if (ht.iItem < 0 || ht.iItem >= (int)s_trackRows.size()) return;
+    if (!IsDotCol(ht.iSubItem)) return;
 
-    const GUID& g = s_trackRows[row].guid;
-    bool rebuildList = false;
-
-    if (col == LYRCOL_SPACER)
-    {
-        if (FindLayerTrackIdx(ld, g) < 0) return;   // not in this layer
-        SetLayerSpacerAbove(ld, g, !LayerHasSpacerAbove(ld, g));
-    }
-    else
-    {
-        LayerTrack* lt = FindLayerTrack(ld, g);
-        if (!lt)
-        {
-            // First dot on a channel the layer did not hold: add it, showing
-            // it only in the panel that was clicked.
-            LayerTrack nt = {};
-            nt.guid     = g;
-            snprintf(nt.name, sizeof(nt.name), "%s", s_trackRows[row].name);
-            nt.showTcp  = (col == LYRCOL_TCP);
-            nt.showMcp  = (col == LYRCOL_MCP);
-            ld.tracks.push_back(nt);
-            NormalizeLayerOrder(ld);
-            rebuildList = true;   // the bracketed slot-limit marks can shift
-        }
-        else
-        {
-            if (col == LYRCOL_TCP) lt->showTcp = !lt->showTcp;
-            else                   lt->showMcp = !lt->showMcp;
-
-            if (!lt->showTcp && !lt->showMcp)
-            {
-                // Last dot cleared: the layer no longer shows this channel
-                // anywhere, which is the same thing as not holding it. Drop
-                // the entry rather than leaving a member that does nothing
-                // and still counts against the slot limit.
-                const int idx = FindLayerTrackIdx(ld, g);
-                if (idx >= 0)
-                {
-                    if (idx > 0 && ld.tracks[idx - 1].isSpacer)
-                        ld.tracks.erase(ld.tracks.begin() + (idx - 1),
-                                        ld.tracks.begin() + (idx + 1));
-                    else
-                        ld.tracks.erase(ld.tracks.begin() + idx);
-                }
-                rebuildList = true;
-            }
-        }
-    }
-
-    LayersEngine::Get().SaveExtState();
-    // Stored only, like every other edit in this list — it reaches the
-    // project on the layer's next recall, never mid-show under the pointer.
-    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-
-    if (rebuildList || col == LYRCOL_SPACER)
-    {
-        RefreshTrackList(hwnd);
-        RefreshLayerList(hwnd);
-    }
-    else
-    {
-        RECT rcRow;
-        if (ListView_GetItemRect(hList, row, &rcRow, LVIR_BOUNDS))
-            InvalidateRect(hList, &rcRow, FALSE);
-        RefreshLayerList(hwnd);   // the layer's channel count may have changed
-    }
+    const LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+    const bool now = DotState(ld, s_trackRows[ht.iItem].guid, ht.iSubItem);
+    ApplyDotCell(hwnd, hList, ht.iItem, ht.iSubItem, !now, false);
 }
 
 static void UpdateStatus(HWND hwnd)
@@ -939,22 +1024,73 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
     {
     case WM_LBUTTONDOWN:
     {
-        LRESULT r = CallWindowProc(s_origTrackListProc, hList, msg, wParam, lParam);
         LVHITTESTINFO hti = {};
         hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ListView_SubItemHitTest(hList, &hti);
+
+        // A press on a dot starts a drag that writes the same state to every
+        // cell it crosses, so a run of channels goes into a layer in one
+        // gesture. The direction comes from this first cell: press an empty
+        // dot and the drag fills, press a filled one and it clears.
+        //
+        // The press is swallowed rather than passed on, which is also what
+        // stops the list from generating the NM_CLICK the dialog turns into a
+        // second toggle. Selection is deliberately left alone: clicking a dot
+        // is an edit, not a way of choosing rows, and clobbering a
+        // multi-selection to tick one channel would be its own bug.
+        if (hti.iItem >= 0 && IsDotCol(hti.iSubItem))
+        {
+            int n = LayersEngine::Get().GetLayerCount();
+            if (s_selLayer < 0 || s_selLayer >= n) return 0;
+            if (hti.iItem >= (int)s_trackRows.size())  return 0;
+
+            const LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
+            s_dotDragOn      = !DotState(ld, s_trackRows[hti.iItem].guid, hti.iSubItem);
+            s_dotDragActive  = true;
+            s_dotDragLastRow = hti.iItem;
+            s_dotDragLastCol = hti.iSubItem;
+            s_dotDragDirty   = ApplyDotCell(dlg, hList, hti.iItem, hti.iSubItem,
+                                            s_dotDragOn, true);
+            // The press is swallowed, so nothing else will give the list the
+            // focus — and without it Del would not reach the list's own
+            // handler after a channel had just been ticked in.
+            SetFocus(hList);
+            SetCapture(hList);
+            return 0;
+        }
+
         // Drag-to-reorder is gone from this list. Its rows are the project's
         // tracks in the project's order, so there is no per-layer order left
         // for a drag to express — reordering happens in REAPER and this list
-        // follows on the next refresh. The tracking state stays wired up
-        // below so the drag code paths remain a single dead branch rather
-        // than a half-removed feature.
-        (void)hti;
-        return r;
+        // follows on the next refresh.
+        return CallWindowProc(s_origTrackListProc, hList, msg, wParam, lParam);
     }
     case WM_MOUSEMOVE:
     {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        if (s_dotDragActive)
+        {
+            if (!(wParam & MK_LBUTTON))
+            {
+                // Button released somewhere we never saw it happen.
+                ReleaseCapture();
+                break;
+            }
+            LVHITTESTINFO ht = {};
+            ht.pt = pt;
+            ListView_SubItemHitTest(hList, &ht);
+            if (ht.iItem >= 0 && IsDotCol(ht.iSubItem) &&
+                (ht.iItem != s_dotDragLastRow || ht.iSubItem != s_dotDragLastCol))
+            {
+                s_dotDragLastRow = ht.iItem;
+                s_dotDragLastCol = ht.iSubItem;
+                if (ApplyDotCell(dlg, hList, ht.iItem, ht.iSubItem, s_dotDragOn, true))
+                    s_dotDragDirty = true;
+            }
+            return 0;
+        }
+
         if (s_trkLbTracking && !(wParam & MK_LBUTTON))
             s_trkLbTracking = false;
         if (s_trkLbTracking && !s_draggingTrack)
@@ -1016,6 +1152,11 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
     }
     case WM_LBUTTONUP:
         s_trkLbTracking = false;
+        if (s_dotDragActive)
+        {
+            ReleaseCapture();   // WM_CAPTURECHANGED finishes the drag
+            return 0;
+        }
         if (s_draggingTrack)
         {
             s_draggingTrack = false;
@@ -1024,6 +1165,20 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
         break;
     case WM_CAPTURECHANGED:
         s_trkLbTracking = false;
+        if (s_dotDragActive)
+        {
+            s_dotDragActive  = false;
+            s_dotDragLastRow = s_dotDragLastCol = -1;
+            // One rebuild for the whole gesture: channels joining or leaving
+            // move the bracketed slot-limit marks and the layer list's count,
+            // and doing that per cell would fight the drag.
+            if (s_dotDragDirty)
+            {
+                s_dotDragDirty = false;
+                RefreshTrackList(dlg);
+            }
+            RefreshLayerList(dlg);
+        }
         if (s_draggingTrack)
         {
             s_draggingTrack = false;
@@ -1122,7 +1277,10 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 // anything the row's position did not already say.
                 LVCOLUMNA col = {};
                 col.mask = LVCF_TEXT | LVCF_WIDTH;
-                col.cx = 200; col.pszText = const_cast<char*>("Name");
+                // Name takes the width the Spacer column would have had
+                // while that column is hidden (kShowSpacerColumn).
+                col.cx = kShowSpacerColumn ? 200 : 248;
+                col.pszText = const_cast<char*>("Name");
                 ListView_InsertColumn(hList, LYRCOL_NAME, &col);
                 col.mask |= LVCF_FMT;
                 col.fmt = LVCFMT_CENTER;
@@ -1130,8 +1288,11 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, LYRCOL_TCP, &col);
                 col.cx = 42; col.pszText = const_cast<char*>("MCP");
                 ListView_InsertColumn(hList, LYRCOL_MCP, &col);
-                col.cx = 48; col.pszText = const_cast<char*>("Spacer");
-                ListView_InsertColumn(hList, LYRCOL_SPACER, &col);
+                if (kShowSpacerColumn)
+                {
+                    col.cx = 48; col.pszText = const_cast<char*>("Spacer");
+                    ListView_InsertColumn(hList, LYRCOL_SPACER, &col);
+                }
                 s_origTrackListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)TrackListSubclassProc);
             }
@@ -1478,10 +1639,17 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
                 CTX_TRK_ADD_SEL, "Add Selected Tracks");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            // A gap can only sit above a channel the layer actually shows.
-            AppendMenuA(hMenu, MF_STRING | (!rowInLayer ? MF_GRAYED : 0),
-                CTX_TRK_SPACER_BEF, "Toggle Spacer Above");
-            AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+            if (kShowSpacerColumn)
+            {
+                // A gap can only sit above a channel the layer actually shows.
+                AppendMenuA(hMenu, MF_STRING | (!rowInLayer ? MF_GRAYED : 0),
+                    CTX_TRK_SPACER_BEF, "Toggle Spacer Above");
+                AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
+            }
+            else
+            {
+                (void)rowInLayer;
+            }
             char rmLabel[64];
             if (selCount > 1)
                 snprintf(rmLabel, sizeof(rmLabel),
@@ -1755,7 +1923,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
                 {
                     const int col = (int)cd->iSubItem;
-                    if (col != LYRCOL_TCP && col != LYRCOL_MCP && col != LYRCOL_SPACER)
+                    if (!IsDotCol(col))
                         break;   // Name draws normally
 
                     const int row = (int)cd->nmcd.dwItemSpec;
