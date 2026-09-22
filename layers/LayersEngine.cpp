@@ -743,8 +743,6 @@ void LayersEngine::SyncLayerOrderFromReaper(int idx)
 void LayersEngine::TimerCallback()
 {
     LayersEngine& eng = Get();
-    int active = eng.m_activeLayer;
-    if (active < 0 || active >= (int)eng.m_layers.size()) return;
 
     if (eng.m_suppressCooldown > 0)
     {
@@ -756,10 +754,17 @@ void LayersEngine::TimerCallback()
     if (stateCount == eng.m_lastStateCount) return;
     eng.m_lastStateCount = stateCount;
 
-    // Sync track order, refresh names (catches renames too), and update window
-    eng.SyncLayerOrderFromReaper(active);
+    // The window's track list is the project's track list now, for every
+    // layer and for no layer at all, so it has to follow tracks being added,
+    // removed, renamed and reordered whether or not a layer is active. This
+    // used to return early with no active layer, which under the old window
+    // was harmless — the list only showed the layer's own stored channels.
+    int active = eng.m_activeLayer;
+    if (active >= 0 && active < (int)eng.m_layers.size())
+        eng.SyncLayerOrderFromReaper(active);
+
     eng.RefreshAllTrackNames();
-    LayersWnd_Refresh();
+    LayersWnd_Refresh();   // no-op until the window has been opened once
 }
 
 // ---------------------------------------------------------------------------

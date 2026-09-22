@@ -3,11 +3,13 @@
 //
 // Left column  : ListView of the layers (drag-to-reorder, F2 to rename).
 //                Columns: Name  Trks.  The active layer is drawn bold.
-// Right column : ListView of the selected layer's channels, laid out like
-//                REAPER's Track Manager. Columns: Name  TCP  MCP  Spacer.
-//                A dot in TCP/MCP means the layer shows that channel in that
-//                panel; click one to toggle it. The Spacer cell adds or
-//                removes a spacer slot above the row. Rows drag to reorder.
+// Right column : ListView of every track in the project, in the project's own
+//                order, laid out like REAPER's Track Manager. Columns:
+//                Name  TCP  MCP  Spacer. A dot in TCP/MCP means the selected
+//                layer shows that channel in that panel; click one to toggle
+//                it, which is also what puts the channel in the layer or
+//                takes it out. The Spacer cell adds or removes the gap above
+//                the channel. Rows are the project's, so they do not drag.
 // Bottom bar   : Settings... | status
 //
 // Everything else lives in the two lists' right-click menus: activate, show
@@ -73,14 +75,147 @@ static int     s_trkLbDownItem     = -1;
 static DWORD   s_trkLbDownTime     = 0;
 
 // Track list columns. The list is modelled on REAPER's Track Manager: one
-// row per channel in the layer, a dot in TCP/MCP for each panel the channel
-// is shown in, and a marker in Spacer for the visual gaps.
+// row per project channel, a dot in TCP/MCP for each panel the layer shows
+// that channel in, and a marker in Spacer for the visual gaps.
 enum {
     LYRCOL_NAME   = 0,
     LYRCOL_TCP    = 1,
     LYRCOL_MCP    = 2,
     LYRCOL_SPACER = 3,
 };
+
+// ---------------------------------------------------------------------------
+// Track list rows
+//
+// The list shows every track in the project, in the project's own order, for
+// every layer — the dots say which of them the layer holds. It used to list
+// only the layer's own channels, which meant a layer could only be built by
+// first adding tracks to it and then ticking them, and there was no one view
+// of "what is and is not in this layer".
+//
+// So a row is a project track, not a slot in LayerDef::tracks, and the two
+// are joined by GUID. LayerDef::tracks still holds only the channels the
+// layer actually contains: an entry is what membership *is*, so clearing a
+// channel's last dot removes its entry, and the layer's channel count keeps
+// meaning what it always did.
+// ---------------------------------------------------------------------------
+struct LyrRow {
+    GUID guid = {};
+    char name[160] = {};
+};
+static std::vector<LyrRow> s_trackRows;
+
+// The layer's entry for a project track, or null when the layer does not
+// hold it.
+static LayerTrack* FindLayerTrack(LayerDef& ld, const GUID& g)
+{
+    for (auto& lt : ld.tracks)
+        if (!lt.isSpacer && memcmp(&lt.guid, &g, sizeof(GUID)) == 0) return &lt;
+    return nullptr;
+}
+
+// Index of that entry, or -1.
+static int FindLayerTrackIdx(const LayerDef& ld, const GUID& g)
+{
+    for (int i = 0; i < (int)ld.tracks.size(); ++i)
+        if (!ld.tracks[i].isSpacer &&
+            memcmp(&ld.tracks[i].guid, &g, sizeof(GUID)) == 0) return i;
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
+// NormalizeLayerOrder - put a layer's stored slots into project order.
+//
+// The window no longer lets a layer define its own channel order: the list is
+// the project's track list, so the order the slots are stored in has to agree
+// with it or the spacer marks ("gap above this channel") would be drawn
+// against one order and applied in another.
+//
+// Spacers travel with the channel they sit above, which is how the Spacer
+// column has always read them. A spacer at the very end of the list has no
+// channel to belong to and is dropped.
+//
+// Run after an edit, never merely on opening the window: a layer built under
+// the old model keeps its hand-made order until the user actually changes
+// something about it.
+// ---------------------------------------------------------------------------
+static void NormalizeLayerOrder(LayerDef& ld)
+{
+    // Nothing to sort against. Bailing rather than rebuilding from an empty
+    // row list, which would throw the layer's channels away.
+    if (s_trackRows.empty()) return;
+
+    // Which channels carry a gap above them, by GUID.
+    std::vector<GUID> spacedAbove;
+    for (int i = 0; i + 1 < (int)ld.tracks.size(); ++i)
+        if (ld.tracks[i].isSpacer && !ld.tracks[i + 1].isSpacer)
+            spacedAbove.push_back(ld.tracks[i + 1].guid);
+
+    auto hasSpacer = [&](const GUID& g) {
+        for (const auto& sg : spacedAbove)
+            if (memcmp(&sg, &g, sizeof(GUID)) == 0) return true;
+        return false;
+    };
+
+    std::vector<LayerTrack> rebuilt;
+    rebuilt.reserve(ld.tracks.size());
+    for (const auto& row : s_trackRows)
+    {
+        const int idx = FindLayerTrackIdx(ld, row.guid);
+        if (idx < 0) continue;
+        if (hasSpacer(row.guid))
+        {
+            LayerTrack sp = {};
+            sp.isSpacer = true;
+            strncpy(sp.name, "--- Spacer ---", sizeof(sp.name) - 1);
+            rebuilt.push_back(sp);
+        }
+        rebuilt.push_back(ld.tracks[idx]);
+    }
+
+    // Channels the project no longer has keep their slots, at the end. A
+    // track can be missing because it was deleted, but it can equally be
+    // missing because this ran against a project that has not finished
+    // loading — dropping the slot would quietly shrink the layer either way,
+    // and there is no undo for that.
+    for (const auto& lt : ld.tracks)
+    {
+        if (lt.isSpacer) continue;
+        bool present = false;
+        for (const auto& row : s_trackRows)
+            if (memcmp(&row.guid, &lt.guid, sizeof(GUID)) == 0) { present = true; break; }
+        if (!present) rebuilt.push_back(lt);
+    }
+
+    ld.tracks.swap(rebuilt);
+}
+
+// Set or clear the gap above a channel. The channel has to be in the layer —
+// a gap above something the layer does not show means nothing.
+static void SetLayerSpacerAbove(LayerDef& ld, const GUID& g, bool on)
+{
+    const int idx = FindLayerTrackIdx(ld, g);
+    if (idx < 0) return;
+    const bool has = (idx > 0 && ld.tracks[idx - 1].isSpacer);
+    if (has == on) return;
+    if (on)
+    {
+        LayerTrack sp = {};
+        sp.isSpacer = true;
+        strncpy(sp.name, "--- Spacer ---", sizeof(sp.name) - 1);
+        ld.tracks.insert(ld.tracks.begin() + idx, sp);
+    }
+    else
+    {
+        ld.tracks.erase(ld.tracks.begin() + (idx - 1));
+    }
+}
+
+static bool LayerHasSpacerAbove(const LayerDef& ld, const GUID& g)
+{
+    const int idx = FindLayerTrackIdx(ld, g);
+    return idx > 0 && ld.tracks[idx - 1].isSpacer;
+}
 
 // ---------------------------------------------------------------------------
 // Forward declarations
@@ -243,38 +378,56 @@ static void RefreshTrackList(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
     if (!hList) return;
 
-    int n = LayersEngine::Get().GetLayerCount();
-    if (s_selLayer < 0 || s_selLayer >= n)
-    {
-        ListView_DeleteAllItems(hList);
-        return;
-    }
-
-    LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-
     int prevSel = ListView_GetNextItem(hList, -1, LVNI_SELECTED);
-
     ListView_DeleteAllItems(hList);
 
-    // Only the name is set as text. TCP, MCP and Spacer are painted in
-    // NM_CUSTOMDRAW below, so their subitems stay empty on purpose.
-    const LayersSettings& cfg = LayersEngine::Get().GetSettings();
-    const int limit = cfg.globalMaxChannels > 0
-                    ? cfg.globalMaxChannels : (int)ld.tracks.size();
-
-    for (int i = 0; i < (int)ld.tracks.size(); i++)
+    // Rows are the project's tracks, in the project's order, whatever layer is
+    // selected — and whether or not one is. Only the dots change with the
+    // selection, so the list reads the same way every time it is opened.
+    s_trackRows.clear();
     {
-        const LayerTrack& lt = ld.tracks[i];
+        const int nt = CountTracks(0);
+        s_trackRows.reserve((size_t)nt);
+        for (int t = 0; t < nt; t++)
+        {
+            MediaTrack* tr = GetTrack(0, t);
+            if (!tr) continue;
+            GUID* tg = GetTrackGUID(tr);
+            if (!tg) continue;
 
-        char dispName[160];
+            LyrRow row;
+            row.guid = *tg;
+            char nm[128] = {};
+            if (!GetTrackName(tr, nm, sizeof(nm)) || nm[0] == '\0')
+                snprintf(nm, sizeof(nm), "Track %d", t + 1);
+            snprintf(row.name, sizeof(row.name), "%s", nm);
+            s_trackRows.push_back(row);
+        }
+    }
+
+    const int n = LayersEngine::Get().GetLayerCount();
+    LayerDef* ld = (s_selLayer >= 0 && s_selLayer < n)
+                   ? &LayersEngine::Get().GetLayer(s_selLayer) : nullptr;
+
+    // Channels past the layer's slot limit are bracketed, the same as before.
+    // Counted among the layer's members, not among the rows: the rows now
+    // include every track the layer does not hold.
+    const LayersSettings& cfg = LayersEngine::Get().GetSettings();
+    const int limit = cfg.globalMaxChannels;
+    int memberOrdinal = 0;
+
+    for (int i = 0; i < (int)s_trackRows.size(); i++)
+    {
+        const bool member = ld && FindLayerTrackIdx(*ld, s_trackRows[i].guid) >= 0;
+
+        char dispName[200];
         // ASCII on purpose: this is an ANSI list view, so a real em dash would
         // arrive as whatever the system code page makes of its UTF-8 bytes.
-        if (lt.isSpacer)
-            strcpy(dispName, "--------------------");
-        else if (i < limit)
-            snprintf(dispName, sizeof(dispName), "%s", lt.name);
+        if (member && limit > 0 && memberOrdinal >= limit)
+            snprintf(dispName, sizeof(dispName), "[%s]", s_trackRows[i].name);
         else
-            snprintf(dispName, sizeof(dispName), "[%s]", lt.name);
+            snprintf(dispName, sizeof(dispName), "%s", s_trackRows[i].name);
+        if (member) memberOrdinal++;
 
         LVITEMA lvi = {};
         lvi.mask     = LVIF_TEXT;
@@ -284,7 +437,7 @@ static void RefreshTrackList(HWND hwnd)
         ListView_InsertItem(hList, &lvi);
     }
 
-    if (prevSel >= 0 && prevSel < (int)ld.tracks.size())
+    if (prevSel >= 0 && prevSel < (int)s_trackRows.size())
     {
         ListView_SetItemState(hList, prevSel,
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
@@ -355,19 +508,27 @@ static void RemoveSelectedTrack(HWND hwnd)
     HWND hList = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
     if (!hList) return;
 
-    std::vector<int> sel;
+    // The rows are the project's tracks and always will be, so removing one
+    // cannot mean removing its row. It clears the channel's dots, which is
+    // what takes it out of the layer.
+    bool changed = false;
     int i = -1;
     while ((i = ListView_GetNextItem(hList, i, LVNI_SELECTED)) >= 0)
-        sel.push_back(i);
-    if (sel.empty()) return;
-
-    // Erase from highest index downward
-    for (int j = (int)sel.size() - 1; j >= 0; j--)
     {
-        int idx = sel[j];
-        if (idx >= 0 && idx < (int)ld.tracks.size())
+        if (i < 0 || i >= (int)s_trackRows.size()) continue;
+        const int idx = FindLayerTrackIdx(ld, s_trackRows[i].guid);
+        if (idx < 0) continue;
+        // Take the gap above it with it: a spacer left behind would attach
+        // itself to whichever channel ends up below it.
+        if (idx > 0 && ld.tracks[idx - 1].isSpacer)
+            ld.tracks.erase(ld.tracks.begin() + (idx - 1), ld.tracks.begin() + (idx + 1));
+        else
             ld.tracks.erase(ld.tracks.begin() + idx);
+        changed = true;
     }
+    if (!changed) return;
+
+    NormalizeLayerOrder(ld);
     LayersEngine::Get().SaveExtState();
     LayersEngine::Get().MarkLayoutEdited(s_selLayer);
     RefreshTrackList(hwnd);
@@ -377,14 +538,19 @@ static void RemoveSelectedTrack(HWND hwnd)
 // OnTrackListClick – handle a click in one of the Track-Manager-style columns
 //
 // TCP and MCP toggle where the clicked channel appears when the layer is
-// recalled. Spacer adds or removes a spacer slot directly above the clicked
-// channel; on a spacer row it removes that row. Clicks in Name, and clicks on
-// a spacer's TCP/MCP cells, are left to the list view.
+// recalled — and, because a row is a project track rather than a slot the
+// layer owns, they are also what puts a channel into the layer and takes it
+// out. Lighting either dot on a channel the layer does not hold adds it;
+// clearing its last dot removes it, so an entry in LayerDef::tracks keeps
+// meaning exactly "this layer shows this channel somewhere".
 //
-// A toggle applies to the clicked row only, never to the whole selection:
-// these dots sit under the pointer during drag-to-reorder, and a click that
-// silently rewrote every selected row would be far too easy to fire by
-// accident in the middle of a show.
+// Spacer adds or removes the gap above the clicked channel, and only works on
+// a channel the layer holds: a gap above something it does not show has
+// nowhere to be.
+//
+// A toggle applies to the clicked row only, never to the whole selection: a
+// click that silently rewrote every selected row would be far too easy to
+// fire by accident in the middle of a show.
 // ---------------------------------------------------------------------------
 static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt)
 {
@@ -397,49 +563,74 @@ static void OnTrackListClick(HWND hwnd, HWND hList, POINT pt)
     ListView_SubItemHitTest(hList, &ht);
     const int row = ht.iItem;
     const int col = ht.iSubItem;
-    if (row < 0 || row >= (int)ld.tracks.size()) return;
+    if (row < 0 || row >= (int)s_trackRows.size()) return;
     if (col != LYRCOL_TCP && col != LYRCOL_MCP && col != LYRCOL_SPACER) return;
 
-    LayerTrack& lt = ld.tracks[row];
+    const GUID& g = s_trackRows[row].guid;
+    bool rebuildList = false;
 
     if (col == LYRCOL_SPACER)
     {
-        // A spacer row carries no gap of its own — it is the gap. Removing one
-        // is Del or the right-click menu, same as any other row; this cell
-        // only ever adds or removes the gap above a real channel, which is
-        // where the marker is drawn.
-        if (lt.isSpacer) return;
-
-        if (row > 0 && ld.tracks[row - 1].isSpacer)
+        if (FindLayerTrackIdx(ld, g) < 0) return;   // not in this layer
+        SetLayerSpacerAbove(ld, g, !LayerHasSpacerAbove(ld, g));
+    }
+    else
+    {
+        LayerTrack* lt = FindLayerTrack(ld, g);
+        if (!lt)
         {
-            ld.tracks.erase(ld.tracks.begin() + (row - 1));
+            // First dot on a channel the layer did not hold: add it, showing
+            // it only in the panel that was clicked.
+            LayerTrack nt = {};
+            nt.guid     = g;
+            snprintf(nt.name, sizeof(nt.name), "%s", s_trackRows[row].name);
+            nt.showTcp  = (col == LYRCOL_TCP);
+            nt.showMcp  = (col == LYRCOL_MCP);
+            ld.tracks.push_back(nt);
+            NormalizeLayerOrder(ld);
+            rebuildList = true;   // the bracketed slot-limit marks can shift
         }
         else
         {
-            LayerTrack sp = {};
-            sp.isSpacer = true;
-            strncpy(sp.name, "--- Spacer ---", sizeof(sp.name) - 1);
-            ld.tracks.insert(ld.tracks.begin() + row, sp);
+            if (col == LYRCOL_TCP) lt->showTcp = !lt->showTcp;
+            else                   lt->showMcp = !lt->showMcp;
+
+            if (!lt->showTcp && !lt->showMcp)
+            {
+                // Last dot cleared: the layer no longer shows this channel
+                // anywhere, which is the same thing as not holding it. Drop
+                // the entry rather than leaving a member that does nothing
+                // and still counts against the slot limit.
+                const int idx = FindLayerTrackIdx(ld, g);
+                if (idx >= 0)
+                {
+                    if (idx > 0 && ld.tracks[idx - 1].isSpacer)
+                        ld.tracks.erase(ld.tracks.begin() + (idx - 1),
+                                        ld.tracks.begin() + (idx + 1));
+                    else
+                        ld.tracks.erase(ld.tracks.begin() + idx);
+                }
+                rebuildList = true;
+            }
         }
-        LayersEngine::Get().SaveExtState();
-        // Stored only, like every other edit in this list — it reaches the
-        // project on the layer's next recall, never mid-show under the
-        // pointer.
-        LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+    }
+
+    LayersEngine::Get().SaveExtState();
+    // Stored only, like every other edit in this list — it reaches the
+    // project on the layer's next recall, never mid-show under the pointer.
+    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+
+    if (rebuildList || col == LYRCOL_SPACER)
+    {
         RefreshTrackList(hwnd);
         RefreshLayerList(hwnd);
     }
     else
     {
-        if (lt.isSpacer) return;   // a spacer is in neither panel
-        if (col == LYRCOL_TCP) lt.showTcp = !lt.showTcp;
-        else                   lt.showMcp = !lt.showMcp;
-        LayersEngine::Get().SaveExtState();
-        LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-
         RECT rcRow;
         if (ListView_GetItemRect(hList, row, &rcRow, LVIR_BOUNDS))
             InvalidateRect(hList, &rcRow, FALSE);
+        RefreshLayerList(hwnd);   // the layer's channel count may have changed
     }
 }
 
@@ -502,6 +693,9 @@ static void EndLayerDrag(HWND hwnd, bool apply)
     s_dragLayerSrc  = s_dragLayerDst = -1;
 }
 
+// Unreachable since drag-to-reorder left this list (see TrackListSubclassProc);
+// kept so the capture/cancel paths still tear a drag down cleanly if one is
+// ever armed again.
 static void EndTrackDrag(HWND hwnd, bool apply)
 {
 #ifdef _WIN32
@@ -517,13 +711,7 @@ static void EndTrackDrag(HWND hwnd, bool apply)
 
     HWND hListT = GetDlgItem(hwnd, IDC_LYR_TRACK_LIST);
     if (hListT)
-    {
-        int cnt = LayersEngine::Get().GetLayerCount();
-        int trks = (s_selLayer >= 0 && s_selLayer < cnt)
-            ? (int)LayersEngine::Get().GetLayer(s_selLayer).tracks.size() : 0;
-        for (int i = 0; i < trks; i++)
-            ListView_SetItemState(hListT, i, 0, LVIS_DROPHILITED);
-    }
+        ListView_SetItemState(hListT, -1, 0, LVIS_DROPHILITED);
 
     int n = LayersEngine::Get().GetLayerCount();
     if (apply && s_dragTrackDst >= 0 && s_dragTrackDst != s_dragTrackSrc &&
@@ -755,17 +943,13 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
         LVHITTESTINFO hti = {};
         hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ListView_SubItemHitTest(hList, &hti);
-        // A press on a TCP/MCP/Spacer cell is a toggle, so it must not also
-        // arm drag-to-reorder: the dots are small and sit mid-row, and a
-        // toggle that dragged the channel somewhere else on the way out would
-        // be the easiest mis-click in the window.
-        if (hti.iItem >= 0 && hti.iSubItem == LYRCOL_NAME)
-        {
-            s_trkLbTracking = true;
-            s_trkLbDownPt   = hti.pt;
-            s_trkLbDownItem = hti.iItem;
-            s_trkLbDownTime = GetTickCount();
-        }
+        // Drag-to-reorder is gone from this list. Its rows are the project's
+        // tracks in the project's order, so there is no per-layer order left
+        // for a drag to express — reordering happens in REAPER and this list
+        // follows on the next refresh. The tracking state stays wired up
+        // below so the drag code paths remain a single dead branch rather
+        // than a half-removed feature.
+        (void)hti;
         return r;
     }
     case WM_MOUSEMOVE:
@@ -1281,25 +1465,29 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     selCount++;
             }
 
+            // Move Up / Move Down are gone: the rows are the project's track
+            // list in the project's order, so there is nothing here to move.
+            // Reorder tracks in REAPER and this list follows.
+            const bool rowInLayer =
+                (item >= 0 && item < (int)s_trackRows.size() && s_selLayer >= 0 &&
+                 s_selLayer < n &&
+                 FindLayerTrackIdx(LayersEngine::Get().GetLayer(s_selLayer),
+                                   s_trackRows[item].guid) >= 0);
+
             HMENU hMenu = CreatePopupMenu();
             AppendMenuA(hMenu, MF_STRING | (s_selLayer < 0 ? MF_GRAYED : 0),
                 CTX_TRK_ADD_SEL, "Add Selected Tracks");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuA(hMenu, MF_STRING | (item <= 0 ? MF_GRAYED : 0),
-                CTX_TRK_MOVE_UP, "Move Up");
-            AppendMenuA(hMenu, MF_STRING | (item < 0 || item >= numTracks - 1 ? MF_GRAYED : 0),
-                CTX_TRK_MOVE_DOWN, "Move Down");
+            // A gap can only sit above a channel the layer actually shows.
+            AppendMenuA(hMenu, MF_STRING | (!rowInLayer ? MF_GRAYED : 0),
+                CTX_TRK_SPACER_BEF, "Toggle Spacer Above");
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_TRK_SPACER_BEF, "Add Spacer Before");
-            AppendMenuA(hMenu, MF_STRING | (item < 0 ? MF_GRAYED : 0),
-                CTX_TRK_SPACER_AFT, "Add Spacer After");
-            AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
-            char rmLabel[48];
+            char rmLabel[64];
             if (selCount > 1)
-                snprintf(rmLabel, sizeof(rmLabel), "Remove %d Tracks\tDel", selCount);
+                snprintf(rmLabel, sizeof(rmLabel),
+                         "Remove %d Tracks from Layer\tDel", selCount);
             else
-                snprintf(rmLabel, sizeof(rmLabel), "Remove\tDel");
+                snprintf(rmLabel, sizeof(rmLabel), "Remove from Layer\tDel");
             AppendMenuA(hMenu, MF_STRING | (selCount < 1 ? MF_GRAYED : 0),
                 CTX_TRK_REMOVE, rmLabel);
             AppendMenuA(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -1317,59 +1505,26 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
             switch (cmd)
             {
-            case CTX_TRK_MOVE_UP:
-                if (item > 0 && item < (int)ld.tracks.size())
-                {
-                    std::swap(ld.tracks[item], ld.tracks[item - 1]);
-                    LayersEngine::Get().SaveExtState();
-                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-                    RefreshTrackList(hwnd);
-                    ListView_SetItemState(hTrackList, item - 1,
-                        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                }
-                break;
-            case CTX_TRK_MOVE_DOWN:
-                if (item >= 0 && item + 1 < (int)ld.tracks.size())
-                {
-                    std::swap(ld.tracks[item], ld.tracks[item + 1]);
-                    LayersEngine::Get().SaveExtState();
-                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-                    RefreshTrackList(hwnd);
-                    ListView_SetItemState(hTrackList, item + 1,
-                        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                }
-                break;
             case CTX_TRK_SPACER_BEF:
-                if (item >= 0 && item <= (int)ld.tracks.size())
+                // Same toggle the Spacer cell performs; the menu is here for
+                // the keyboard and for a narrow window where the column is
+                // scrolled out of sight.
+                if (item >= 0 && item < (int)s_trackRows.size())
                 {
-                    LayerTrack sp = {};
-                    sp.isSpacer = true;
-                    ld.tracks.insert(ld.tracks.begin() + item, sp);
-                    LayersEngine::Get().SaveExtState();
-                    // Stored only — adding a spacer here used to re-apply the
-                    // whole layer to the project. It shows up on the tracks
-                    // the next time the layer is recalled.
-                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-                    RefreshTrackList(hwnd);
-                    RefreshLayerList(hwnd);
-                    ListView_SetItemState(hTrackList, item,
-                        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-                }
-                break;
-            case CTX_TRK_SPACER_AFT:
-                if (item >= 0)
-                {
-                    int insertAt = item + 1;
-                    LayerTrack sp = {};
-                    sp.isSpacer = true;
-                    ld.tracks.insert(ld.tracks.begin() + insertAt, sp);
-                    LayersEngine::Get().SaveExtState();
-                    // Stored only — see above.
-                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
-                    RefreshTrackList(hwnd);
-                    RefreshLayerList(hwnd);
-                    ListView_SetItemState(hTrackList, insertAt,
-                        LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    const GUID& g = s_trackRows[item].guid;
+                    if (FindLayerTrackIdx(ld, g) >= 0)
+                    {
+                        SetLayerSpacerAbove(ld, g, !LayerHasSpacerAbove(ld, g));
+                        LayersEngine::Get().SaveExtState();
+                        // Stored only — adding a spacer here used to re-apply
+                        // the whole layer to the project. It shows up on the
+                        // tracks the next time the layer is recalled.
+                        LayersEngine::Get().MarkLayoutEdited(s_selLayer);
+                        RefreshTrackList(hwnd);
+                        RefreshLayerList(hwnd);
+                        ListView_SetItemState(hTrackList, item,
+                            LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+                    }
                 }
                 break;
             case CTX_TRK_REMOVE:
@@ -1417,7 +1572,12 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 }
                 if (added)
                 {
+                    // Keep the stored slots in project order, which is the
+                    // order the list draws them in and the order the spacer
+                    // marks are read against.
+                    NormalizeLayerOrder(ld);
                     LayersEngine::Get().SaveExtState();
+                    LayersEngine::Get().MarkLayoutEdited(s_selLayer);
                     RefreshTrackList(hwnd);
                     RefreshLayerList(hwnd);
                     char status[64];
@@ -1602,8 +1762,13 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     int n = LayersEngine::Get().GetLayerCount();
                     if (s_selLayer < 0 || s_selLayer >= n) break;
                     const LayerDef& ld = LayersEngine::Get().GetLayer(s_selLayer);
-                    if (row < 0 || row >= (int)ld.tracks.size()) break;
-                    const LayerTrack& lt = ld.tracks[row];
+                    if (row < 0 || row >= (int)s_trackRows.size()) break;
+
+                    // A row is a project track; the layer's entry for it is
+                    // what the dots read, and its absence is what an empty
+                    // cell means.
+                    const GUID& rowGuid = s_trackRows[row].guid;
+                    const int   ltIdx   = FindLayerTrackIdx(ld, rowGuid);
 
                     HDC  hdc  = cd->nmcd.hdc;
                     RECT rc   = cd->nmcd.rc;
@@ -1615,14 +1780,16 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rc, "", 0, nullptr);
 
                     bool on = false;
-                    if      (col == LYRCOL_TCP)    on = !lt.isSpacer && lt.showTcp;
-                    else if (col == LYRCOL_MCP)    on = !lt.isSpacer && lt.showMcp;
-                    // Marked against the channel the gap sits above, the way
-                    // the Track Manager does it. Not also on the spacer row
-                    // itself: that row already draws as a rule across the Name
-                    // column, and two marks for one gap read as two gaps.
-                    else /* LYRCOL_SPACER */       on = !lt.isSpacer && row > 0 &&
-                                                        ld.tracks[row - 1].isSpacer;
+                    if (ltIdx >= 0)
+                    {
+                        const LayerTrack& lt = ld.tracks[ltIdx];
+                        if      (col == LYRCOL_TCP) on = lt.showTcp;
+                        else if (col == LYRCOL_MCP) on = lt.showMcp;
+                        // Marked against the channel the gap sits above, the
+                        // way the Track Manager does it.
+                        else /* LYRCOL_SPACER */    on = (ltIdx > 0 &&
+                                                          ld.tracks[ltIdx - 1].isSpacer);
+                    }
 
                     if (on)
                     {

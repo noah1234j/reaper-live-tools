@@ -363,7 +363,7 @@ LTEXT           "", IDC_LYR_LAYER_LIST, 5, 13, 212, 320
 // ---- Right column: tracks in the selected layer ----------------------
 // Renaming is done in the layer list itself (F2 / right-click > Rename),
 // so there is no name box, and no properties frame around this column.
-LTEXT           "Tracks in Layer  (click TCP/MCP to toggle, drag rows to reorder):", IDC_STATIC, 221, 3, 260, 8
+LTEXT           "All Tracks  (click TCP/MCP to put a channel in this layer):", IDC_STATIC, 221, 3, 260, 8
 
 // ListView placeholder for track list – replaced dynamically
 LTEXT           "", IDC_LYR_TRACK_LIST, 221, 13, 260, 320

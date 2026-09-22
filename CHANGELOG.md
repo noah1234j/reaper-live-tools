@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.0.47-dev.3] — 2026-09-22  (dev branch)
+
+### Changed
+
+- **Layers: every layer now lists every track in the project, with dots on the ones it holds**: The channel list used to show only the tracks already in the selected layer, so building a layer meant adding tracks to it first and ticking them second, and there was no single view of what was and was not in a layer. It now shows the whole project track list, in the project's own order, for every layer — only the dots change as you move between layers.
+
+  Clicking a **TCP** or **MCP** dot on a channel the layer does not hold puts it in the layer, showing it in that panel. Clearing a channel's last dot takes it out again, so a channel with no dots and a channel the layer has never held are the same thing — which is what they have always been on recall. **Remove** (Del, or the right-click menu) clears the dots rather than deleting the row: the rows are the project's tracks, so a row cannot go anywhere.
+
+  **Spacer** still marks the gap above a channel, and now only applies to a channel the layer holds — a gap above something the layer does not show has nowhere to be.
+
+  **Drag-to-reorder and Move Up / Move Down are gone from this list.** Its rows are the project's tracks in the project's order, so there is no per-layer order left for a drag to express; reorder tracks in REAPER and the list follows. A layer's stored slots are put into project order the first time you change something about that layer — not merely by opening the window, so a layer built under the old window keeps its hand-made order until you touch it. The **Reorder tracks** recall setting is unchanged and still applies whatever order a layer has stored.
+
+  The window also follows the project's tracks now when no layer is active. It only refreshed while one was, which under the old list was harmless because that list held nothing but the layer's own channels.
+
 ## [v0.0.47-dev.2] — 2026-09-22  (dev branch)
 
 ### Changed
