@@ -22,8 +22,9 @@ class ProjectStateContext;  // from REAPER SDK (reaper_plugin.h)
 //   The Project tab additionally shows the layer recall-safe table, which has
 //   no meaning for a subscene.
 //
-// The same grid is reused by the per-scene safes popup (see
-// SafesWnd_EditSceneSafes), which edits a snapshot's own SafeSet.
+// The same grid is reused by the Recall Filters popup (see
+// SafesWnd_EditSceneSafes), which edits a snapshot's own SafeSet: a scene's
+// recall filters are safes that apply to that scene's recalls only.
 // ---------------------------------------------------------------------------
 
 void SafesWnd_Init(HINSTANCE hInstance);
@@ -36,8 +37,8 @@ void SafesWnd_Refresh();           // rebuild row list from current REAPER proje
 void SafesWnd_ShowSubsceneTab();
 
 // ---------------------------------------------------------------------------
-// Modal per-scene safes editor. Edits `set` in place; `title` is what the
-// banner across the top says, e.g. "Safes for scene:  Verse 1". Returns true
+// Modal Recall Filters editor. Edits `set` in place; `title` is what the
+// banner across the top says, e.g. "Recall Filters for 2  Verse 1". Returns true
 // when the user changed anything, so the caller can mark the project dirty.
 // ---------------------------------------------------------------------------
 bool SafesWnd_EditSceneSafes(HWND parent, SafeSet& set, const char* title);

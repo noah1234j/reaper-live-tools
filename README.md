@@ -1,4 +1,4 @@
-> **⚠ DEV BRANCH — v0.0.47-dev.4**
+> **⚠ DEV BRANCH — v0.0.47-dev.5**
 > This is the work-in-progress branch. It is less tested than a stable release, behaviour can
 > change between dev builds, and a project saved by one may not open the same way in another.
 > **Do not use it on a show.** For the stable release, see the [`main` branch](../../tree/main).
@@ -48,9 +48,9 @@ The core feature. Scenes are full-project mix snapshots — every track's volume
 | **Taper laws** | Linear, S-curve (default), Log, Exp, or Custom power-law exponent configured per scene. |
 | **Per-parameter mask** | Choose exactly which parameter types a scene contains: Vol, Pan, Mute, Solo, Phase, FX Params, FX Chain, Visibility, Selection, Track Order, Track Name, Track Color, Height, Slots. |
 | **30 assignable action slots** | Recall or overwrite any scene slot directly from a key, MIDI, or OSC event without touching the UI. |
-| **Safes** | Global or per-track protection masks prevent specific parameters from being touched during recall, even mid-transition. |
-| **Per-scene safes** | Right-click a scene → **Per-Scene Safes...** for a protection mask that applies to that scene alone, added to the project safes or replacing them. |
-| **Subscenes** | Right-click a scene → **Add Subscene** for a variation that lives under it (2.1, 2.2). Subscenes get their own default transition time and a shared safes set that keeps track order, names and plugin chains from moving — so a subscene changes the mix, not the shape of the project. |
+| **Safes** | Global or per-track protection masks prevent specific parameters — including sends and hardware outputs — from being touched during recall, even mid-transition. |
+| **Recall filters** | Right-click a scene → **Recall Filters...** for a protection mask that applies to that scene alone, added to the project safes or replacing them. |
+| **Subscenes** | Right-click a scene → **Add Subscene** (or the sidebar's **Add Subscene** button, or the *Add subscene to selected scene* action) for a variation that lives under it (2.1, 2.2). Subscenes get their own default transition time and a shared safes set that keeps track order, names and plugin chains from moving — so a subscene changes the mix, not the shape of the project. |
 | **Empty slot positions** | On REAPER v7.75+, scenes remember where each FX and send sits in the TCP/MCP panel grid ("allow empty slots"), so a recall that adds or swaps a plugin puts it back in its authored slot instead of collapsing your layout. Safe it with the **Slots** checkbox. |
 | **Persisted in the project** | Scenes are written inside the `.RPP` file — no sidecar files to lose. |
 

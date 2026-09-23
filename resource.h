@@ -73,10 +73,11 @@
 #define IDC_NOTES_GRIP           2148   // drag handle on the notes box bottom edge
 #define IDC_VERSION              2149   // version footer, pinned to the sidebar bottom
 #define IDC_SPLITTER             2150   // draggable divider between list and sidebar
+#define IDC_ADDSUB_BTN           2151   // "Add Subscene" button (main Scenes window sidebar)
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
-#define LT_VERSION_STR           "v0.0.47-dev.4"
+#define LT_VERSION_STR           "v0.0.47-dev.5"
 
 // ---- Scene settings popup dialog -----------------------------------------
 #define IDD_SNAP_SETTINGS        213
@@ -101,13 +102,13 @@
 // applied to every subscene recall. Both tabs drive the same grid.
 #define IDC_SAFES_TABS           2270
 
-// ---- Scene / Subscene safes popup (IDD_SCENE_SAFES) -----------------------
+// ---- Recall Filters popup (IDD_SCENE_SAFES) -------------------------------
 // Same grid as the Safes window minus the layer table, opened from a scene's
 // context menu. Shares the IDC_GSAFE_* / IDC_SAFESLIST / IDC_TRACK_SAFES_EN
 // ids above so one dialog proc drives both templates.
 #define IDD_SCENE_SAFES          230
-#define IDC_SCSAFE_TITLE         2271   // "Safes for scene: <name>" banner
-#define IDC_SCSAFE_ENABLE        2272   // master enable for this scene's safes
+#define IDC_SCSAFE_TITLE         2271   // "Recall Filters for <name>" banner
+#define IDC_SCSAFE_ENABLE        2272   // master enable for this scene's recall filters
 #define IDC_SCSAFE_REPLACE       2273   // ignore project safes for this scene
 #define IDC_SCSAFE_CLOSE         2274   // Close button
 
@@ -154,6 +155,7 @@
 #define IDC_GSAFE_LAYERS         2221
 #define IDC_GSAFE_ALL            2222
 #define IDC_GSAFE_SLOTS          2224
+#define IDC_GSAFE_SENDS          2225   // track sends + hardware outputs
 
 // ---- Duration debug checkbox (Global Settings) ---------------------------
 #define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox

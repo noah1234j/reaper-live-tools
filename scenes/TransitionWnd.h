@@ -43,6 +43,7 @@ void TransitionWnd_OverwriteScene(int index); // re-capture scene at slot index
 
 // Additional headless actions – open/create the window as needed.
 void TransitionWnd_CreateNewScene();          // capture + append a new scene, focus inline rename
+void TransitionWnd_AddSubscene();            // capture a subscene under the selected (else last-touched) scene
 void TransitionWnd_RecallSelectedScene();     // recall the first selected scene in the list
 void TransitionWnd_UpdateSelectedScene();     // re-capture the first selected scene in the list
 void TransitionWnd_UpdateLastTouchedScene();  // re-capture the last created/recalled/saved scene

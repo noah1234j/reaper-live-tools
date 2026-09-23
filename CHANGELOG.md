@@ -1,5 +1,17 @@
 # Changelog
 
+## [v0.0.47-dev.5] — 2026-09-23  (dev branch)
+
+### Added
+
+- **Sends can be safed and filtered**: The Safes window's global row and per-track grid have a **Sends** checkbox and column, on both the Project and Subscenes tabs and in a scene's Recall Filters. Checking it leaves a track's sends and hardware outputs — level, pan, mute, mode and routing — exactly as they are through a recall. The engine has always honoured a sends safe; there was just nowhere to set one. A per-track row's **All** now includes Sends, so a row ticked All under an older build shows All unchecked until it is ticked again.
+
+- **Add Subscene button and action**: The Scenes sidebar has an **Add Subscene** button under New / Recall, and there is a matching REAPER action, *Live Tools: Scenes - Add subscene to selected scene* (`LT_SCENE_ADD_SUBSCENE`), for a key or MIDI binding. Both do what the context menu's Add Subscene does — capture a subscene at the end of the scene's block and open its rename box — for the selected scene, or for the last scene created, recalled or saved when nothing is selected.
+
+### Changed
+
+- **Per-scene safes are now called Recall Filters**: The context-menu entry is **Recall Filters...** for scenes and subscenes alike, and the popup is titled *Recall Filters for …*. Nothing about how they work changed, and existing projects keep theirs.
+
 ## [v0.0.47-dev.4] — 2026-09-22  (dev branch)
 
 ### Changed

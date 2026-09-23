@@ -23,7 +23,7 @@
 //   Right (x 158-255) : controls (~97 DU wide)
 // ---------------------------------------------------------------------------
 
-IDD_TSNAPS DIALOGEX 0, 0, 258, 230
+IDD_TSNAPS DIALOGEX 0, 0, 258, 247
 STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
 CAPTION "Scenes"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -33,13 +33,13 @@ BEGIN
     CONTROL         "Cue List", IDC_MODE_CUE,    "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 79, 3, 74, 13
 
     // ---- List view placeholder – replaced dynamically in WM_INITDIALOG ----
-    LTEXT           "", IDC_LIST, 5, 19, 148, 208
+    LTEXT           "", IDC_LIST, 5, 19, 148, 225
 
     // ---- Column divider --------------------------------------------------
     // Drag to move the split between the scene list and the sidebar.
     // LayoutMain() positions and sizes it, so this is just the default.
     CONTROL         "", IDC_SPLITTER, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
-                    153, 19, 5, 208
+                    153, 19, 5, 225
 
     // ---- Top action buttons -----------------------------------------------
     PUSHBUTTON      "&New",       IDC_SAVE,         158,  3, 46, 13
@@ -51,39 +51,42 @@ BEGIN
     // ---- Progress bar placeholder – replaced dynamically -----------------
     LTEXT           "", IDC_PROGRESS,          158, 17, 97,  8
 
+    // ---- Add Subscene: a variation under the selected scene ------------
+    PUSHBUTTON      "Add Subscene", IDC_ADDSUB_BTN, 158, 29, 97, 13
+
     // ---- Safes button ---------------------------------------------------
-    PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 29, 97, 13
+    PUSHBUTTON      "Safes...", IDC_SAFES_BTN,   158, 46, 97, 13
 
     // ---- Cue list setup button ------------------------------------------
-    PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 46, 97, 13
+    PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 63, 97, 13
 
     // ---- Settings button (opens global settings) -------------------------
-    PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 63, 97, 13
+    PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 80, 97, 13
 
     // ---- Layer group: current layer, the Layers window, and the per-scene
     // "layer to recall" selector, kept together ---------------------------
-    LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 80, 97, 8
+    LTEXT           "Layer: -", IDC_LAYER_STATUS, 158, 97, 97, 8
 
-    PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 90, 97, 13
+    PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 107, 97, 13
 
-    COMBOBOX        IDC_SNAP_LAYER,             158, 107, 97, 100,
+    COMBOBOX        IDC_SNAP_LAYER,             158, 124, 97, 100,
                     CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
     // ---- Scene notes (multiline, last control in the sidebar stack) -------
     // The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
     // a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
     // run time, so the height below is only the default.
-    LTEXT           "Notes:", IDC_STATIC,       158, 125, 97,  8
-    EDITTEXT        IDC_SNAPNOTES,              158, 135, 97, 56,
+    LTEXT           "Notes:", IDC_STATIC,       158, 142, 97,  8
+    EDITTEXT        IDC_SNAPNOTES,              158, 152, 97, 56,
                     ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
     CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
-                    158, 191, 97, 6
+                    158, 208, 97, 6
 
     // ---- Footer: status line then version, both pinned to the bottom of
     // the client area by LayoutFooter(). The positions below are only where
     // they sit at the default window size.
-    LTEXT           "Idle",   IDC_STATUS,       158, 209, 97, 10
-    CTEXT           "",       IDC_VERSION,      158, 221, 97,  8
+    LTEXT           "Idle",   IDC_STATUS,       158, 226, 97, 10
+    CTEXT           "",       IDC_VERSION,      158, 238, 97,  8
 END
 
 // ---------------------------------------------------------------------------
@@ -297,6 +300,7 @@ BEGIN
     CONTROL "Order",  IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 196, 52, 48, 10
     CONTROL "Layers", IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 256, 52, 48, 10
     CONTROL "Slots",  IDC_GSAFE_SLOTS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 316, 52, 48, 10
+    CONTROL "Sends",  IDC_GSAFE_SENDS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366, 52, 48, 10
 
     // ---- Per-track safes -------------------------------------------------
     CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",
@@ -316,7 +320,7 @@ BEGIN
 END
 
 // ---------------------------------------------------------------------------
-// IDD_SCENE_SAFES  -  Per-scene / per-subscene safes popup  (430 x 300 DU)
+// IDD_SCENE_SAFES  -  Recall Filters popup: per-scene / per-subscene safes  (430 x 300 DU)
 //
 //  The Safes window's grid with the layer table removed, plus a banner naming
 //  the scene it belongs to and the two switches that decide how the set is
@@ -326,20 +330,20 @@ END
 
 IDD_SCENE_SAFES DIALOGEX 0, 0, 430, 300
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME
-CAPTION "Scene Safes"
+CAPTION "Recall Filters"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     // ---- Banner: which scene this is for ---------------------------------
     CTEXT           "", IDC_SCSAFE_TITLE, 5, 5, 420, 20
 
     // ---- How this set combines with the project safes --------------------
-    CONTROL "Enable safes for this scene", IDC_SCSAFE_ENABLE, "Button",
+    CONTROL "Enable recall filters for this scene", IDC_SCSAFE_ENABLE, "Button",
             BS_AUTOCHECKBOX | WS_TABSTOP, 8, 28, 150, 10
     CONTROL "Replace project safes (ignore them for this scene)", IDC_SCSAFE_REPLACE, "Button",
             BS_AUTOCHECKBOX | WS_TABSTOP, 170, 28, 250, 10
 
-    // ---- Global Safes groupbox (two rows) --------------------------------
-    GROUPBOX        "Safes for every track", IDC_GSAFES_GROUP, 5, 42, 420, 52
+    // ---- Every-track filters ----------------------------------------------
+    GROUPBOX        "Filter on every track", IDC_GSAFES_GROUP, 5, 42, 420, 52
 
     CONTROL "Vol",   IDC_GSAFE_VOL,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  12, 56, 46, 10
     CONTROL "Pan",   IDC_GSAFE_PAN,   "Button", BS_AUTOCHECKBOX | WS_TABSTOP,  72, 56, 46, 10
@@ -355,9 +359,10 @@ BEGIN
     CONTROL "Order",  IDC_GSAFE_ORDER,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 196, 72, 48, 10
     CONTROL "Layers", IDC_GSAFE_LAYERS, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 256, 72, 48, 10
     CONTROL "Slots",  IDC_GSAFE_SLOTS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 316, 72, 48, 10
+    CONTROL "Sends",  IDC_GSAFE_SENDS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366, 72, 48, 10
 
     // ---- Per-track safes -------------------------------------------------
-    CONTROL "Enable Per-Track Safes", IDC_TRACK_SAFES_EN, "Button",
+    CONTROL "Enable Per-Track Filters", IDC_TRACK_SAFES_EN, "Button",
             BS_AUTOCHECKBOX | WS_TABSTOP, 5, 100, 130, 10
 
     // ListView placeholder - replaced dynamically in WM_INITDIALOG

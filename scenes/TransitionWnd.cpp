@@ -240,6 +240,9 @@ static void DoSave(HWND hwnd);
 static void ShowContextMenu(HWND hwnd, int item, POINT pt);
 static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap);
 static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene);
+static void DoAddSubscene(HWND hwnd, int snapIdx);
+static bool AddSubsceneToCurrent(HWND hwnd);
+static int  SelectedSnapshotIndex(HWND hwnd, int* rowOut);
 static void ExportScene(HWND hwnd, int item);
 static void ImportScene(HWND hwnd);
 static void DoEndDrag(HWND hwnd);
@@ -482,6 +485,13 @@ void TransitionWnd_CreateNewScene()
     HWND hwnd = EnsureWndOpen();
     if (!hwnd) return;
     DoSave(hwnd);  // also drops into inline rename with the name field focused/selected
+}
+
+void TransitionWnd_AddSubscene()
+{
+    HWND hwnd = EnsureWndOpen();
+    if (!hwnd) return;
+    AddSubsceneToCurrent(hwnd);
 }
 
 // The list is multi-select, so "the selection" can be several rows. Both
@@ -2079,6 +2089,42 @@ static void DoSave(HWND hwnd)
     DoSaveAt(hwnd, -1, false);
 }
 
+// Add a subscene to the scene at snapIdx — the context menu's Add Subscene,
+// the sidebar button and the headless action all come through here. snapIdx
+// may be the scene itself or any of its subscenes: the new row goes at the
+// end of the parent's block either way, so repeatedly adding builds 1.1, 1.2,
+// 1.3 in order.
+static void DoAddSubscene(HWND hwnd, int snapIdx)
+{
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return;
+    if (g_snapshots[snapIdx]->m_isSpacer) return;
+
+    const int parent = g_snapshots[snapIdx]->m_isSub
+                       ? ParentSceneIndex(snapIdx)
+                       : snapIdx;
+    const int insertAt = (parent >= 0) ? SubsceneBlockEnd(parent)
+                                       : snapIdx + 1;
+    // Adding into a folded scene would put the new row — and its rename box —
+    // somewhere the user cannot see.
+    if (parent >= 0) g_snapshots[parent]->m_collapsed = false;
+    DoSaveAt(hwnd, insertAt, true);
+}
+
+// The button and the action have no row under the pointer to go on, so they
+// use the selected scene, falling back to the last one created, recalled or
+// saved — "a variation of what is on the desk now" is the usual intent when
+// nothing is selected. Returns false when there is neither.
+static bool AddSubsceneToCurrent(HWND hwnd)
+{
+    int snapIdx = SelectedSnapshotIndex(hwnd, nullptr);
+    if (snapIdx < 0) snapIdx = g_lastTouchedIdx;
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size() ||
+        g_snapshots[snapIdx]->m_isSpacer)
+        return false;
+    DoAddSubscene(hwnd, snapIdx);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // RestoreSelectionAfterAdd - put the selection back after a newly added
 // scene's rename box has closed. See g_addRestoreRow.
@@ -3610,15 +3656,13 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         AppendMenu(hMenu, MF_STRING | ((!hasItem || isSpacer) ? MF_GRAYED : 0), CTX_SCENE_SETTINGS,
                    isSub ? "Subscene Settings..." : "Scene Settings...");
 
-        // Safes: this row's own set, and (for subscenes) the set that applies
-        // to every subscene, which lives on its own tab of the Safes window.
+        // Recall filters: this row's own safes — what its recall leaves
+        // alone — and the set that applies to every subscene, which lives on
+        // its own tab of the Safes window.
         {
-            char safeLabel[64];
-            snprintf(safeLabel, sizeof(safeLabel), "%s Safes...",
-                     isSub ? "Per-Subscene" : "Per-Scene");
             UINT flags = MF_STRING | (!isReal ? MF_GRAYED : 0);
             if (isReal && g_snapshots[snapIdx]->m_safes.enabled) flags |= MF_CHECKED;
-            AppendMenu(hMenu, flags, CTX_SCENE_SAFES, safeLabel);
+            AppendMenu(hMenu, flags, CTX_SCENE_SAFES, "Recall Filters...");
         }
         AppendMenu(hMenu, MF_STRING, CTX_SUB_SAFES, "Subscene Global Safes...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
@@ -3653,21 +3697,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         break;
 
     case CTX_ADDSUB:
-        if (hasItem && !isSpacer)
-        {
-            // The new subscene goes at the end of its parent's block, whether
-            // the click landed on the scene or on one of its subscenes, so
-            // repeatedly adding builds 1.1, 1.2, 1.3 in order either way.
-            const int parent = g_snapshots[snapIdx]->m_isSub
-                               ? ParentSceneIndex(snapIdx)
-                               : snapIdx;
-            const int insertAt = (parent >= 0) ? SubsceneBlockEnd(parent)
-                                               : snapIdx + 1;
-            // Adding into a folded scene would put the new row — and its
-            // rename box — somewhere the user cannot see.
-            if (parent >= 0) g_snapshots[parent]->m_collapsed = false;
-            DoSaveAt(hwnd, insertAt, true);
-        }
+        if (hasItem && !isSpacer) DoAddSubscene(hwnd, snapIdx);
         break;
 
     case CTX_PROMOTE:
@@ -3684,12 +3714,12 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         {
             TransitionSnapshot* snap = g_snapshots[snapIdx].get();
             char title[512];
-            snprintf(title, sizeof(title), "Safes for %s",
+            snprintf(title, sizeof(title), "Recall Filters for %s",
                      SceneDisplayLabel(snapIdx).c_str());
             if (SafesWnd_EditSceneSafes(hwnd, snap->m_safes, title))
             {
                 // Opening the editor at all is the usual way a scene gets its
-                // own safes, so switch the feature on the moment anything is
+                // own recall filters, so switch the feature on the moment anything is
                 // set rather than making the user find a second checkbox.
                 if (!snap->m_safes.IsEmpty()) snap->m_safes.enabled = true;
                 MarkProjectDirty(nullptr);
@@ -4556,6 +4586,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
         case IDC_RECALL:
             DoRecall(hwnd, GetSelectedListIndex(hwnd));
+            break;
+
+        case IDC_ADDSUB_BTN:
+            AddSubsceneToCurrent(hwnd);
             break;
 
         case IDC_SETTINGS_BTN:

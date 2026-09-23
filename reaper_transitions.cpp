@@ -72,6 +72,7 @@ static gaccel_register_t g_muteGroupsAccel;
 static int       g_cmdShowSafes           = 0;
 static int       g_cmdSafesAddSelected    = 0;
 static int       g_cmdSceneNew            = 0;
+static int       g_cmdSceneAddSub         = 0;
 static int       g_cmdSceneRecallSel      = 0;
 static int       g_cmdSceneUpdateSel      = 0;
 static int       g_cmdSceneUpdateTouched  = 0;
@@ -79,6 +80,7 @@ static int       g_cmdSceneRecallNext     = 0;
 static gaccel_register_t g_showSafesAccel;
 static gaccel_register_t g_safesAddSelectedAccel;
 static gaccel_register_t g_sceneNewAccel;
+static gaccel_register_t g_sceneAddSubAccel;
 static gaccel_register_t g_sceneRecallSelAccel;
 static gaccel_register_t g_sceneUpdateSelAccel;
 static gaccel_register_t g_sceneUpdateTouchedAccel;
@@ -396,6 +398,7 @@ static bool RunCommand(int cmd, int /*flag*/)
     if (cmd == g_cmdShowSafes)            { SafesWnd_ShowHide();             return true; }
     if (cmd == g_cmdSafesAddSelected)     { SafesWnd_AddSelectedTracksToSafes(); return true; }
     if (cmd == g_cmdSceneNew)             { TransitionWnd_CreateNewScene();         return true; }
+    if (cmd == g_cmdSceneAddSub)          { TransitionWnd_AddSubscene();            return true; }
     if (cmd == g_cmdSceneRecallSel)       { TransitionWnd_RecallSelectedScene();    return true; }
     if (cmd == g_cmdSceneUpdateSel)       { TransitionWnd_UpdateSelectedScene();    return true; }
     if (cmd == g_cmdSceneUpdateTouched)   { TransitionWnd_UpdateLastTouchedScene(); return true; }
@@ -603,6 +606,15 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         g_sceneNewAccel.desc      = "Live Tools: Scenes - Create new scene";
         g_sceneNewAccel.accel.cmd = (WORD)g_cmdSceneNew;
         plugin_register("gaccel", &g_sceneNewAccel);
+    }
+
+    g_cmdSceneAddSub = plugin_register("command_id", (void*)"LT_SCENE_ADD_SUBSCENE");
+    if (g_cmdSceneAddSub)
+    {
+        memset(&g_sceneAddSubAccel, 0, sizeof(g_sceneAddSubAccel));
+        g_sceneAddSubAccel.desc      = "Live Tools: Scenes - Add subscene to selected scene";
+        g_sceneAddSubAccel.accel.cmd = (WORD)g_cmdSceneAddSub;
+        plugin_register("gaccel", &g_sceneAddSubAccel);
     }
 
     g_cmdSceneRecallSel = plugin_register("command_id", (void*)"LT_SCENE_RECALL_SELECTED");

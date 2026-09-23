@@ -27,6 +27,7 @@ enum SafeCol {
     COL_SOLO,
     COL_PHASE,
     COL_FX,
+    COL_SENDS,
     COL_VIS,
     COL_SEL,
     COL_NAME,
@@ -46,6 +47,7 @@ static const int k_colBit[COL_COUNT] = {
     TS_SOLO,
     TS_PHASE,
     TS_FXPARAMS | TS_FXCHAIN,    // FX column covers both
+    TS_SENDS,                    // track sends + hardware outputs
     TS_VIS,
     TS_SELECTION,
     TS_TRACKNAME,
@@ -56,18 +58,18 @@ static const int k_colBit[COL_COUNT] = {
 };
 
 static const char* k_colName[COL_COUNT] = {
-    "Track", "Vol", "Pan", "Mute", "Solo", "Phase", "FX", "Vis", "Sel",
+    "Track", "Vol", "Pan", "Mute", "Solo", "Phase", "FX", "Sends", "Vis", "Sel",
     "Name", "Color", "Height", "Order", "All"
 };
 static const int k_colWidth[COL_COUNT] = {
-    140, 32, 32, 36, 36, 40, 32, 32, 32,
+    140, 32, 32, 36, 36, 40, 32, 40, 32, 32,
     38, 40, 44, 40, 36
 };
 
 // Bitmask covering all safe-able parameters (used by COL_ALL toggle)
 static const int k_allBits =
     TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
-    TS_FXPARAMS | TS_FXCHAIN | TS_VIS | TS_SELECTION |
+    TS_FXPARAMS | TS_FXCHAIN | TS_SENDS | TS_VIS | TS_SELECTION |
     TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_LAYERS |
     TS_FXSLOTS;
 
@@ -76,17 +78,18 @@ static const int k_allBits =
 // List view column index → SafeCol mapping and back.
 // ---------------------------------------------------------------------------
 // The per-track list has these columns (in order):
-//   0: Track, 1: Vol, 2: Pan, 3: Mute, 4: Solo, 5: Phase, 6: FX, 7: Name, 8: Color, 9: All
+//   0: Track, 1: Vol, 2: Pan, 3: Mute, 4: Solo, 5: Phase, 6: FX, 7: Sends,
+//   8: Name, 9: Color, 10: All
 static const int k_ptColToSafeCol[] = {
     COL_TRACK, COL_VOL, COL_PAN, COL_MUTE, COL_SOLO, COL_PHASE, COL_FX,
-    COL_NAME, COL_COLOR, COL_ALL
+    COL_SENDS, COL_NAME, COL_COLOR, COL_ALL
 };
 static const int k_ptColCount = (int)(sizeof(k_ptColToSafeCol) / sizeof(k_ptColToSafeCol[0]));
 
 // Bitmask for COL_ALL in per-track mode (excludes Vis/Sel/Height/Order)
 static const int k_ptAllBits =
     TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
-    TS_FXPARAMS | TS_FXCHAIN | TS_TRACKNAME | TS_TRACKCOLOR;
+    TS_FXPARAMS | TS_FXCHAIN | TS_SENDS | TS_TRACKNAME | TS_TRACKCOLOR;
 
 // ---------------------------------------------------------------------------
 // Row data
@@ -246,6 +249,7 @@ static void SyncGlobalCheckboxes(SafesPane* p)
     CheckDlgButton(hDlg, IDC_GSAFE_SOLO,   (m & TS_SOLO)  ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_PHASE,  (m & TS_PHASE) ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_FX,     (m & (TS_FXPARAMS|TS_FXCHAIN)) ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_SENDS,  (m & TS_SENDS)       ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_VIS,    (m & TS_VIS)         ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_NAME,   (m & TS_TRACKNAME)   ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (m & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
@@ -643,17 +647,17 @@ static void CreateGrid(SafesPane* p)
 // ---------------------------------------------------------------------------
 static void LayoutGlobalRow(HWND hDlg, int x, int y, int w, int chkH, bool withAll)
 {
-    // Row 0: Vol  Pan   Mutes  Solo   Phase
-    // Row 1: FX   Vis   Name   Color  Height
-    // Row 2: Order Layers Slots (All Tracks)
+    // Row 0: Vol    Pan    Mutes  Solo   Phase
+    // Row 1: FX     Sends  Vis    Name   Color
+    // Row 2: Height Order  Layers Slots  (All Tracks)
     static const int k_gsIds[] = {
         IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO, IDC_GSAFE_PHASE,
-        IDC_GSAFE_FX,  IDC_GSAFE_VIS, IDC_GSAFE_NAME, IDC_GSAFE_COLOR, IDC_GSAFE_HEIGHT,
-        IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS, IDC_GSAFE_ALL
+        IDC_GSAFE_FX,  IDC_GSAFE_SENDS, IDC_GSAFE_VIS, IDC_GSAFE_NAME, IDC_GSAFE_COLOR,
+        IDC_GSAFE_HEIGHT, IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS, IDC_GSAFE_ALL
     };
-    static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1, 2,2,2, 2 };
-    static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4, 0,1,2, 3 };
-    const int count = withAll ? 14 : 13;
+    static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1, 2,2,2,2, 2 };
+    static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4, 0,1,2,3, 4 };
+    const int count = withAll ? 15 : 14;
     const int slot5 = w / 5;
     for (int i = 0; i < count; ++i)
     {
@@ -683,6 +687,7 @@ static bool HandleGlobalToggle(SafesPane* p, int id)
         { IDC_GSAFE_SOLO,   TS_SOLO },
         { IDC_GSAFE_PHASE,  TS_PHASE },
         { IDC_GSAFE_FX,     TS_FXPARAMS | TS_FXCHAIN },
+        { IDC_GSAFE_SENDS,  TS_SENDS },
         { IDC_GSAFE_VIS,    TS_VIS },
         { IDC_GSAFE_NAME,   TS_TRACKNAME },
         { IDC_GSAFE_COLOR,  TS_TRACKCOLOR },
@@ -1091,10 +1096,12 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 }
 
 // ---------------------------------------------------------------------------
-// SceneSafesDlgProc – modal IDD_SCENE_SAFES popup.
+// SceneSafesDlgProc – modal IDD_SCENE_SAFES popup: a scene's recall filters.
 //
-// Same grid, no tabs and no layer table, plus the banner and the two switches
-// that decide how this set combines with the project safes.
+// A recall filter is a safe that belongs to one scene — what that scene's
+// recall leaves alone — so it is the same grid, with no tabs and no layer
+// table, plus the banner and the two switches that decide how this set
+// combines with the project safes.
 // ---------------------------------------------------------------------------
 struct SceneSafesInit {
     SafeSet*    set;
@@ -1267,7 +1274,7 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 
 bool SafesWnd_EditSceneSafes(HWND parent, SafeSet& set, const char* title)
 {
-    SceneSafesInit init { &set, title ? title : "Scene Safes" };
+    SceneSafesInit init { &set, title ? title : "Recall Filters" };
     return DialogBoxParamA(g_hInst, MAKEINTRESOURCEA(IDD_SCENE_SAFES),
                            parent, SceneSafesDlgProc, (LPARAM)&init) == IDOK;
 }
