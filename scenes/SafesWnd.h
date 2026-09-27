@@ -33,8 +33,6 @@ void SafesWnd_ShowHide();
 bool SafesWnd_IsVisible();
 void SafesWnd_Refresh();           // rebuild row list from current REAPER project
 
-// Open the Safes window with the Subscenes tab already selected.
-void SafesWnd_ShowSubsceneTab();
 
 // ---------------------------------------------------------------------------
 // Modal Recall Filters editor. Edits `set` in place; `title` is what the
@@ -44,7 +42,7 @@ void SafesWnd_ShowSubsceneTab();
 bool SafesWnd_EditSceneSafes(HWND parent, SafeSet& set, const char* title);
 
 // Mark all currently-selected REAPER tracks fully safe (all per-track columns:
-// Vol/Pan/Mute/Solo/Phase/FX/Name/Color) — the headless equivalent of checking
+// Vol/Pan/Mute/Solo/Phase/FX/Sends/Color) — the headless equivalent of checking
 // "All" for that track's row in the Safes grid. No-op if nothing is selected.
 // Always acts on the project set.
 void SafesWnd_AddSelectedTracksToSafes();

@@ -74,6 +74,7 @@ add_library(reaper_transitions SHARED
   core/PluginSafetyEngine.cpp
   core/ChunkRecallList.cpp
   core/RecallLog.cpp
+  core/ReaperTheme.cpp
   # Scenes
   scenes/TransitionWnd.cpp
   scenes/SafesWnd.cpp

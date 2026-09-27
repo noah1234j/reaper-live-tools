@@ -67,14 +67,6 @@ struct LayersSettings
 
     // Whether activating a layer applies the layer's visual spacers.
     //
-    // REAPER has a single I_SPACER flag per track and draws it in both the TCP
-    // and the MCP, so a layer cannot give the two panels different spacers —
-    // managing them for the target panel necessarily rewrites them in the
-    // other one. Off by default, so layers leave every spacer alone and a
-    // project's own spacers are never collateral damage of a layer change.
-    // Layers still record spacers when captured; turning this on applies them.
-    bool manageSpacers       = false;
-
     void Load();
     void Save() const;
 };
@@ -139,6 +131,28 @@ public:
     // that makes the edit live.
     void MarkLayoutEdited(int idx);
 
+    // --- Live edits to the active layer ---
+    // The one exception to "editing is stored only": a TCP/MCP dot, a folder
+    // arrow or a spacer changed on the layer that is active right now is what
+    // the user is looking at, so it goes straight onto the tracks. Order edits
+    // still wait for a recall.
+    void ApplyVisibilityNow(int idx);
+    void ApplySpacersNow(int idx);
+    void ApplyFolderStateNow(const GUID& g, int folderCompact);
+
+    // Replace a layer's channels with whatever the TCP and MCP show right now,
+    // per-panel flags, folder state and spacers included.
+    void CaptureVisibleInto(int idx);
+
+    // Make a layer the active one without applying it, for when the project
+    // already looks like the layer (it was just captured from it).
+    void SetActiveNoApply(int idx);
+
+    // Whether a layer slot is recall-safed in the Safes window. A safed layer
+    // keeps its definition through scene recall and also ignores visibility
+    // changes made in REAPER while it is active.
+    static bool IsLayerSafed(int idx);
+
     // --- Timer (registered with plugin_register("timer",...)) ---
     static void TimerCallback();
 
@@ -171,6 +185,8 @@ private:
     void DoApplyLayer(int idx);
     void RestoreAllVisible();
     void SyncLayerOrderFromReaper(int idx);  // update layer order to match REAPER track positions
+    void SyncLayerVisibilityFromReaper(int idx);  // pull TCP/MCP/folder changes made in REAPER into the layer
+    void ApplyVisibilityPass(int idx);       // the visibility half of DoApplyLayer, no UI refresh
 
     // Action registration helpers
     void RegisterLayerAction(int idx);

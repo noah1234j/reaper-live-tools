@@ -6,6 +6,7 @@
 #include "../layers/LayersWnd.h"
 #include "api.h"
 #include "resource.h"
+#include "ReaperTheme.h"
 
 #ifdef _WIN32
 #  include <commctrl.h>
@@ -76,14 +77,43 @@ static int  s_savedWndX = 0, s_savedWndY = 0, s_savedWndW = 0, s_savedWndH = 0;
 // UI timer ID
 static const UINT UI_TIMER_ID = 1;
 
-// Last TS_LAYERS state applied to the recall dropdown, so the UI timer can
-// notice the global safe being toggled from the Safes window and re-enable or
-// grey the control without waiting for the scene selection to change.
-static bool g_layerComboSafed = false;
-
 // Row whose label is currently being edited in place, so the deferred
 // reposition in WM_USER + 2 knows which cell to move the edit box over.
 static int g_labelEditItem = -1;
+
+// Where the in-place edit belongs (list-client coordinates). The list view
+// re-sizes its edit box on every keystroke (EN_UPDATE), and it sizes it for the
+// item label — column 0 — so without this the box jumps back left as soon as
+// the user types. LabelEditProc holds the box to this rect instead.
+static RECT    g_labelEditRect      = {};
+static bool    g_labelEditRectValid = false;
+static WNDPROC s_origLabelEditProc  = nullptr;
+
+static LRESULT CALLBACK LabelEditProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    WNDPROC orig = s_origLabelEditProc;
+    if (msg == WM_WINDOWPOSCHANGING && g_labelEditRectValid)
+    {
+        WINDOWPOS* wpos = (WINDOWPOS*)lp;
+        if (!(wpos->flags & SWP_NOMOVE))
+        {
+            wpos->x = g_labelEditRect.left;
+            wpos->y = g_labelEditRect.top;
+        }
+        if (!(wpos->flags & SWP_NOSIZE))
+        {
+            wpos->cx = g_labelEditRect.right - g_labelEditRect.left;
+            wpos->cy = g_labelEditRect.bottom - g_labelEditRect.top;
+        }
+    }
+    else if (msg == WM_NCDESTROY)
+    {
+        SetWindowLongPtr(h, GWLP_WNDPROC, (LONG_PTR)orig);
+        s_origLabelEditProc  = nullptr;
+        g_labelEditRectValid = false;
+    }
+    return CallWindowProc(orig, h, msg, wp, lp);
+}
 
 // Pending selection restore for a scene that was just added: the row the
 // rename box is open on, and the row that was selected before the add. The
@@ -97,7 +127,7 @@ enum { CTX_RENAME = 100, CTX_OVERWRITE, CTX_DELETE,
        CTX_NEW, CTX_RECALL_CTX, CTX_COPY_CTX, CTX_PASTE_CTX,
        CTX_EXPORT, CTX_IMPORT, CTX_ADDSPACER, CTX_SCENE_SETTINGS,
        CTX_CUE_REMOVE, CTX_DELETE_ALL,
-       CTX_ADDSUB, CTX_SCENE_SAFES, CTX_SUB_SAFES, CTX_PROMOTE,
+       CTX_ADDSUB, CTX_SCENE_SAFES, CTX_PROMOTE,
        CTX_TOGGLE_FOLD, CTX_COLLAPSE_ALL, CTX_EXPAND_ALL };
 
 // Docker context menu IDs
@@ -111,12 +141,6 @@ static std::vector<int> g_cueList;
 
 // Whether to place a project marker at the play-cursor on each recall
 static bool g_placeMarker = false;
-
-// Whether saving a scene records which layer is active at the time, so that
-// recalling the scene brings that layer back. Off means the scene still
-// captures the layer definitions — only the "recall this one" pointer is left
-// unset, for projects where layers are driven independently of scenes.
-bool g_storeActiveLayer = true;
 
 // Stop transport before recall; restart recording after recall
 static bool g_stopRecBeforeRecall = false;
@@ -148,6 +172,9 @@ static double g_defaultSubTaperExp = 2.0;
 
 // Drag-drop state
 static int        g_dragSrc     = -1;
+// Where a dragged scene will land, as a gap between rows: gap N is just above
+// row N, and gap == row count is after the last row. -1 while not over the
+// list. Shown as a bar across the list rather than a highlighted row.
 static int        g_dragTarget  = -1;
 #ifdef _WIN32
 static HIMAGELIST g_hDragImages = nullptr;
@@ -187,18 +214,18 @@ static std::vector<SidebarCtrl> g_sidebarCtrls;
 static int  g_initCx = 0, g_initCy = 0;
 
 // ---- Notes box resizer ----------------------------------------------------
-// The notes box is last in the sidebar stack, and the sidebar keeps its height
-// when the window grows — so everything below the notes box is free space, and
-// IDC_NOTES_GRIP lets the user drag the box down into it. g_notesExtra is how
-// many pixels past its default height the user has dragged it; it is saved
-// with the rest of the window state.
-static int     g_notesExtra     = 0;
+// The notes box is last in the sidebar stack and by default fills everything
+// down to the footer, at any window size. IDC_NOTES_GRIP lets the user pull
+// its bottom edge up; g_notesShrink is how many pixels short of the footer it
+// then stops, and is saved with the rest of the window state. Dragging the
+// grip back down to the footer returns it to filling.
+static int     g_notesShrink    = 0;
 static RECT    g_notesInitRect  = {};   // client coords, recorded at WM_INITDIALOG
 static RECT    g_gripInitRect   = {};
 static WNDPROC g_gripOldProc    = nullptr;
 static bool    g_gripDragging   = false;
 static int     g_gripDragY0     = 0;
-static int     g_gripDragExtra0 = 0;
+static int     g_gripDragShrink0 = 0;
 static void    LayoutNotes(HWND hwnd);
 
 // Footer: the status line and the version, stacked at the very bottom of the
@@ -206,6 +233,8 @@ static void    LayoutNotes(HWND hwnd);
 // area rather than keeping their y, so they stay last at any window size.
 static RECT    g_versionInitRect = {};
 static RECT    g_statusInitRect  = {};
+static RECT    g_progInitRect    = {};   // progress bar, the footer's top row
+static RECT    g_layerInitRect   = {};   // "Layer: ..." line, just above the status
 static void    LayoutFooter(HWND hwnd);
 static int     FooterStatusTop(HWND hwnd);
 
@@ -265,6 +294,7 @@ static void RefillCueRightList(HWND hRight, const std::vector<int>& list);
 static void RestoreLayerState(TransitionSnapshot* snap);
 static void EnsureLayerUids(TransitionSnapshot* snap);
 static void ResolveSceneLayer(TransitionSnapshot* snap);
+static int  SceneRecallLayerIndex(const TransitionSnapshot* snap);
 static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -417,7 +447,7 @@ void TransitionWnd_RecallScene(int index)
 
     // Same per-recall safes overlay the windowed path installs — a scene
     // recalled from a key, MIDI or OSC binding has to obey the same rules.
-    SceneSafeScope safeScope(snap->m_safes.enabled ? &snap->m_safes : nullptr,
+    SceneSafeScope safeScope(&snap->m_safes,
                              snap->m_isSub);
     if (g_placeMarker)
     {
@@ -428,9 +458,9 @@ void TransitionWnd_RecallScene(int index)
     if (g_stopRecBeforeRecall && (GetPlayState() & 4))
         Main_OnCommand(1016, 0);  // Stop transport
 
-    // Strip TS_VIS when a layer is being recalled (layers manage visibility)
+    // Strip TS_VIS when a layer is active (layers manage visibility)
     int effectiveMask = snap->m_mask;
-    if (!snap->m_layers.empty() && snap->m_layerUid > 0)
+    if (SceneRecallLayerIndex(snap) >= 0)
         effectiveMask &= ~TS_VIS;
     TransitionEngine::Get().Recall(snap, effectiveMask, duration);
     TransitionEngine::Get().SetCurrentSlot(index);
@@ -659,7 +689,6 @@ void TransitionWnd_ResetSettings()
     g_defaultSubTaper    = TAPER_SCURVE;
     g_defaultSubTaperExp = 2.0;
     g_placeMarker        = false;
-    g_storeActiveLayer   = true;
     g_stopRecBeforeRecall = false;
     g_startRecAfterRecall = false;
     g_singleClickRecall  = false;
@@ -706,13 +735,10 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         g_defaultSubTaperExp = (taperExp > 0.0) ? taperExp : 2.0;
         return true;
     }
+    // Retired "store active layer" setting: recall now follows the active
+    // layer index, so the line is only swallowed for older projects.
     if (strncmp(line, "LTSTOREACTIVELAYER ", 19) == 0)
-    {
-        int val = 1;
-        sscanf(line + 19, "%d", &val);
-        g_storeActiveLayer = (val != 0);
         return true;
-    }
     if (strncmp(line, "LTPRELOADOFFLINE ", 17) == 0)
     {
         int val = 0;
@@ -788,10 +814,15 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
     if (strncmp(line, "LTSCENESWND ", 12) == 0)
     {
         int docked = 0, visible = 0, x = 0, y = 0, w = 500, h = 400;
-        int notesExtra = 0, splitOffset = 0;
-        sscanf(line + 12, "%d %d %d %d %d %d %d %d",
-               &docked, &visible, &x, &y, &w, &h, &notesExtra, &splitOffset);
-        g_notesExtra  = (notesExtra > 0) ? notesExtra : 0;  // clamped by LayoutNotes
+        // Field 7 held how far the notes box had been dragged *past* its
+        // default height, from before the box filled the column by default.
+        // It is read and dropped, so an older project opens with the box
+        // filling; field 9 is how far it has been pulled up since.
+        int oldNotesExtra = 0, splitOffset = 0, notesShrink = 0;
+        sscanf(line + 12, "%d %d %d %d %d %d %d %d %d",
+               &docked, &visible, &x, &y, &w, &h, &oldNotesExtra, &splitOffset, &notesShrink);
+        (void)oldNotesExtra;
+        g_notesShrink = (notesShrink > 0) ? notesShrink : 0;  // clamped by LayoutNotes
         g_splitOffset = splitOffset;                        // clamped by LayoutMain
         s_savedWndDocked  = (docked  != 0);
         s_savedWndVisible = (visible != 0);
@@ -816,9 +847,6 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_ctrlClickOverwrite ? 1 : 0);
     ctx->AddLine("LTSUBDEFSETTINGS %.4f %d %.4f",
                  g_defaultSubDuration, g_defaultSubTaper, g_defaultSubTaperExp);
-    // Its own line rather than a field on LTDEFSETTINGS: a missing field would
-    // read as 0, and this setting defaults to on.
-    ctx->AddLine("LTSTOREACTIVELAYER %d", g_storeActiveLayer ? 1 : 0);
     ctx->AddLine("LTPRELOADOFFLINE %d", g_preloadOffline ? 1 : 0);
     ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
     ctx->AddLine("LTSHADOWPARAMS %d", g_shadowParams ? 1 : 0);
@@ -860,9 +888,9 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
         }
         // Trailing fields are optional on read, so older builds still parse
         // this line and simply ignore them.
-        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d %d %d",
+        ctx->AddLine("LTSCENESWND %d %d %d %d %d %d %d %d %d",
                      wndDocked ? 1 : 0, wndVisible ? 1 : 0,
-                     wx, wy, ww, wh, g_notesExtra, g_splitOffset);
+                     wx, wy, ww, wh, 0, g_splitOffset, g_notesShrink);
     }
 }
 
@@ -916,37 +944,29 @@ static std::string NotesFromControl(const char* s)
 }
 
 // ---------------------------------------------------------------------------
-// NotesMaxExtra – how far the notes box may still be dragged down.
-// The sidebar controls keep their height on resize, so the gap between the
-// grip and the bottom of the client area is free space the box can claim. The
-// same margin the grip sits at by default is kept below it.
+// NotesFillHeight – the notes box height that reaches down to the footer.
+// Stops the same small margin above the footer's top row that the version
+// line keeps from the window edge.
 // ---------------------------------------------------------------------------
-static int NotesMaxExtra(HWND hwnd)
+static int FooterTop(HWND hwnd);
+
+static int NotesFillHeight(HWND hwnd)
 {
     if (g_initCy <= 0 || g_gripInitRect.bottom <= g_gripInitRect.top) return 0;
     if (g_versionInitRect.bottom <= g_versionInitRect.top) return 0;
 
-    RECT cr;
-    GetClientRect(hwnd, &cr);
-
-    // Stop just above wherever LayoutFooter has pinned the status line — the
-    // topmost of the two footer rows — rather than reserving the whole gap
-    // that happens to exist at the design size. That gap is exactly the room
-    // the box is meant to be able to claim.
-    int staTop = FooterStatusTop(hwnd);
-    if (staTop <= 0) return 0;
-    int pad = (g_versionInitRect.bottom - g_versionInitRect.top) / 3;
-
-    int baseH = g_notesInitRect.bottom - g_notesInitRect.top;
-    int gripH = g_gripInitRect.bottom  - g_gripInitRect.top;
-    int avail = (staTop - pad) - (g_notesInitRect.top + baseH + gripH);
-    return avail > 0 ? avail : 0;
+    const int top = FooterTop(hwnd);
+    if (top <= 0) return 0;
+    const int pad   = (g_versionInitRect.bottom - g_versionInitRect.top) / 3;
+    const int gripH = g_gripInitRect.bottom - g_gripInitRect.top;
+    const int h     = (top - pad) - g_notesInitRect.top - gripH;
+    return h > 0 ? h : 0;
 }
 
 // ---------------------------------------------------------------------------
-// LayoutNotes – apply g_notesExtra to the notes box and reseat the grip.
-// Runs after the WM_SIZE sidebar pass, which has already put both controls
-// back at their default height, so x/width are read from the live controls.
+// LayoutNotes – size the notes box to fill down to the footer, less whatever
+// the user has pulled it up by, and reseat the grip under it. Runs after the
+// WM_SIZE sidebar pass, so x/width are read from the live controls.
 // ---------------------------------------------------------------------------
 static void LayoutNotes(HWND hwnd)
 {
@@ -955,17 +975,21 @@ static void LayoutNotes(HWND hwnd)
     if (!hNotes || !hGrip) return;
     if (g_notesInitRect.bottom <= g_notesInitRect.top) return;
 
-    int maxExtra = NotesMaxExtra(hwnd);
-    if (g_notesExtra > maxExtra) g_notesExtra = maxExtra;
-    if (g_notesExtra < 0)        g_notesExtra = 0;
+    // Never shorter than half its design height, however far it is pulled up.
+    const int minH  = (g_notesInitRect.bottom - g_notesInitRect.top) / 2;
+    const int fillH = NotesFillHeight(hwnd);
+    int maxShrink = fillH - minH;
+    if (maxShrink < 0) maxShrink = 0;
+    if (g_notesShrink > maxShrink) g_notesShrink = maxShrink;
+    if (g_notesShrink < 0)         g_notesShrink = 0;
+
+    int h = fillH - g_notesShrink;
+    if (h < minH) h = minH;
 
     RECT nr, gr;
     GetWindowRect(hNotes, &nr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&nr, 2);
     GetWindowRect(hGrip,  &gr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&gr, 2);
-
-    int baseH = g_notesInitRect.bottom - g_notesInitRect.top;
-    int gripH = g_gripInitRect.bottom  - g_gripInitRect.top;
-    int h     = baseH + g_notesExtra;
+    const int gripH = g_gripInitRect.bottom - g_gripInitRect.top;
 
     SetWindowPos(hNotes, nullptr, nr.left, g_notesInitRect.top,
                  nr.right - nr.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -995,9 +1019,36 @@ static int FooterStatusTop(HWND hwnd)
     return verTop - staGap - staH;
 }
 
+// Footer rows above the status line, bottom-up: the layer indicator sits
+// directly on the status line and the progress bar on the layer indicator.
+// Each keeps the gap to the row below it that it has at the design size.
+static int FooterLayerTop(HWND hwnd)
+{
+    const int staTop = FooterStatusTop(hwnd);
+    if (staTop <= 0) return 0;
+    if (g_layerInitRect.bottom <= g_layerInitRect.top) return staTop;
+    const int h   = g_layerInitRect.bottom - g_layerInitRect.top;
+    const int gap = g_statusInitRect.top - g_layerInitRect.bottom;
+    return staTop - gap - h;
+}
+
+// FooterTop – the top of the footer's highest row (the progress bar), which
+// is as far down as the notes box may reach.
+static int FooterTop(HWND hwnd)
+{
+    const int below = FooterLayerTop(hwnd);
+    if (below <= 0) return 0;
+    if (g_progInitRect.bottom <= g_progInitRect.top) return below;
+    const int belowInitTop = (g_layerInitRect.bottom > g_layerInitRect.top)
+                             ? g_layerInitRect.top : g_statusInitRect.top;
+    const int h   = g_progInitRect.bottom - g_progInitRect.top;
+    const int gap = belowInitTop - g_progInitRect.bottom;
+    return below - gap - h;
+}
+
 // ---------------------------------------------------------------------------
-// LayoutFooter – keep the status line and version pinned to the bottom of the
-// sidebar. The LayoutMain sidebar pass restores their original y, so this runs
+// LayoutFooter – keep the progress bar, layer indicator, status line and
+// version pinned to the bottom of the sidebar. The LayoutMain sidebar pass restores their original y, so this runs
 // after it.
 // ---------------------------------------------------------------------------
 static void LayoutFooter(HWND hwnd)
@@ -1030,6 +1081,30 @@ static void LayoutFooter(HWND hwnd)
                  SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(hSta, nullptr, sr.left, staTop, sr.right - sr.left, staH,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+
+    HWND hLayer = GetDlgItem(hwnd, IDC_LAYER_STATUS);
+    if (hLayer && g_layerInitRect.bottom > g_layerInitRect.top)
+    {
+        const int h   = g_layerInitRect.bottom - g_layerInitRect.top;
+        int       top = FooterLayerTop(hwnd);
+        if (top < g_layerInitRect.top) top = g_layerInitRect.top;
+        RECT lr;
+        GetWindowRect(hLayer, &lr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&lr, 2);
+        SetWindowPos(hLayer, nullptr, lr.left, top, lr.right - lr.left, h,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    HWND hProg = GetDlgItem(hwnd, IDC_PROGRESS);
+    if (hProg && g_progInitRect.bottom > g_progInitRect.top)
+    {
+        const int progH   = g_progInitRect.bottom - g_progInitRect.top;
+        int       progTop = FooterTop(hwnd);
+        if (progTop < g_progInitRect.top) progTop = g_progInitRect.top;
+        RECT pr;
+        GetWindowRect(hProg, &pr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&pr, 2);
+        SetWindowPos(hProg, nullptr, pr.left, progTop, pr.right - pr.left, progH,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,7 +1261,8 @@ static LRESULT CALLBACK SplitterProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 }
 
 // ---------------------------------------------------------------------------
-// NotesGripProc – subclass for IDC_NOTES_GRIP: drag the notes box taller.
+// NotesGripProc – subclass for IDC_NOTES_GRIP: pull the notes box's bottom
+// edge up, or back down to the footer.
 // ---------------------------------------------------------------------------
 static LRESULT CALLBACK NotesGripProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -1202,7 +1278,7 @@ static LRESULT CALLBACK NotesGripProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         GetCursorPos(&pt);
         g_gripDragging   = true;
         g_gripDragY0     = pt.y;
-        g_gripDragExtra0 = g_notesExtra;
+        g_gripDragShrink0 = g_notesShrink;
         SetCapture(h);
         return 0;
     }
@@ -1212,7 +1288,7 @@ static LRESULT CALLBACK NotesGripProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
         {
             POINT pt;
             GetCursorPos(&pt);
-            g_notesExtra = g_gripDragExtra0 + (pt.y - g_gripDragY0);
+            g_notesShrink = g_gripDragShrink0 - (pt.y - g_gripDragY0);
             LayoutNotes(GetParent(h));
         }
         return 0;
@@ -1589,38 +1665,6 @@ static TransitionSnapshot* GetSelectedSnapshot(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
-// CaptureLayersFromEngine – refresh a scene's stored layer set from the live
-// LayersEngine, leaving every other captured value alone. Layer definitions
-// are not performance state, so re-reading them is safe outside a full
-// Overwrite; this is what keeps a scene able to recall a layer created after
-// the scene was saved.
-// ---------------------------------------------------------------------------
-static void CaptureLayersFromEngine(TransitionSnapshot* snap)
-{
-    if (!snap) return;
-    LayersEngine& le = LayersEngine::Get();
-    snap->m_layers.clear();
-    for (int li = 0; li < le.GetLayerCount(); li++)
-    {
-        const LayerDef& ld = le.GetLayer(li);
-        CapturedLayer cl;
-        cl.name        = ld.name;
-        cl.maxChannels = ld.maxChannels;
-        cl.uid         = ld.uid;
-        for (const LayerTrack& lt : ld.tracks)
-        {
-            CapturedLayerTrack clt;
-            clt.guid     = lt.guid;
-            clt.isSpacer = lt.isSpacer;
-            clt.showTcp  = lt.showTcp;
-            clt.showMcp  = lt.showMcp;
-            cl.tracks.push_back(clt);
-        }
-        snap->m_layers.push_back(cl);
-    }
-}
-
-// ---------------------------------------------------------------------------
 // EnsureLayerUids – migrate a scene saved before layer uids existed. Every
 // captured layer gets a uid minted from the engine's counter, and the old
 // index-based m_layerIdx is resolved to the uid it pointed at, once. After
@@ -1692,29 +1736,18 @@ static int FindCapturedLayerByUid(const TransitionSnapshot* snap, int uid)
 }
 
 // ---------------------------------------------------------------------------
-// UpdateLayerComboEnable – the recall dropdown is dead while the Layers global
-// safe is set: recall skips layer state entirely, so letting the user pick one
-// would promise something that will not happen.
+// SceneRecallLayerIndex – the layer a recall of this scene lands on.
+//
+// Recall stays on the layer index that is active now: on layer 2, recalling a
+// scene brings up that scene's layer 2. -1 when no layer is active, or the
+// scene captured no layer at that index — layer state is then left alone.
 // ---------------------------------------------------------------------------
-static void UpdateLayerComboEnable(HWND hwnd)
+static int SceneRecallLayerIndex(const TransitionSnapshot* snap)
 {
-    HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
-    if (!hCb) return;
-
-    const bool safed = (g_globalSafeMask & TS_LAYERS) != 0;
-    g_layerComboSafed = safed;
-
-    if (safed)
-    {
-        EnableWindow(hCb, FALSE);
-        return;
-    }
-
-    // Otherwise it follows the selected row: spacers have no layer to recall.
-    int idx = GetSelectedSnapIndex(hwnd);
-    const bool usable = (idx >= 0 && idx < (int)g_snapshots.size() &&
-                         !g_snapshots[idx]->m_isSpacer);
-    EnableWindow(hCb, usable ? TRUE : FALSE);
+    if (!snap || snap->m_isSpacer || snap->m_layers.empty()) return -1;
+    const int active = LayersEngine::Get().GetActiveLayer();
+    if (active < 0 || active >= (int)snap->m_layers.size()) return -1;
+    return active;
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,55 +1789,6 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
     // Transition settings and notes are in the per-scene Settings popup.
     SetDlgItemText(hwnd, IDC_SNAPNOTES,
                    snap ? NotesToControl(snap->m_notes).c_str() : "");
-
-    // Per-scene layer selector.
-    //
-    // The scene's own captured layers come first: those are what recall can
-    // actually activate, since recall installs that captured set. Any layer
-    // that exists right now but is not in the capture is listed after them, so
-    // a layer created since the scene was saved can still be chosen — picking
-    // one refreshes the scene's captured set (see CBN_SELCHANGE), which is the
-    // only point at which that set is allowed to change behind the user.
-    //
-    // Each entry carries its layer uid as item data, so a selection survives
-    // renames and reordering.
-    {
-        HWND hCb = GetDlgItem(hwnd, IDC_SNAP_LAYER);
-        g_syncingEditor = true;  // keep the guard while filling combobox
-        SendMessage(hCb, CB_RESETCONTENT, 0, 0);
-        int noneItem = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)"(no layer recall)");
-        SendMessage(hCb, CB_SETITEMDATA, (WPARAM)noneItem, (LPARAM)0);
-        if (snap && !snap->m_isSpacer)
-        {
-            ResolveSceneLayer(snap);
-
-            LayersEngine& le = LayersEngine::Get();
-            int sel = 0;
-
-            for (const auto& cl : snap->m_layers)
-            {
-                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)cl.name.c_str());
-                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)cl.uid);
-                if (cl.uid > 0 && cl.uid == snap->m_layerUid) sel = item;
-            }
-
-            for (int li = 0; li < le.GetLayerCount(); li++)
-            {
-                const LayerDef& ld = le.GetLayer(li);
-                if (FindCapturedLayerByUid(snap, ld.uid) >= 0) continue;
-                int item = (int)SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)ld.name);
-                SendMessage(hCb, CB_SETITEMDATA, (WPARAM)item, (LPARAM)ld.uid);
-                if (ld.uid > 0 && ld.uid == snap->m_layerUid) sel = item;
-            }
-
-            SendMessage(hCb, CB_SETCURSEL, (WPARAM)sel, 0);
-        }
-        else
-        {
-            SendMessage(hCb, CB_SETCURSEL, 0, 0);
-        }
-        UpdateLayerComboEnable(hwnd);
-    }
 
     // Update current layer indicator
     {
@@ -2029,12 +2013,29 @@ static void DoSaveAt(HWND hwnd, int insertAt, bool asSubscene)
     ss->m_duration = asSubscene ? g_defaultSubDuration : g_defaultDuration;
     ss->m_taper    = asSubscene ? g_defaultSubTaper    : g_defaultTaper;
     ss->m_taperExp = asSubscene ? g_defaultSubTaperExp : g_defaultTaperExp;
+
+    // A new scene starts from what is on screen: the current TCP/MCP
+    // visibility goes into the first layer, which becomes the active one, so
+    // the scene captures it.
+    // Nothing is applied — the project already looks like this. A safed first
+    // layer keeps its definition (and so is not made active, since the screen
+    // would not match it). Subscenes leave the layers alone.
+    if (!asSubscene && !LayersEngine::IsLayerSafed(0))
+    {
+        LayersEngine& le = LayersEngine::Get();
+        if (le.GetLayerCount() == 0) le.AddLayer(nullptr);
+        le.CaptureVisibleInto(0);
+        le.SetActiveNoApply(0);
+        LayersWnd_Refresh();
+    }
+
     ss->Capture(TS_CAPTURE_ALL);  // also captures full layer state
 
-    // Seed the new scene's layer assignment from whatever is active, if the
-    // user wants that. Only here, and only for a scene being created — see
-    // the note in Capture about why Overwrite must not do this.
-    if (g_storeActiveLayer)
+    // Recall follows the active layer index and no longer reads this, but
+    // builds that predate that still do, so a new scene keeps naming the
+    // layer that was active when it was saved. Only here, and only for a
+    // scene being created — see the note in Capture about why Overwrite must
+    // not do this.
     {
         LayersEngine& le = LayersEngine::Get();
         ss->m_layerIdx = le.GetActiveLayer();
@@ -2163,9 +2164,15 @@ static void RestoreSelectionAfterAdd(HWND hwnd)
 
 // ---------------------------------------------------------------------------
 // RestoreLayerState – apply full layer state from a snapshot on recall.
-// Skipped when the TS_LAYERS safe bit is set, when no specific layer was
-// designated for recall (m_layerUid <= 0), or when the scene has no captured
-// layer data (m_layers empty — e.g. old-format scenes).
+//
+// The layer index that is active stays active: the scene's layer at that index
+// is installed and applied. If that slot is safed, nothing is applied — the
+// safed layer stays as it is and stays selected — though the scene's other
+// layers are still installed around it.
+//
+// Skipped when the TS_LAYERS safe bit is set, when no layer is active, or when
+// the scene has no captured layer at the active index (m_layers empty covers
+// old-format scenes).
 // ---------------------------------------------------------------------------
 static void RestoreLayerState(TransitionSnapshot* snap)
 {
@@ -2174,16 +2181,12 @@ static void RestoreLayerState(TransitionSnapshot* snap)
     // can add TS_LAYERS for this one recall, and the layer restore has to see
     // that as much as the engine does.
     if (GetEffectiveGlobalSafeMask() & TS_LAYERS) return;
-    if (snap->m_layers.empty()) return;
 
-    // Number any pre-uid layers so the reference below is by uid, not index,
-    // and replace a reference to a layer that has since been deleted.
-    ResolveSceneLayer(snap);
+    const int recallIdx = SceneRecallLayerIndex(snap);
+    if (recallIdx < 0) return;
 
-    // If the scene has no layer to recall (user chose "(no layer recall)" or
-    // the scene was saved before layer capture was introduced) leave the
-    // current layer system untouched.
-    if (snap->m_layerUid <= 0) return;
+    // Number any pre-uid layers so the installed set keeps stable uids.
+    EnsureLayerUids(snap);
 
     LayersEngine& le = LayersEngine::Get();
 
@@ -2194,8 +2197,7 @@ static void RestoreLayerState(TransitionSnapshot* snap)
         // instead of taking the scene's captured copy. The safe is by index
         // because that is the only reference that still means anything once
         // the whole layer set is being replaced.
-        if (i < kLayerSafeCount && (g_layerSafeMask & (1 << i)) &&
-            i < le.GetLayerCount())
+        if (LayersEngine::IsLayerSafed(i) && i < le.GetLayerCount())
         {
             newLayers.push_back(le.GetLayer(i));
             continue;
@@ -2213,15 +2215,24 @@ static void RestoreLayerState(TransitionSnapshot* snap)
             lt.guid        = clt.guid;
             lt.isSpacer    = clt.isSpacer;
             lt.name[0]     = '\0';
-            lt.folderCompact = 0;
+            lt.folderCompact = clt.folderCompact;
             lt.showTcp     = clt.showTcp;
             lt.showMcp     = clt.showMcp;
             ld.tracks.push_back(lt);
         }
         newLayers.push_back(ld);
     }
-    LayersEngine::Get().ReplaceAllLayers(newLayers, snap->m_layerUid);
-    LayersEngine::Get().RefreshAllTrackNames();
+
+    // Installed with nothing active, then re-selected by index: the replace
+    // keeps order but may re-mint a clashing uid, so the index is the exact
+    // reference. A safed slot is only re-selected — the project already
+    // shows it.
+    le.ReplaceAllLayers(newLayers, 0);
+    if (LayersEngine::IsLayerSafed(recallIdx))
+        le.SetActiveNoApply(recallIdx);
+    else
+        le.ActivateLayer(recallIdx);
+    le.RefreshAllTrackNames();
 }
 
 // ---------------------------------------------------------------------------
@@ -2270,7 +2281,7 @@ static void DoRecall(HWND hwnd, int listIndex)
     // Safes for this one recall: the subscene set if this is a subscene, plus
     // the scene's own set. Scoped across RestoreLayerState too, which reads
     // the same state after the engine has returned.
-    SceneSafeScope safeScope(snap->m_safes.enabled ? &snap->m_safes : nullptr,
+    SceneSafeScope safeScope(&snap->m_safes,
                              snap->m_isSub);
 
     // Place a named marker at the play cursor position if option is enabled
@@ -2284,10 +2295,11 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (g_stopRecBeforeRecall && (GetPlayState() & 4))
         Main_OnCommand(1016, 0);  // Stop transport
 
-    // When a layer is being recalled, layers manage track visibility.
-    // Strip TS_VIS from the engine mask so the two systems don't fight.
+    // When a layer is active, layers manage track visibility — including a
+    // safed one that recall leaves alone. Strip TS_VIS from the engine mask so
+    // the two systems don't fight.
     int effectiveMask = snap->m_mask;
-    if (!snap->m_layers.empty() && snap->m_layerUid > 0)
+    if (SceneRecallLayerIndex(snap) >= 0)
         effectiveMask &= ~TS_VIS;
 
     // --- Duration debug: record step timings if enabled ---
@@ -2635,6 +2647,87 @@ static void ImportScene(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// Drop bar – the line drawn between the two rows a dragged scene will land
+// between.
+// ---------------------------------------------------------------------------
+
+// The gap under a point in list-client coordinates: the upper half of a row
+// is the gap above it, the lower half the gap below. Below the last row is
+// the end of the list.
+static int DropGapFromPoint(HWND hList, POINT pt)
+{
+    const int count = ListView_GetItemCount(hList);
+    if (count <= 0) return 0;
+
+    LVHITTESTINFO hti = {};
+    hti.pt = pt;
+    const int item = ListView_HitTest(hList, &hti);
+    if (item >= 0)
+    {
+        RECT rc;
+        if (!ListView_GetItemRect(hList, item, &rc, LVIR_BOUNDS)) return item;
+        return (pt.y < (rc.top + rc.bottom) / 2) ? item : item + 1;
+    }
+
+    RECT rcLast;
+    if (ListView_GetItemRect(hList, count - 1, &rcLast, LVIR_BOUNDS) && pt.y >= rcLast.bottom)
+        return count;
+    // Above the first visible row (over the header, or scrolled): the gap
+    // above the top row on screen.
+    return ListView_GetTopIndex(hList);
+}
+
+// The y of a gap's bar, in list-client coordinates.
+static bool DropGapY(HWND hList, int gap, int& y)
+{
+    const int count = ListView_GetItemCount(hList);
+    if (gap < 0 || count <= 0) return false;
+    RECT rc;
+    if (gap < count)
+    {
+        if (!ListView_GetItemRect(hList, gap, &rc, LVIR_BOUNDS)) return false;
+        y = rc.top;
+    }
+    else
+    {
+        if (!ListView_GetItemRect(hList, count - 1, &rc, LVIR_BOUNDS)) return false;
+        y = rc.bottom;
+    }
+    return true;
+}
+
+static const int kDropBarH = 2;
+
+static void InvalidateDropGap(HWND hList, int gap)
+{
+    int y;
+    if (!DropGapY(hList, gap, y)) return;
+    RECT cr;
+    GetClientRect(hList, &cr);
+    RECT r = { cr.left, y - kDropBarH - 1, cr.right, y + kDropBarH + 1 };
+    InvalidateRect(hList, &r, FALSE);
+}
+
+// Painted over the list after it has drawn itself.
+static void PaintDropBar(HWND hList)
+{
+    int y;
+    if (g_dragSrc < 0 || !DropGapY(hList, g_dragTarget, y)) return;
+    RECT cr;
+    GetClientRect(hList, &cr);
+    // Centred on the row boundary, but kept inside the list at either end.
+    int top = y - kDropBarH / 2;
+    if (top < 0) top = 0;
+    if (top + kDropBarH > cr.bottom) top = cr.bottom - kDropBarH;
+    RECT r = { cr.left, top, cr.right, top + kDropBarH };
+    HDC hdc = GetDC(hList);
+    HBRUSH hb = CreateSolidBrush(ReaperTheme_List().fg);
+    FillRect(hdc, &r, hb);
+    DeleteObject(hb);
+    ReleaseDC(hList, hdc);
+}
+
+// ---------------------------------------------------------------------------
 // DoEndDrag – finalize a drag-and-drop reorder
 // ---------------------------------------------------------------------------
 static void DoEndDrag(HWND hwnd)
@@ -2651,17 +2744,21 @@ static void DoEndDrag(HWND hwnd)
     ReleaseCapture();
 
     HWND hList = GetDlgItem(hwnd, IDC_LIST);
-    ListView_SetItemState(hList, -1, 0, LVIS_DROPHILITED);
 
     const int srcRow = g_dragSrc;
-    const int tgtRow = g_dragTarget;
+    const int tgtGap = g_dragTarget;
     g_dragSrc    = -1;
     g_dragTarget = -1;
+    InvalidateDropGap(hList, tgtGap);   // take the bar down
 
-    if (srcRow < 0 || tgtRow < 0 || tgtRow == srcRow) return;
+    if (srcRow < 0 || tgtGap < 0) return;
 
+    // The gap becomes the scene index the block is inserted before. Past the
+    // last row is the end of the list — which, with the last scene folded,
+    // is after its hidden subscenes too.
     const int src = RowToSnap(srcRow);
-    const int tgt = RowToSnap(tgtRow);
+    const int tgt = (tgtGap >= ListView_GetItemCount(hList))
+                    ? (int)g_snapshots.size() : RowToSnap(tgtGap);
     if (src < 0 || tgt < 0) return;
 
     // A scene travels with its subscenes. Dragging the parent out from under
@@ -2674,8 +2771,8 @@ static void DoEndDrag(HWND hwnd)
                            ? SubsceneBlockEnd(src) : src + 1;
     const int blockLen   = blockEnd - blockStart;
 
-    // Dropping a block onto one of its own rows is a no-op, not a move.
-    if (tgt >= blockStart && tgt < blockEnd) return;
+    // A gap inside the block, or either edge of it, leaves it where it is.
+    if (tgt >= blockStart && tgt <= blockEnd) return;
 
     std::vector<std::unique_ptr<TransitionSnapshot>> moved;
     moved.reserve((size_t)blockLen);
@@ -2753,6 +2850,10 @@ struct SnapSettingsData
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK SnapSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -2874,8 +2975,12 @@ static void RefreshChunkRecallList(HWND hwnd)
 // ---------------------------------------------------------------------------
 static char s_newKeywordBuf[256] = {};
 
-static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
+static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -2911,8 +3016,12 @@ static INT_PTR CALLBACK AddKeywordDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LP
 // ---------------------------------------------------------------------------
 // ChunkRecallPluginsDlgProc – IDD_CHUNK_RECALL_PLUGINS dialog
 // ---------------------------------------------------------------------------
-static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM /*lParam*/)
+static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -2985,6 +3094,10 @@ static INT_PTR CALLBACK ChunkRecallPluginsDlgProc(HWND hwnd, UINT msg, WPARAM wP
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -3002,7 +3115,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         bool instant = (g_defaultDuration == 0.0);
         CheckDlgButton(hwnd, IDC_GSET_INSTANT, instant ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_MARKER,            g_placeMarker           ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_GSET_STORE_LAYER,       g_storeActiveLayer      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_STOP_REC_BEFORE,   g_stopRecBeforeRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_START_REC_AFTER,   g_startRecAfterRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SINGLE_CLICK,    g_singleClickRecall   ? BST_CHECKED : BST_UNCHECKED);
@@ -3070,6 +3182,23 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER),    !subInstant);
             EnableWindow(GetDlgItem(hwnd, IDC_GSET_SUB_TAPER_CUSTOM),
                          !subInstant && g_defaultSubTaper == TAPER_CUSTOM);
+        }
+
+        // Layers (these used to be the Layers window's own Settings dialog).
+        {
+            const LayersSettings& lc = LayersEngine::Get().GetSettings();
+            CheckDlgButton(hwnd, IDC_LYR_SET_MCPVIS,     lc.applyMcpVisibility  ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,    lc.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,    lc.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(hwnd, IDC_LYR_SET_TRIGGERMCP, lc.triggerMcpSelect    ? BST_CHECKED : BST_UNCHECKED);
+            HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
+            HWND hEdit = GetDlgItem(hwnd, IDC_LYR_MAXCH_EDIT);
+            if (hSpin && hEdit)
+            {
+                SendMessage(hSpin, UDM_SETRANGE, 0, MAKELONG(512, 0));
+                SendMessage(hSpin, UDM_SETBUDDY, (WPARAM)hEdit, 0);
+            }
+            SetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, lc.globalMaxChannels, FALSE);
         }
         return TRUE;
     }
@@ -3159,7 +3288,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_defaultSubTaperExp = (sex > 0.0) ? sex : 2.0;
 
             g_placeMarker         = (IsDlgButtonChecked(hwnd, IDC_GSET_MARKER)            == BST_CHECKED);
-            g_storeActiveLayer    = (IsDlgButtonChecked(hwnd, IDC_GSET_STORE_LAYER)       == BST_CHECKED);
             g_stopRecBeforeRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_STOP_REC_BEFORE)   == BST_CHECKED);
             g_startRecAfterRecall = (IsDlgButtonChecked(hwnd, IDC_GSET_START_REC_AFTER)   == BST_CHECKED);
             g_singleClickRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SINGLE_CLICK)    == BST_CHECKED);
@@ -3172,6 +3300,30 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_chunkAllInstant     = (IsDlgButtonChecked(hwnd, IDC_GSET_CHUNK_ALL_INSTANT) == BST_CHECKED);
             g_recallLog           = (IsDlgButtonChecked(hwnd, IDC_GSET_RECALL_LOG)        == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
+
+            // Layers. SetSettings re-applies the active layer, so it is only
+            // called when something actually changed — pressing OK here for an
+            // unrelated setting must not re-cue the tracks.
+            {
+                LayersSettings lc = LayersEngine::Get().GetSettings();
+                const LayersSettings before = lc;
+                lc.applyMcpVisibility  = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_MCPVIS)     == BST_CHECKED);
+                lc.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)    == BST_CHECKED);
+                lc.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)    == BST_CHECKED);
+                lc.triggerMcpSelect    = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TRIGGERMCP) == BST_CHECKED);
+                BOOL ok = FALSE;
+                const int mc = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
+                lc.globalMaxChannels = (ok && mc >= 0) ? mc : 0;
+                if (lc.applyMcpVisibility  != before.applyMcpVisibility  ||
+                    lc.reorderTracks       != before.reorderTracks       ||
+                    lc.restoreOnDeactivate != before.restoreOnDeactivate ||
+                    lc.triggerMcpSelect    != before.triggerMcpSelect    ||
+                    lc.globalMaxChannels   != before.globalMaxChannels)
+                {
+                    LayersEngine::Get().SetSettings(lc);
+                    LayersWnd_Refresh();   // max channels moves the slot-limit marks
+                }
+            }
 
             EndDialog(hwnd, IDOK);
             return TRUE;
@@ -3431,6 +3583,176 @@ static void RefillCueRightList(HWND hRight, const std::vector<int>& list)
 }
 
 // ---------------------------------------------------------------------------
+// Cue List Setup layout
+//
+// Same treatment as the Layers window: the two lists share the width left
+// after the margins and the divider gutter, in the proportion the divider
+// sets, and take all the height under the labels. Each list's Scene Name
+// column stretches to fill it. The split is remembered between sessions.
+// ---------------------------------------------------------------------------
+struct CueLayoutInit {
+    bool valid     = false;
+    int  margin    = 0;
+    int  gutter    = 0;
+    int  labelTop  = 0;
+    int  labelH    = 0;
+    int  listTop   = 0;
+    int  bottomGap = 0;
+};
+static CueLayoutInit s_cueLy;
+static double        s_cueSplitRatio   = -1.0;
+static WNDPROC       s_cueSplitOldProc = nullptr;
+static bool          s_cueSplitDrag    = false;
+static const char*   kCueSplitKey      = "cue_setup_split";
+static const int     kCueMinListW      = 120;
+
+static RECT CueChildRect(HWND dlg, HWND h)
+{
+    RECT r = {};
+    if (h)
+    {
+        GetWindowRect(h, &r);
+        MapWindowPoints(HWND_DESKTOP, dlg, (POINT*)&r, 2);
+    }
+    return r;
+}
+
+// Scene Name (column 1) takes whatever the # column leaves.
+static void CueStretchName(HWND hList)
+{
+    if (!hList) return;
+    RECT rc;
+    GetClientRect(hList, &rc);
+    int w = (rc.right - rc.left) - ListView_GetColumnWidth(hList, 0)
+            - GetSystemMetrics(SM_CXVSCROLL);
+    if (w < 60) w = 60;
+    ListView_SetColumnWidth(hList, 1, w);
+}
+
+static void LayoutCueSetup(HWND hwnd)
+{
+    if (!s_cueLy.valid || !s_cueLeft || !s_cueRight) return;
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    const int W = cr.right, H = cr.bottom;
+    if (W <= 0 || H <= 0) return;
+
+    const CueLayoutInit& g = s_cueLy;
+    const int avail = W - 2 * g.margin - g.gutter;
+    int leftW = (int)(avail * s_cueSplitRatio + 0.5);
+    if (leftW > avail - kCueMinListW) leftW = avail - kCueMinListW;
+    if (leftW < kCueMinListW)         leftW = kCueMinListW;
+    const int rightX = g.margin + leftW + g.gutter;
+    int rightW = W - g.margin - rightX;
+    if (rightW < 1) rightW = 1;
+    int listH = H - g.listTop - g.bottomGap;
+    if (listH < 40) listH = 40;
+
+    HDWP dw = BeginDeferWindowPos(5);
+    auto place = [&](HWND c, int x, int y, int w, int h) {
+        if (c) dw = DeferWindowPos(dw, c, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    };
+    place(GetDlgItem(hwnd, IDC_CUE_LEFT_LBL),  g.margin, g.labelTop, leftW,  g.labelH);
+    place(GetDlgItem(hwnd, IDC_CUE_RIGHT_LBL), rightX,   g.labelTop, rightW, g.labelH);
+    place(s_cueLeft,                           g.margin, g.listTop,  leftW,  listH);
+    place(GetDlgItem(hwnd, IDC_CUE_SPLITTER),  g.margin + leftW, g.listTop, g.gutter, listH);
+    place(s_cueRight,                          rightX,   g.listTop,  rightW, listH);
+    EndDeferWindowPos(dw);
+
+    CueStretchName(s_cueLeft);
+    CueStretchName(s_cueRight);
+    InvalidateRect(hwnd, nullptr, TRUE);
+}
+
+static LRESULT CALLBACK CueSplitterProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+    case WM_SETCURSOR:
+        SetCursor(LoadCursor(nullptr, IDC_SIZEWE));
+        return TRUE;
+
+    case WM_LBUTTONDOWN:
+        s_cueSplitDrag = true;
+        SetCapture(h);
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (s_cueSplitDrag && s_cueLy.valid)
+        {
+            HWND dlg = GetParent(h);
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(dlg, &pt);
+            RECT cr;
+            GetClientRect(dlg, &cr);
+            const int avail = cr.right - 2 * s_cueLy.margin - s_cueLy.gutter;
+            if (avail > 0)
+            {
+                double r = (double)(pt.x - s_cueLy.margin - s_cueLy.gutter / 2) / avail;
+                if (r < 0.05) r = 0.05;
+                if (r > 0.95) r = 0.95;
+                s_cueSplitRatio = r;
+                LayoutCueSetup(dlg);
+            }
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (s_cueSplitDrag)
+        {
+            s_cueSplitDrag = false;
+            ReleaseCapture();
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.4f", s_cueSplitRatio);
+            SetExtState("reaper_transitions", kCueSplitKey, buf, true);
+        }
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        s_cueSplitDrag = false;
+        return 0;
+    }
+    return CallWindowProc(s_cueSplitOldProc, h, msg, wp, lp);
+}
+
+// Record the design-size geometry, hook the divider and lay out once. Runs
+// after the placeholders have been replaced by the real lists.
+static void InitCueSetupLayout(HWND hwnd)
+{
+    if (!s_cueLeft || !s_cueRight) return;
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    const RECT ll = CueChildRect(hwnd, s_cueLeft);
+    const RECT rl = CueChildRect(hwnd, s_cueRight);
+    const RECT lb = CueChildRect(hwnd, GetDlgItem(hwnd, IDC_CUE_LEFT_LBL));
+
+    CueLayoutInit& g = s_cueLy;
+    g.margin    = ll.left;
+    g.gutter    = rl.left - ll.right;
+    if (g.gutter < 4) g.gutter = 4;
+    g.labelTop  = lb.top;
+    g.labelH    = lb.bottom - lb.top;
+    g.listTop   = ll.top;
+    g.bottomGap = cr.bottom - ll.bottom;
+    g.valid     = (ll.right > ll.left && rl.right > rl.left);
+
+    if (s_cueSplitRatio < 0.0)
+    {
+        const char* v = GetExtState("reaper_transitions", kCueSplitKey);
+        const double saved = (v && v[0]) ? atof(v) : 0.0;
+        const int lw = ll.right - ll.left, rw = rl.right - rl.left;
+        s_cueSplitRatio = (saved > 0.02 && saved < 0.98) ? saved
+                        : (lw + rw > 0 ? (double)lw / (lw + rw) : 0.5);
+    }
+
+    if (HWND hSplit = GetDlgItem(hwnd, IDC_CUE_SPLITTER))
+        s_cueSplitOldProc = (WNDPROC)SetWindowLongPtr(hSplit, GWLP_WNDPROC, (LONG_PTR)CueSplitterProc);
+
+    LayoutCueSetup(hwnd);
+}
+
+// ---------------------------------------------------------------------------
 // CueSetupDialogProc – modal IDD_CUE_SETUP dialog
 // Two list views: left = spacer + all scenes, right = cue list order.
 // All drag logic is in CueLvSubclassProc; this proc only handles
@@ -3438,6 +3760,10 @@ static void RefillCueRightList(HWND hRight, const std::vector<int>& list)
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -3460,6 +3786,7 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
                 hwnd, (HMENU)(UINT_PTR)placeholderId, g_hInstance, nullptr);
             SendMessage(hLv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
                         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+            ReaperTheme_ApplyListView(hLv);
             return hLv;
         };
 
@@ -3527,12 +3854,70 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SetWindowLongPtr(s_cueRight, GWLP_WNDPROC, (LONG_PTR)CueLvSubclassProc);
         }
 
+        InitCueSetupLayout(hwnd);
         return TRUE;
+    }
+
+    case WM_SIZE:
+        LayoutCueSetup(hwnd);
+        break;
+
+    case WM_GETMINMAXINFO:
+        if (s_cueLy.valid)
+        {
+            // Room for both lists at their minimum widths and a few rows.
+            MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+            RECT r = { 0, 0,
+                       2 * s_cueLy.margin + s_cueLy.gutter + 2 * kCueMinListW,
+                       s_cueLy.listTop + 120 + s_cueLy.bottomGap };
+            AdjustWindowRectEx(&r, (DWORD)GetWindowLong(hwnd, GWL_STYLE), FALSE,
+                               (DWORD)GetWindowLong(hwnd, GWL_EXSTYLE));
+            mmi->ptMinTrackSize.x = r.right  - r.left;
+            mmi->ptMinTrackSize.y = r.bottom - r.top;
+        }
+        return 0;
+
+    case WM_DRAWITEM:
+    {
+        DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
+        if (dis && dis->CtlID == IDC_CUE_SPLITTER)
+        {
+            // A single hairline down the gutter, like the Scenes window's.
+            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            FillRect(dis->hDC, &dis->rcItem, face);
+            DeleteObject(face);
+            const int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
+            HPEN pen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
+            HGDIOBJ old = SelectObject(dis->hDC, pen);
+            MoveToEx(dis->hDC, cx, dis->rcItem.top + 2, nullptr);
+            LineTo  (dis->hDC, cx, dis->rcItem.bottom - 2);
+            SelectObject(dis->hDC, old);
+            DeleteObject(pen);
+            return TRUE;
+        }
+        break;
     }
 
     case WM_NOTIFY:
     {
         NMHDR* hdr = (NMHDR*)lParam;
+
+        // Rows (and the selection) in REAPER theme colours
+        if ((hdr->hwndFrom == s_cueLeft || hdr->hwndFrom == s_cueRight) &&
+            hdr->code == NM_CUSTOMDRAW)
+        {
+            NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lParam;
+            LRESULT res = CDRF_DODEFAULT;
+            if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+                res = CDRF_NOTIFYITEMDRAW;
+            else if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
+            {
+                ReaperTheme_ListItemPrePaint(cd, hdr->hwndFrom, false);
+                res = CDRF_NEWFONT;
+            }
+            SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
+            return TRUE;
+        }
 
         // Double-click on left list → append to cue
         if (hdr->hwndFrom == s_cueLeft && hdr->code == NM_DBLCLK && s_cueEditList)
@@ -3558,6 +3943,7 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
             SetWindowLongPtr(s_cueRight, GWLP_WNDPROC, (LONG_PTR)s_origCueLvProc);
         s_origCueLvProc = nullptr;
         s_cueDrag       = {};
+        s_cueLy.valid   = false;
         s_cueLeft       = nullptr;
         s_cueRight      = nullptr;
         s_cueEditList   = nullptr;
@@ -3661,10 +4047,9 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         // its own tab of the Safes window.
         {
             UINT flags = MF_STRING | (!isReal ? MF_GRAYED : 0);
-            if (isReal && g_snapshots[snapIdx]->m_safes.enabled) flags |= MF_CHECKED;
+            if (isReal && (!g_snapshots[snapIdx]->m_safes.IsEmpty() || g_snapshots[snapIdx]->m_safes.replaceGlobal)) flags |= MF_CHECKED;
             AppendMenu(hMenu, flags, CTX_SCENE_SAFES, "Recall Filters...");
         }
-        AppendMenu(hMenu, MF_STRING, CTX_SUB_SAFES, "Subscene Global Safes...");
         AppendMenu(hMenu, MF_SEPARATOR, 0, nullptr);
         AppendMenu(hMenu, MF_STRING | (!hasItem ? MF_GRAYED : 0), CTX_DELETE, "Delete");
         AppendMenu(hMenu, MF_STRING | (g_snapshots.empty() ? MF_GRAYED : 0), CTX_DELETE_ALL, "Delete All Scenes");
@@ -3717,18 +4102,8 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
             snprintf(title, sizeof(title), "Recall Filters for %s",
                      SceneDisplayLabel(snapIdx).c_str());
             if (SafesWnd_EditSceneSafes(hwnd, snap->m_safes, title))
-            {
-                // Opening the editor at all is the usual way a scene gets its
-                // own recall filters, so switch the feature on the moment anything is
-                // set rather than making the user find a second checkbox.
-                if (!snap->m_safes.IsEmpty()) snap->m_safes.enabled = true;
                 MarkProjectDirty(nullptr);
-            }
         }
-        break;
-
-    case CTX_SUB_SAFES:
-        SafesWnd_ShowSubsceneTab();
         break;
 
     case CTX_TOGGLE_FOLD:
@@ -4059,16 +4434,15 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
                 ImageList_DragShowNolock(FALSE);
             }
 #endif
-            LVHITTESTINFO hti = {};
-            hti.pt = pt;
-            int newTgt = ListView_HitTest(hList, &hti);
-            if (newTgt != g_dragTarget)
+            const int newGap = DropGapFromPoint(hList, pt);
+            if (newGap != g_dragTarget)
             {
-                g_dragTarget = newTgt;
-                ListView_SetItemState(hList, -1, 0, LVIS_DROPHILITED);
-                if (g_dragTarget >= 0)
-                    ListView_SetItemState(hList, g_dragTarget,
-                                         LVIS_DROPHILITED, LVIS_DROPHILITED);
+                // Repaint while the drag image is hidden, so the old bar is
+                // not left behind in the image's saved background.
+                InvalidateDropGap(hList, g_dragTarget);
+                g_dragTarget = newGap;
+                InvalidateDropGap(hList, g_dragTarget);
+                UpdateWindow(hList);
             }
 #ifdef _WIN32
             if (g_hDragImages)
@@ -4160,6 +4534,14 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
             DoEndDrag(dlg);
         break;
 
+    case WM_PAINT:
+    {
+        // The list paints itself; the drop bar goes on top.
+        LRESULT r = CallWindowProc(s_origListProc, hList, msg, wParam, lParam);
+        if (g_dragSrc >= 0) PaintDropBar(hList);
+        return r;
+    }
+
     case WM_KEYDOWN:
         if (wParam == VK_DELETE && !g_cueMode)
         {
@@ -4196,6 +4578,10 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -4222,6 +4608,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (hList)
         {
             ListView_SetExtendedListViewStyle(hList, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+            ReaperTheme_ApplyListView(hList);
 
             // Bold variant of the list's own font, for the last-recalled scene.
             if (!g_sceneBoldFont)
@@ -4365,6 +4752,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 GetWindowRect(hSta, &g_statusInitRect);
                 MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_statusInitRect, 2);
             }
+            if (HWND hProgF = GetDlgItem(hwnd, IDC_PROGRESS))
+            {
+                GetWindowRect(hProgF, &g_progInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_progInitRect, 2);
+            }
+            if (HWND hLayerF = GetDlgItem(hwnd, IDC_LAYER_STATUS))
+            {
+                GetWindowRect(hLayerF, &g_layerInitRect);
+                MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&g_layerInitRect, 2);
+            }
 
             // ---- Notes resizer ----------------------------------------
             HWND hNotes = GetDlgItem(hwnd, IDC_SNAPNOTES);
@@ -4428,9 +4825,11 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             // A single hairline down the gutter: enough to read as a divider
             // without drawing a heavy bar between the two columns.
-            FillRect(dis->hDC, &dis->rcItem, GetSysColorBrush(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            FillRect(dis->hDC, &dis->rcItem, face);
+            DeleteObject(face);
             int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
-            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+            HPEN pen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
             HGDIOBJ old = SelectObject(dis->hDC, pen);
             MoveToEx(dis->hDC, cx, dis->rcItem.top + 2, nullptr);
             LineTo  (dis->hDC, cx, dis->rcItem.bottom - 2);
@@ -4441,10 +4840,12 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (dis && dis->CtlID == IDC_NOTES_GRIP)
         {
             // Two short rules centred in the strip, the usual "drag me" cue.
-            FillRect(dis->hDC, &dis->rcItem, GetSysColorBrush(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            FillRect(dis->hDC, &dis->rcItem, face);
+            DeleteObject(face);
             int midY = (dis->rcItem.top + dis->rcItem.bottom) / 2;
             int cx   = (dis->rcItem.left + dis->rcItem.right) / 2;
-            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+            HPEN pen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
             HGDIOBJ old = SelectObject(dis->hDC, pen);
             for (int i = 0; i < 2; i++)
             {
@@ -4461,6 +4862,19 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_TIMER:
         if (wParam == UI_TIMER_ID)
         {
+            // Follow a REAPER theme switch while the window is open.
+            static int s_themeTick = 0;
+            if (++s_themeTick >= 10)
+            {
+                s_themeTick = 0;
+                if (ReaperTheme_Refresh())
+                {
+                    ReaperTheme_ApplyListView(GetDlgItem(hwnd, IDC_LIST));
+                    RedrawWindow(hwnd, nullptr, nullptr,
+                                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                }
+            }
+
             TransitionEngine& eng = TransitionEngine::Get();
 
             HWND hProg = GetDlgItem(hwnd, IDC_PROGRESS);
@@ -4469,12 +4883,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             SendMessage(hProg, PBM_SETPOS, (WPARAM)pct, 0);
 
             SetDlgItemText(hwnd, IDC_STATUS, eng.GetStatus());
-
-            // The Layers global safe is toggled from the Safes window, which
-            // knows nothing about this dropdown. Notice the change here so it
-            // greys out straight away instead of on the next scene selection.
-            if (((g_globalSafeMask & TS_LAYERS) != 0) != g_layerComboSafed)
-                UpdateLayerComboEnable(hwnd);
 
             // Update layer status indicator
             {
@@ -4498,9 +4906,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             RECT rc = {};
             if (ListView_GetSubItemRect(hList, g_labelEditItem, 1, LVIR_BOUNDS, &rc))
+            {
+                g_labelEditRect      = rc;
+                g_labelEditRectValid = true;
+                if (!s_origLabelEditProc)
+                    s_origLabelEditProc = (WNDPROC)SetWindowLongPtr(
+                        hEdit, GWLP_WNDPROC, (LONG_PTR)LabelEditProc);
                 SetWindowPos(hEdit, nullptr, rc.left, rc.top,
                              rc.right - rc.left, rc.bottom - rc.top,
                              SWP_NOZORDER | SWP_NOACTIVATE);
+            }
             // The edit is created by the list view, which had to be focused
             // for LVM_EDITLABEL to work at all; make sure the box itself is
             // what the keyboard is talking to, so typing replaces the
@@ -4548,31 +4963,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 char buf[4096] = {};
                 GetDlgItemText(hwnd, IDC_SNAPNOTES, buf, sizeof(buf));
                 g_snapshots[idx]->m_notes = NotesFromControl(buf);
-            }
-            return TRUE;
-        }
-
-        if (id == IDC_SNAP_LAYER && evt == CBN_SELCHANGE && !g_syncingEditor)
-        {
-            int idx = GetSelectedSnapIndex(hwnd);
-            if (idx >= 0 && idx < (int)g_snapshots.size() && !g_snapshots[idx]->m_isSpacer)
-            {
-                TransitionSnapshot* snap = g_snapshots[idx].get();
-                int sel = (int)SendDlgItemMessage(hwnd, IDC_SNAP_LAYER, CB_GETCURSEL, 0, 0);
-                int uid = (sel < 0) ? 0
-                        : (int)SendDlgItemMessage(hwnd, IDC_SNAP_LAYER, CB_GETITEMDATA,
-                                                  (WPARAM)sel, 0);
-                if (uid < 0) uid = 0;   // CB_ERR
-
-                // Picking a layer the scene never captured (created after the
-                // scene was saved) means its stored layer set is out of date.
-                // Refresh it now, or recall would have nothing to apply.
-                if (uid > 0 && FindCapturedLayerByUid(snap, uid) < 0)
-                    CaptureLayersFromEngine(snap);
-
-                snap->m_layerUid = uid;
-                snap->m_layerIdx = FindCapturedLayerByUid(snap, uid);  // old-format compat
-                MarkProjectDirty(nullptr);
             }
             return TRUE;
         }
@@ -4654,7 +5044,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 switch (cd->nmcd.dwDrawStage)
                 {
                 case CDDS_PREPAINT:
-                    res = g_sceneBoldFont ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
+                    res = CDRF_NOTIFYITEMDRAW;
                     break;
                 case CDDS_ITEMPREPAINT:
                 {
@@ -4665,11 +5055,14 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     int rowSnap = g_cueMode
                         ? ((row >= 0 && row < (int)g_cueList.size()) ? g_cueList[row] : -1)
                         : RowToSnap(row);
+                    const bool spacer = rowSnap >= 0 && rowSnap < (int)g_snapshots.size() &&
+                                        g_snapshots[rowSnap]->m_isSpacer;
+                    // Row colours, selection included, from the REAPER theme;
+                    // spacer rows get the muted text colour.
+                    ReaperTheme_ListItemPrePaint(cd, hdr->hwndFrom, spacer);
                     if (g_sceneBoldFont && rowSnap >= 0 && rowSnap == slot)
-                    {
                         SelectObject(cd->nmcd.hdc, g_sceneBoldFont);
-                        res = CDRF_NEWFONT;
-                    }
+                    res = CDRF_NEWFONT;
                     break;
                 }
                 }
@@ -4763,31 +5156,6 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             {
                 // Drag is handled by the list subclass proc; nothing to do here.
                 (void)lParam;
-            }
-            else if (hdr->code == NM_CUSTOMDRAW)
-            {
-                NMLVCUSTOMDRAW* cd = (NMLVCUSTOMDRAW*)lParam;
-                if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
-                {
-                    SetWindowLongPtr(hwnd, DWLP_MSGRESULT, CDRF_NOTIFYITEMDRAW);
-                    return TRUE;
-                }
-                if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
-                {
-                    int itm = (int)cd->nmcd.dwItemSpec;
-                    if (itm >= 0 && itm < (int)g_snapshots.size() &&
-                        g_snapshots[itm]->m_isSpacer)
-                    {
-                        cd->clrTextBk = GetSysColor(COLOR_BTNFACE);
-                        cd->clrText   = GetSysColor(COLOR_GRAYTEXT);
-                        SetWindowLongPtr(hwnd, DWLP_MSGRESULT, CDRF_NEWFONT);
-                        return TRUE;
-                    }
-                    SetWindowLongPtr(hwnd, DWLP_MSGRESULT, CDRF_DODEFAULT);
-                    return TRUE;
-                }
-                SetWindowLongPtr(hwnd, DWLP_MSGRESULT, CDRF_DODEFAULT);
-                return TRUE;
             }
             else if (hdr->code == LVN_ENDLABELEDIT)
             {

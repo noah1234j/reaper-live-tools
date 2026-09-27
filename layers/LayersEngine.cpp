@@ -11,6 +11,11 @@
 #include "LayersWnd.h"
 #include "api.h"
 
+// Layer recall safes, owned by the scenes engine (TransitionEngine.h). Declared
+// here rather than included: that header brings its own GUIDHash/GUIDEqual.
+extern int g_layerSafeMask;
+static const int kLayerSafeCount = 32;   // must match TransitionEngine.h
+
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -278,6 +283,229 @@ static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
     }
 }
 
+static int LayerSlotLimit(const LayerDef& layer, const LayersSettings& cfg);
+
+// ---------------------------------------------------------------------------
+// ApplySpacerPass - write the layer's spacers onto the tracks (I_SPACER).
+// Shared by recall and by a spacer edit on the active layer. Caller owns
+// PreventUIRefresh and the repaint.
+// ---------------------------------------------------------------------------
+static void ApplySpacerPass(const LayerDef& layer, int limit,
+                            const GUIDTrackMap& projByGUID)
+{
+    int numAllTracks = CountTracks(0);
+
+    // Clear spacers before re-applying the layer's own, but only on tracks
+    // the layer is actually showing.
+    //
+    // REAPER exposes a single I_SPACER flag per track and renders it in
+    // both panels, so clearing it project-wide took out spacers in the
+    // panel the layer is not targeting: hiding a stack of tracks from the
+    // TCP wiped their spacers out of the MCP, where those tracks were
+    // still on screen. Clearing a hidden track's spacer buys nothing in
+    // the target panel — the track is not drawn there at all — so skipping
+    // them leaves the target panel identical and stops the collateral
+    // damage in the other one. A track's spacer is restored to the layer's
+    // idea of it the moment the layer shows it again.
+    int zeroVal = 0;
+    for (int t = 0; t < numAllTracks; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+
+        // On screen in either panel counts: the spacer is shared between
+        // the two, so a track still drawn in one of them is one whose
+        // spacer the layer is entitled to rewrite.
+        bool visTcp = true, visMcp = true;
+        if (bool* pt = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) visTcp = *pt;
+        if (bool* pm = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) visMcp = *pm;
+        if (!visTcp && !visMcp) continue;
+
+        int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+        if (sp && *sp > 0)
+            GetSetMediaTrackInfo(tr, "I_SPACER", &zeroVal);
+    }
+
+    // Then put one above each real track that follows a spacer entry in
+    // the layer. Track lookup is O(1) via projByGUID — no inner scan.
+    int oneVal = 1;
+    for (int li = 1; li < limit; li++)
+    {
+        if (layer.tracks[li].isSpacer) continue;
+        if (!layer.tracks[li - 1].isSpacer) continue;
+
+        auto it = projByGUID.find(layer.tracks[li].guid);
+        if (it == projByGUID.end()) continue;
+        GetSetMediaTrackInfo(it->second, "I_SPACER", &oneVal);
+    }
+}
+
+// Slots the layer applies: all of them, or the first globalMaxChannels
+// (spacers count as slots).
+static int LayerSlotLimit(const LayerDef& layer, const LayersSettings& cfg)
+{
+    int limit = (int)layer.tracks.size();
+    if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
+        limit = cfg.globalMaxChannels;
+    return limit;
+}
+
+// ---------------------------------------------------------------------------
+// ApplyVisibilityPass - write both panels and the folder state for one layer.
+//
+// Both panels are written on every recall. A track the layer does not hold is
+// hidden in both; a track it does hold goes wherever its own showTcp/showMcp
+// say, so one layer can hand the mixer and the track panel different channel
+// sets. Caller owns PreventUIRefresh and the repaint.
+// ---------------------------------------------------------------------------
+void LayersEngine::ApplyVisibilityPass(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    if (!m_settings.applyMcpVisibility) return;
+    const LayerDef& layer = m_layers[idx];
+    const int limit = LayerSlotLimit(layer, m_settings);
+
+    std::unordered_map<GUID, int, GUIDHash, GUIDEqual> layerSlotMap;
+    layerSlotMap.reserve(limit);
+    for (int li = 0; li < limit; li++)
+        if (!layer.tracks[li].isSpacer)
+            layerSlotMap[layer.tracks[li].guid] = li;
+
+    const int numTracks = CountTracks(0);
+    for (int t = 0; t < numTracks; t++)
+    {
+        MediaTrack* track = GetTrack(0, t);
+        if (!track) continue;
+        GUID* tg = GetTrackGUID(track);
+        if (!tg) continue;
+
+        auto it = layerSlotMap.find(*tg);
+        const bool inLayer = (it != layerSlotMap.end());
+
+        bool showTcp = inLayer && layer.tracks[it->second].showTcp;
+        bool showMcp = inLayer && layer.tracks[it->second].showMcp;
+        GetSetMediaTrackInfo(track, "B_SHOWINTCP",   &showTcp);
+        GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMcp);
+
+        if (inLayer)
+        {
+            int fc = layer.tracks[it->second].folderCompact;
+            GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
+        }
+    }
+}
+
+void LayersEngine::ApplyVisibilityNow(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    PreventUIRefresh(1);
+    ApplyVisibilityPass(idx);
+    PreventUIRefresh(-1);
+    TrackList_AdjustWindows(false);
+    UpdateArrange();
+}
+
+void LayersEngine::ApplySpacersNow(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    const LayerDef& layer = m_layers[idx];
+
+    GUIDTrackMap projByGUID;
+    const int n = CountTracks(0);
+    projByGUID.reserve(n);
+    for (int t = 0; t < n; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        GUID* tg = tr ? GetTrackGUID(tr) : nullptr;
+        if (tg) projByGUID[*tg] = tr;
+    }
+
+    m_suppressCooldown = 10;  // same guard as a recall: no sync-back mid-write
+    PreventUIRefresh(1);
+    ApplySpacerPass(layer, LayerSlotLimit(layer, m_settings), projByGUID);
+    PreventUIRefresh(-1);
+    TrackList_AdjustWindows(false);
+    UpdateArrange();
+}
+
+void LayersEngine::ApplyFolderStateNow(const GUID& g, int folderCompact)
+{
+    const int n = CountTracks(0);
+    for (int t = 0; t < n; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        GUID* tg = tr ? GetTrackGUID(tr) : nullptr;
+        if (!tg || memcmp(tg, &g, sizeof(GUID)) != 0) continue;
+        int fc = folderCompact;
+        GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", &fc);
+        TrackList_AdjustWindows(false);
+        UpdateArrange();
+        return;
+    }
+}
+
+bool LayersEngine::IsLayerSafed(int idx)
+{
+    return idx >= 0 && idx < kLayerSafeCount &&
+           ((unsigned)g_layerSafeMask & (1u << idx)) != 0;
+}
+
+// ---------------------------------------------------------------------------
+// CaptureVisibleInto - the layer becomes what is on screen now.
+//
+// A track counts if either panel shows it, and keeps its own TCP/MCP split,
+// its folder state and any REAPER spacer above it.
+// ---------------------------------------------------------------------------
+void LayersEngine::CaptureVisibleInto(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    LayerDef& ld = m_layers[idx];
+    ld.tracks.clear();
+
+    const int numTracks = CountTracks(0);
+    for (int t = 0; t < numTracks; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+        bool visTcp = false, visMcp = false;
+        if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) visTcp = *p;
+        if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) visMcp = *p;
+        if (!visTcp && !visMcp) continue;
+        GUID* tg = GetTrackGUID(tr);
+        if (!tg) continue;
+
+        int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
+        if (sp && *sp > 0)
+        {
+            LayerTrack spacerLt = {};
+            spacerLt.isSpacer = true;
+            strncpy(spacerLt.name, "--- Spacer ---", sizeof(spacerLt.name) - 1);
+            ld.tracks.push_back(spacerLt);
+        }
+
+        LayerTrack lt = {};
+        lt.guid    = *tg;
+        lt.showTcp = visTcp;
+        lt.showMcp = visMcp;
+        if (int* pfc = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr))
+            lt.folderCompact = *pfc;
+        GetTrackName(tr, lt.name, (int)sizeof(lt.name));
+        ld.tracks.push_back(lt);
+    }
+
+    // The layer now agrees with the project, so any window edit that was
+    // waiting for a recall has been overtaken.
+    if (m_pendingEditUid == ld.uid) m_pendingEditUid = 0;
+    SaveExtState();
+}
+
+void LayersEngine::SetActiveNoApply(int idx)
+{
+    if (idx < -1 || idx >= (int)m_layers.size()) return;
+    m_activeLayer = idx;
+    MarkProjectDirty(nullptr);
+}
+
 void LayersEngine::DoApplyLayer(int idx)
 {
     if (idx < 0 || idx >= (int)m_layers.size()) return;
@@ -285,10 +513,7 @@ void LayersEngine::DoApplyLayer(int idx)
     const LayerDef&       layer = m_layers[idx];
     const LayersSettings& cfg   = m_settings;
 
-    // Determine slot limit (spacers count as slots)
-    int limit = (int)layer.tracks.size();
-    if (cfg.globalMaxChannels > 0 && cfg.globalMaxChannels < limit)
-        limit = cfg.globalMaxChannels;
+    const int limit = LayerSlotLimit(layer, cfg);
 
     // -----------------------------------------------------------------------
     // Build O(1) lookup maps up front — one pass over project tracks,
@@ -308,15 +533,6 @@ void LayersEngine::DoApplyLayer(int idx)
             GUID* tg = GetTrackGUID(tr);
             if (tg) projByGUID[*tg] = tr;
         }
-    }
-
-    // layer GUID → slot index (for O(1) membership test and folderCompact lookup)
-    std::unordered_map<GUID, int, GUIDHash, GUIDEqual> layerSlotMap;
-    layerSlotMap.reserve(limit);
-    for (int li = 0; li < limit; li++)
-    {
-        if (!layer.tracks[li].isSpacer)
-            layerSlotMap[layer.tracks[li].guid] = li;
     }
 
     // -----------------------------------------------------------------------
@@ -340,37 +556,7 @@ void LayersEngine::DoApplyLayer(int idx)
 
     PreventUIRefresh(1);
 
-    if (cfg.applyMcpVisibility)
-    {
-        // ----- MCP/TCP visibility — O(numTracks) with O(1) map lookup -----
-        // Both panels are written on every recall. A track the layer does not
-        // hold is hidden in both; a track it does hold goes wherever its own
-        // showTcp/showMcp say, so one layer can hand the mixer and the track
-        // panel different channel sets.
-        int numTracks = CountTracks(0);
-        for (int t = 0; t < numTracks; t++)
-        {
-            MediaTrack* track = GetTrack(0, t);
-            if (!track) continue;
-            GUID* tg = GetTrackGUID(track);
-            if (!tg) continue;
-
-            auto it = layerSlotMap.find(*tg);
-            const bool inLayer = (it != layerSlotMap.end());
-
-            bool showTcp = inLayer && layer.tracks[it->second].showTcp;
-            bool showMcp = inLayer && layer.tracks[it->second].showMcp;
-            GetSetMediaTrackInfo(track, "B_SHOWINTCP",   &showTcp);
-            GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &showMcp);
-
-            // Restore folder open/closed state — no second scan needed
-            if (inLayer)
-            {
-                int fc = layer.tracks[it->second].folderCompact;
-                GetSetMediaTrackInfo(track, "I_FOLDERCOMPACT", &fc);
-            }
-        }
-    }
+    ApplyVisibilityPass(idx);
 
     // ---- Track reorder ----------------------------------------------------
     // Permutes the layer's own channels among the slots they already hold.
@@ -394,54 +580,11 @@ void LayersEngine::DoApplyLayer(int idx)
     // silently never came back. Both directions now write I_SPACER, so setting
     // a spacer is exactly as reliable as clearing one, needs no selection, and
     // does not have to happen with UI refresh enabled.
-    if (cfg.manageSpacers)
+    // Layers always own spacers: the Layers window's Spacer column and gap
+    // rows are how they are edited, so there is no setting to leave them be.
+    ApplySpacerPass(layer, limit, projByGUID);
+
     {
-        int numAllTracks = CountTracks(0);
-
-        // Clear spacers before re-applying the layer's own, but only on tracks
-        // the layer is actually showing.
-        //
-        // REAPER exposes a single I_SPACER flag per track and renders it in
-        // both panels, so clearing it project-wide took out spacers in the
-        // panel the layer is not targeting: hiding a stack of tracks from the
-        // TCP wiped their spacers out of the MCP, where those tracks were
-        // still on screen. Clearing a hidden track's spacer buys nothing in
-        // the target panel — the track is not drawn there at all — so skipping
-        // them leaves the target panel identical and stops the collateral
-        // damage in the other one. A track's spacer is restored to the layer's
-        // idea of it the moment the layer shows it again.
-        int zeroVal = 0;
-        for (int t = 0; t < numAllTracks; t++)
-        {
-            MediaTrack* tr = GetTrack(0, t);
-            if (!tr) continue;
-
-            // On screen in either panel counts: the spacer is shared between
-            // the two, so a track still drawn in one of them is one whose
-            // spacer the layer is entitled to rewrite.
-            bool visTcp = true, visMcp = true;
-            if (bool* pt = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) visTcp = *pt;
-            if (bool* pm = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) visMcp = *pm;
-            if (!visTcp && !visMcp) continue;
-
-            int* sp = (int*)GetSetMediaTrackInfo(tr, "I_SPACER", nullptr);
-            if (sp && *sp > 0)
-                GetSetMediaTrackInfo(tr, "I_SPACER", &zeroVal);
-        }
-
-        // Then put one above each real track that follows a spacer entry in
-        // the layer. Track lookup is O(1) via projByGUID — no inner scan.
-        int oneVal = 1;
-        for (int li = 1; li < limit; li++)
-        {
-            if (layer.tracks[li].isSpacer) continue;
-            if (!layer.tracks[li - 1].isSpacer) continue;
-
-            auto it = projByGUID.find(layer.tracks[li].guid);
-            if (it == projByGUID.end()) continue;
-            GetSetMediaTrackInfo(it->second, "I_SPACER", &oneVal);
-        }
-
         // Restore selection using the GUID set built earlier — O(n) with O(1) lookups
         {
             int n = CountTracks(0);
@@ -481,10 +624,9 @@ void LayersEngine::Deactivate()
     m_activeLayer = -1;
     if (m_settings.restoreOnDeactivate)
         RestoreAllVisible();
-    else if (m_settings.manageSpacers)
+    else
     {
-        // Clear spacers even though track visibility is not being restored —
-        // but only if layers are managing spacers at all.
+        // Clear spacers even though track visibility is not being restored.
         int numTracks = CountTracks(0);
         int zeroVal = 0;
         for (int t = 0; t < numTracks; t++)
@@ -528,10 +670,8 @@ void LayersEngine::RestoreAllVisible()
         bool show = true;
         GetSetMediaTrackInfo(track, "B_SHOWINTCP",   &show);
         GetSetMediaTrackInfo(track, "B_SHOWINMIXER", &show);
-        // Same shared I_SPACER flag as on apply: leave it alone unless the
-        // user has asked layers to manage spacers.
-        if (m_settings.manageSpacers)
-            GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
+        // Same shared I_SPACER flag as on apply.
+        GetSetMediaTrackInfo(track, "I_SPACER", &zeroVal);
     }
     TrackList_AdjustWindows(false);
     UpdateArrange();
@@ -736,6 +876,136 @@ void LayersEngine::SyncLayerOrderFromReaper(int idx)
 }
 
 // ---------------------------------------------------------------------------
+// SyncLayerVisibilityFromReaper - the active layer follows REAPER.
+//
+// Showing or hiding a track in REAPER (the TCP, the mixer, the Track Manager)
+// while a layer is active changes that layer, unless the layer's slot is
+// safed. The comparison is against what the layer would itself put on screen,
+// not against its raw flags: a channel past the max-channels limit is hidden
+// by the layer, and treating that as "the user hid it" would drop it.
+//
+// Folder open/closed state is followed the same way, for the tracks the layer
+// holds.
+// ---------------------------------------------------------------------------
+void LayersEngine::SyncLayerVisibilityFromReaper(int idx)
+{
+    if (idx < 0 || idx >= (int)m_layers.size()) return;
+    if (!m_settings.applyMcpVisibility) return;   // the layer is not driving the panels
+    if (IsLayerSafed(idx)) return;
+    LayerDef& ld = m_layers[idx];
+    if (m_pendingEditUid != 0 && m_pendingEditUid == ld.uid) return;
+
+    const int limit = LayerSlotLimit(ld, m_settings);
+
+    std::unordered_map<GUID, int, GUIDHash, GUIDEqual> slotOf;
+    for (int li = 0; li < (int)ld.tracks.size(); li++)
+        if (!ld.tracks[li].isSpacer)
+            slotOf[ld.tracks[li].guid] = li;
+
+    struct Add { GUID guid; int projIdx; bool tcp, mcp; int fc; char name[128]; };
+    std::vector<Add>  adds;
+    std::vector<GUID> removes;
+    std::unordered_map<GUID, int, GUIDHash, GUIDEqual> projIdxOf;
+    bool changed = false;
+
+    const int numTracks = CountTracks(0);
+    for (int t = 0; t < numTracks; t++)
+    {
+        MediaTrack* tr = GetTrack(0, t);
+        if (!tr) continue;
+        GUID* tg = GetTrackGUID(tr);
+        if (!tg) continue;
+        projIdxOf[*tg] = t;
+
+        bool tcp = false, mcp = false;
+        if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINTCP",   nullptr)) tcp = *p;
+        if (bool* p = (bool*)GetSetMediaTrackInfo(tr, "B_SHOWINMIXER", nullptr)) mcp = *p;
+        int fc = 0;
+        if (int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr)) fc = *p;
+
+        auto it = slotOf.find(*tg);
+        const int  slot    = (it != slotOf.end()) ? it->second : -1;
+        const bool applied = slot >= 0 && slot < limit;
+        const bool expTcp  = applied && ld.tracks[slot].showTcp;
+        const bool expMcp  = applied && ld.tracks[slot].showMcp;
+
+        if (tcp == expTcp && mcp == expMcp)
+        {
+            if (applied && ld.tracks[slot].folderCompact != fc)
+            {
+                ld.tracks[slot].folderCompact = fc;
+                changed = true;
+            }
+            continue;
+        }
+
+        if (slot >= 0)
+        {
+            if (!tcp && !mcp)
+                removes.push_back(*tg);
+            else
+            {
+                ld.tracks[slot].showTcp       = tcp;
+                ld.tracks[slot].showMcp       = mcp;
+                ld.tracks[slot].folderCompact = fc;
+            }
+            changed = true;
+        }
+        else if (tcp || mcp)
+        {
+            Add a = {};
+            a.guid = *tg; a.projIdx = t; a.tcp = tcp; a.mcp = mcp; a.fc = fc;
+            GetTrackName(tr, a.name, (int)sizeof(a.name));
+            adds.push_back(a);
+            changed = true;
+        }
+    }
+    if (!changed) return;
+
+    // Removals: the channel and the gap above it go together, as they do
+    // when a dot is cleared in the window.
+    for (const GUID& g : removes)
+    {
+        for (int li = 0; li < (int)ld.tracks.size(); li++)
+        {
+            if (ld.tracks[li].isSpacer || memcmp(&ld.tracks[li].guid, &g, sizeof(GUID)) != 0)
+                continue;
+            if (li > 0 && ld.tracks[li - 1].isSpacer)
+                ld.tracks.erase(ld.tracks.begin() + (li - 1), ld.tracks.begin() + (li + 1));
+            else
+                ld.tracks.erase(ld.tracks.begin() + li);
+            break;
+        }
+    }
+
+    // Additions go in project order: before the first channel that sits
+    // below them in the project, and ahead of that channel's spacer.
+    for (const Add& a : adds)
+    {
+        int at = (int)ld.tracks.size();
+        for (int li = 0; li < (int)ld.tracks.size(); li++)
+        {
+            if (ld.tracks[li].isSpacer) continue;
+            auto pit = projIdxOf.find(ld.tracks[li].guid);
+            if (pit != projIdxOf.end() && pit->second > a.projIdx)
+            {
+                at = (li > 0 && ld.tracks[li - 1].isSpacer) ? li - 1 : li;
+                break;
+            }
+        }
+        LayerTrack lt = {};
+        lt.guid          = a.guid;
+        lt.showTcp       = a.tcp;
+        lt.showMcp       = a.mcp;
+        lt.folderCompact = a.fc;
+        strncpy(lt.name, a.name, sizeof(lt.name) - 1);
+        ld.tracks.insert(ld.tracks.begin() + at, lt);
+    }
+
+    SaveExtState();
+}
+
+// ---------------------------------------------------------------------------
 // TimerCallback  –  registered with plugin_register("timer", ...)
 // Polls REAPER's project-state counter and syncs the active layer's track
 // ordering when the user reorders tracks in the mixer / TCP.
@@ -761,7 +1031,10 @@ void LayersEngine::TimerCallback()
     // was harmless — the list only showed the layer's own stored channels.
     int active = eng.m_activeLayer;
     if (active >= 0 && active < (int)eng.m_layers.size())
+    {
         eng.SyncLayerOrderFromReaper(active);
+        eng.SyncLayerVisibilityFromReaper(active);
+    }
 
     eng.RefreshAllTrackNames();
     LayersWnd_Refresh();   // no-op until the window has been opened once
@@ -1260,7 +1533,7 @@ void LayersEngine::SaveConfig(ProjectStateContext* ctx)
                  m_settings.globalMaxChannels,
                  m_settings.triggerMcpSelect    ? 1 : 0,
                  0,
-                 m_settings.manageSpacers       ? 1 : 0);
+                 1);   // managespacers: always on now; written for older builds
 
     for (const auto& ld : m_layers)
     {
@@ -1314,7 +1587,7 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     if (!line || strncmp(line, "<LTLAYERS", 9) != 0) return false;
 
     int nextuid = 1, active = -1, mcpvis = 1, hidetcp = 0, reorder = 0, restore = 1, globalmaxch = 0, trigmcpsel = 0, targettcp = 0;
-    int managespacers = 0;   // absent in projects written before the setting existed
+    int managespacers = 0;   // no longer a setting; parsed to keep the scan lined up
     sscanf(line, "<LTLAYERS nextuid=%d active=%d mcpvis=%d hidetcp=%d reorder=%d restore=%d globalmaxch=%d trigmcpsel=%d targettcp=%d managespacers=%d",
            &nextuid, &active, &mcpvis, &hidetcp, &reorder, &restore, &globalmaxch, &trigmcpsel, &targettcp, &managespacers);
 
@@ -1324,7 +1597,6 @@ bool LayersEngine::ProcessLine(const char* line, ProjectStateContext* ctx)
     m_settings.restoreOnDeactivate = (restore != 0);
     m_settings.globalMaxChannels   = (globalmaxch >= 0) ? globalmaxch : 0;
     m_settings.triggerMcpSelect    = (trigmcpsel != 0);
-    m_settings.manageSpacers       = (managespacers != 0);
     // hidetcp and targettcp are parsed only to keep the positional scan lined
     // up; the settings they fed are gone. A project saved by an older build
     // with targettcp=1 held a layer set that drove the TCP alone, and it comes

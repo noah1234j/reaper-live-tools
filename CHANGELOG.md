@@ -1,5 +1,49 @@
 # Changelog
 
+## [v0.0.47-beta] — 2026-09-27
+
+Everything from the v0.0.47 dev builds (listed individually below), plus the changes since the last one.
+
+### Added
+
+- **Subscenes**: Right-click a scene and choose **Add Subscene**, or use the new **Add Subscene** sidebar button or the *Live Tools: Scenes - Add subscene to selected scene* action (`LT_SCENE_ADD_SUBSCENE`). A subscene is a variation numbered after its parent (2.1, 2.2) and drawn under it with a `└─` mark. A scene's subscenes can be folded away, move with it when it is dragged, and can be promoted to a scene. The cue list names a subscene with its parent (**Verse 2 › Solo**) and shows the scene list's own numbers. Global Settings has separate **New Subscene Defaults** for the transition.
+
+- **Recall Filters**: Right-click a scene or subscene and choose **Recall Filters...** to set safes that apply to that scene's recalls only. They are added to the project safes, or with **Replace project safes** they replace them for that scene. They are stored inside the scene, so they export, import and copy with it.
+
+- **Subscene safes**: the Safes window's **Subscenes** tab holds a set that is added on every subscene recall. It starts with track order, names and FX safed, so a subscene changes the mix without changing the project's shape.
+
+- **Sends and Send Level safes**: **Sends** keeps a track's sends and hardware outputs exactly as they are through a recall. **Send Level** (**SLv** in the per-track grid) keeps only the level of the sends that already exist: routing, mute, mode, channels and pan still recall, a send the recall creates takes the scene's level, and a send the scene does not have is still removed.
+
+- **Scene drag shows where the scene will land**: dragging a scene draws a bar between the two rows it will drop between (above a row from its top half, below it from its bottom half, or at the very end of the list) instead of highlighting a row.
+
+- **Resizable Layers and Cue List Setup windows**: both lists grow with the window, each list's name column stretches to fill it, and a divider between the two columns can be dragged to trade width between them. The split is remembered.
+
+### Changed
+
+- **Global Safes window redesigned**: the window is titled **Global Safes**. The per-track grid uses dots like the Layers window, with the track number on its color box, `└─` marks for tracks inside folders, and short column headings (V, P, M, S, Ø, FX, Snd, SLv, All). The Layers tab uses dots too, and lists as many layer slots as the largest layer set any scene holds (up to 32) instead of a fixed 10. Dots can be dragged on every tab. **Refresh**, **Clear All** and **Enable Per-Track Safes** are gone: the grid keeps itself up to date while the window is open, and per-track safes are always on. The Recall Filters popup got the same treatment.
+
+- **Color and Height safes removed**: they are gone from the global checkboxes and the per-track grid. A project that already had them set keeps them (they still load, save and apply); there is just no control for them now.
+
+- **Scenes sidebar**: the notes box fills all the space down to the footer, and a grip under it pulls it up. The buttons moved up, and the progress bar and the **Layer:** indicator moved into the footer above the status line.
+
+- **Layer settings moved into Global Settings**: a **Layers** group in Global Settings replaces the Layers window's own Settings dialog and button. Pressing OK only re-applies the active layer when a layer setting actually changed.
+
+- **Layers: every layer lists every project track**: dots mark the channels the layer holds; clicking a TCP or MCP dot puts a channel in the layer and clearing its last dot takes it out. Dots follow the pointer while the button is down. Folders fold in the list, each row has a track color box, and a layer remembers each folder's TCP collapse state (also saved inside scenes). Rows follow the project's own order, so drag-to-reorder is gone from this list.
+
+- **Layers: spacers**: the **Spacer** column is back (click, drag, **Ins**, or the right-click menu). On the active layer a spacer edit now shows up in REAPER straight away, like the TCP/MCP dots; on other layers it waits for that layer's recall. A spacer only goes on a channel the layer holds.
+
+- **A new scene starts from what is on screen**: creating a scene captures the current TCP/MCP visibility into the first layer and makes it active, and recall keeps whichever layer index is active. The per-scene layer dropdown and the *Store currently active layer* setting are gone.
+
+- **Scenes windows follow the REAPER theme**: the Scenes window and its dialogs, and the Safes grids, take their background, text and list colours (selection included) from the active REAPER theme.
+
+- **Recall filters and per-track safes are always on**: their enable switches are gone. A scene or project saved with them switched off now applies what they hold; clear the dots if that is not wanted.
+
+- **"Subscene Global Safes..." removed from the scene right-click menu**: edit them on the Global Safes window's **Subscenes** tab.
+
+### Bug Fixes
+
+- **Missed clicks on dots**: a quick second click on a dot, in the Layers window or the Safes grids, arrived as a double-click and was ignored, so toggling a cell back and forth missed every other click.
+
 ## [v0.0.47-dev.5] — 2026-09-23  (dev branch)
 
 ### Added
@@ -11,6 +55,12 @@
 ### Changed
 
 - **Per-scene safes are now called Recall Filters**: The context-menu entry is **Recall Filters...** for scenes and subscenes alike, and the popup is titled *Recall Filters for …*. Nothing about how they work changed, and existing projects keep theirs.
+
+- **Layers: the Spacer column is back, and layers always manage spacers**: The track list shows **Spacer** again after TCP and MCP — click a cell, or drag down the column, to add or remove the gap above a channel the layer holds. A spacer is only the dash in that column — it never adds a row to the list. **Ins** adds one above each selected channel, and the right-click menu has **Add Spacer Above**, **Remove Spacer Above** and **Remove All Spacers**. The **Manage visual spacers** setting is gone: recalling a layer always writes REAPER's spacer flag on the tracks it shows, and deactivating clears it. REAPER draws one spacer flag in both the TCP and the MCP, so a layer's spacers appear in both panels.
+
+- **Layers: track color box and smaller dots**: Each row in the track list starts with a small box in the track's color (an empty outline for an uncolored track) next to the track number, and the TCP/MCP dots are smaller.
+
+- **Recall filters are always on**: The popup's *Enable recall filters for this scene* checkbox is gone. Whatever a scene's Recall Filters hold applies to every recall of it, and **Replace project safes** is the one switch left. A scene saved with filters set but the old checkbox unticked now applies those filters; clear them with **Clear** in the popup if that scene should not have any.
 
 ## [v0.0.47-dev.4] — 2026-09-22  (dev branch)
 

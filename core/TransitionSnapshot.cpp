@@ -389,6 +389,7 @@ void TransitionSnapshot::Capture(int mask)
                 clt.isSpacer = lt.isSpacer;
                 clt.showTcp  = lt.showTcp;
                 clt.showMcp  = lt.showMcp;
+                clt.folderCompact = lt.folderCompact;
                 cl.tracks.push_back(clt);
             }
             m_layers.push_back(cl);
@@ -560,12 +561,12 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
         ctx->AddLine("COLLAPSED 1");
 
     // Per-scene safes. Written only when there is something to write; a scene
-    // with the feature switched off and no entries stays byte-identical to
-    // what older builds produced.
-    if (m_safes.enabled || !m_safes.IsEmpty())
+    // with no filters stays byte-identical to what older builds produced. The
+    // first field is the old enable switch, always 1 now so older builds that
+    // still read it apply the filters too.
+    if (m_safes.replaceGlobal || !m_safes.IsEmpty())
     {
-        ctx->AddLine("SAFES %d %d %d %d",
-                     m_safes.enabled ? 1 : 0,
+        ctx->AddLine("SAFES 1 %d %d %d",
                      m_safes.replaceGlobal ? 1 : 0,
                      m_safes.globalMask,
                      m_safes.trackSafesEnabled ? 1 : 0);
@@ -607,7 +608,13 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                     // Trailing panel flags are optional on read, so a scene
                     // that wants both panels still writes the bare old line
                     // and stays readable by builds that predate them.
-                    if (clt.showTcp && clt.showMcp)
+                    // Folder state rides third, after the panel pair, so a
+                    // reader that only scans the pair still lines up.
+                    if (clt.folderCompact != 0)
+                        ctx->AddLine("LAYERTRACK %s %d %d %d", guidStr,
+                                     clt.showTcp ? 1 : 0, clt.showMcp ? 1 : 0,
+                                     clt.folderCompact);
+                    else if (clt.showTcp && clt.showMcp)
                         ctx->AddLine("LAYERTRACK %s", guidStr);
                     else
                         ctx->AddLine("LAYERTRACK %s %d %d", guidStr,
@@ -937,11 +944,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                     // "LAYERTRACK {guid}" (pre-flags) means both panels; only
                     // an explicit pair overrides that.
                     const char* sp = strchr(st + 11, ' ');
-                    int tcp = 1, mcp = 1;
-                    if (sp && sscanf(sp, " %d %d", &tcp, &mcp) == 2)
+                    int tcp = 1, mcp = 1, fc = 0;
+                    if (sp && sscanf(sp, " %d %d %d", &tcp, &mcp, &fc) >= 2)
                     {
                         clt.showTcp = (tcp != 0);
                         clt.showMcp = (mcp != 0);
+                        clt.folderCompact = fc;
                     }
                     cl.tracks.push_back(clt);
                 }
@@ -973,10 +981,12 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
         {
             int en = 0, repl = 0, gmask = 0, tren = 1;
             sscanf(trimmed + 6, "%d %d %d %d", &en, &repl, &gmask, &tren);
-            ss->m_safes.enabled           = (en != 0);
+            // `en` and `tren` are retired switches: recall filters, per-track
+            // ones included, are always on.
+            (void)en; (void)tren;
             ss->m_safes.replaceGlobal     = (repl != 0);
             ss->m_safes.globalMask        = gmask;
-            ss->m_safes.trackSafesEnabled = (tren != 0);
+            ss->m_safes.trackSafesEnabled = true;
             ss->m_safes.trackSafes.clear();
         }
         else if (strncmp(trimmed, "SAFETRACK ", 10) == 0)

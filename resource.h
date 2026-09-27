@@ -64,7 +64,6 @@
 #define IDC_DELETE_BTN           2139   // delete selected scene button (context menu only)
 #define IDC_MODE_SCENES          2140   // "Scenes" mode toggle button
 #define IDC_MODE_CUE             2141   // "Cue List" mode toggle button
-#define IDC_SNAP_LAYER           2142   // layer assignment combobox
 #define IDC_RECALL_LAYERS        2143   // "Recall layer with scene" checkbox
 #define IDC_SETTINGS_BTN         2144   // "Settings..." button (opens scene settings popup)
 #define IDC_SNAPNAME             2145   // scene title edit box (main Scenes window right panel)
@@ -85,8 +84,8 @@
 // ---- Safes dialog ----------------------------------------------------------
 #define IDD_SAFES                202
 #define IDC_SAFESLIST            2200
-#define IDC_REFRESH_SAFES        2201
-#define IDC_CLEAR_SAFES          2202
+#define IDC_REFRESH_SAFES        2201   // retired: no dialog has Refresh any more
+#define IDC_CLEAR_SAFES          2202   // retired: no dialog has Clear All any more
 // 2203 and 2204 were also handed to IDC_GLOBAL_SAFES_EN / IDC_TRACK_SAFES_EN
 // further down, in a second block of Safes ids added at a different time. Two
 // controls of the SAME dialog sharing an id is not a naming nuisance: the
@@ -108,7 +107,6 @@
 // ids above so one dialog proc drives both templates.
 #define IDD_SCENE_SAFES          230
 #define IDC_SCSAFE_TITLE         2271   // "Recall Filters for <name>" banner
-#define IDC_SCSAFE_ENABLE        2272   // master enable for this scene's recall filters
 #define IDC_SCSAFE_REPLACE       2273   // ignore project safes for this scene
 #define IDC_SCSAFE_CLOSE         2274   // Close button
 
@@ -137,7 +135,7 @@
 #define IDC_MON_RT_RED           2511
 #define IDC_MON_RESET            2512
 #define IDC_GLOBAL_SAFES_EN      2203   // (unused – kept for compat)
-#define IDC_TRACK_SAFES_EN       2204   // enable per-track safes checkbox
+#define IDC_TRACK_SAFES_EN       2204   // retired: per-track safes are always on
 
 // Global Safes groupbox + per-parameter toggles
 #define IDC_GSAFES_GROUP         2209
@@ -147,22 +145,17 @@
 #define IDC_GSAFE_SOLO           2213
 #define IDC_GSAFE_PHASE          2214
 #define IDC_GSAFE_FX             2215
-#define IDC_GSAFE_VIS            2216
-#define IDC_GSAFE_NAME           2217
-#define IDC_GSAFE_COLOR          2218
-#define IDC_GSAFE_HEIGHT         2219
-#define IDC_GSAFE_ORDER          2220
 #define IDC_GSAFE_LAYERS         2221
 #define IDC_GSAFE_ALL            2222
 #define IDC_GSAFE_SLOTS          2224
 #define IDC_GSAFE_SENDS          2225   // track sends + hardware outputs
+#define IDC_GSAFE_SENDLVL        2226   // send levels only; routing still recalls
 
 // ---- Duration debug checkbox (Global Settings) ---------------------------
 #define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox
 #define IDC_GSET_SHADOW_PARAMS      2255   // "Shadow VST3 params" checkbox
 #define IDC_GSET_CHUNK_ALL_INSTANT  2256   // "Chunk all on instant path" checkbox
 #define IDC_GSET_RECALL_LOG         2259   // "Write recall log to file" checkbox
-#define IDC_GSET_STORE_LAYER        2260   // "Store currently active layer on scene store"
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 // (2145-2147 now used – see IDC_SNAPNAME etc. above)
@@ -184,6 +177,12 @@
 #define IDC_CUE_REMOVE           2237
 #define IDC_CUE_MOVE_UP          2238
 #define IDC_CUE_MOVE_DOWN        2239
+
+// Cue List Setup layout: the two column labels (so they can follow a resize)
+// and the draggable divider between the lists.
+#define IDC_CUE_LEFT_LBL         2290
+#define IDC_CUE_RIGHT_LBL        2291
+#define IDC_CUE_SPLITTER         2292
 #define IDC_GSET_MARKER          2240   // "Place marker on recall" checkbox in global settings
 #define IDC_GSET_SINGLE_CLICK    2241   // "Single click to recall" checkbox in global settings
 #define IDC_GSET_ALT_DELETE      2242   // "Alt+click to delete" checkbox in global settings
@@ -262,7 +261,7 @@
 
 // ---- Layers window -------------------------------------------------------
 #define IDD_LAYERS               216
-#define IDD_LAYERS_SETTINGS      217
+#define IDD_LAYERS_SETTINGS      217   // retired: layer settings are in IDD_GLOBAL_SETTINGS
 // Layers main dialog
 #define IDC_LYR_LAYER_LIST       2800   // layer ListView placeholder
 #define IDC_LYR_ADD_LAYER        2803
@@ -281,7 +280,7 @@
 #define IDC_LYR_PREV             2819
 #define IDC_LYR_NEXT             2820
 #define IDC_LYR_DEACTIVATE       2821
-#define IDC_LYR_SETTINGS_BTN     2822
+#define IDC_LYR_SETTINGS_BTN     2822   // retired: the Layers window has no Settings button
 #define IDC_LYR_STATUS           2823
 // Layers settings dialog
 #define IDC_LYR_SET_MCPVIS       2824
@@ -292,7 +291,12 @@
 #define IDC_LYR_SET_REORDER      2826
 #define IDC_LYR_SET_RESTORE      2827
 #define IDC_LYR_SET_TRIGGERMCP   2828
-#define IDC_LYR_SET_SPACERS      2831   // "Manage visual spacers" checkbox
+
+// Layers window layout: the two column labels (so they can follow a resize)
+// and the draggable divider between the columns.
+#define IDC_LYR_LAYER_LBL        2831
+#define IDC_LYR_TRACK_LBL        2832
+#define IDC_LYR_SPLITTER         2833
 
 // ---- Button Map window ---------------------------------------------------
 #define IDD_BTN_MAP              218

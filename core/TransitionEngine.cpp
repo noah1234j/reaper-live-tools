@@ -129,9 +129,7 @@ static int SafeSetMaskFor(const SafeSet& set, const GUID& guid)
 // True when the active scene set has asked to stand alone for this recall.
 static bool SceneSafesReplaceGlobal()
 {
-    return g_activeSceneSafes
-        && g_activeSceneSafes->enabled
-        && g_activeSceneSafes->replaceGlobal;
+    return g_activeSceneSafes && g_activeSceneSafes->replaceGlobal;
 }
 
 int GetEffectiveSafeMask(const GUID& guid)
@@ -150,7 +148,7 @@ int GetEffectiveSafeMask(const GUID& guid)
             safe |= SafeSetMaskFor(g_subsceneSafes, guid);
     }
 
-    if (g_activeSceneSafes && g_activeSceneSafes->enabled)
+    if (g_activeSceneSafes)
         safe |= SafeSetMaskFor(*g_activeSceneSafes, guid);
 
     return safe;
@@ -167,7 +165,7 @@ int GetEffectiveGlobalSafeMask()
             safe |= g_subsceneSafes.globalMask;
     }
 
-    if (g_activeSceneSafes && g_activeSceneSafes->enabled)
+    if (g_activeSceneSafes)
         safe |= g_activeSceneSafes->globalMask;
 
     return safe;
@@ -1451,6 +1449,8 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
         if (effMask & TS_SENDS)
         {
             const double tSend0 = g_durationDebug ? QpcMs() : 0.0;
+            // Send Level safe: existing sends keep their live D_VOL.
+            const bool keepLevel = (safe & TS_SENDLEVEL) != 0;
 
             // --- Build maps of current live sends ---
             // Track sends: destGuid -> send index
@@ -1488,7 +1488,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                     {
                         int si = it2->second;
                         double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sc = ss.hwSrcChan;
-                        GetSetTrackSendInfo(tr, 1, si, "D_VOL",    &v);
+                        if (!keepLevel) GetSetTrackSendInfo(tr, 1, si, "D_VOL", &v);
                         GetSetTrackSendInfo(tr, 1, si, "D_PAN",    &p);
                         GetSetTrackSendInfo(tr, 1, si, "B_MUTE",   &m);
                         GetSetTrackSendInfo(tr, 1, si, "I_SRCCHAN", &sc);
@@ -1502,7 +1502,7 @@ void TransitionEngine::ApplyImmediate(const TransitionSnapshot* snap, int mask,
                         int si = it2->second;
                         double v = ss.vol;  double p = ss.pan;  bool m = ss.mute;  int sm = ss.sendMode;
                         int sc = ss.srcChan;  int dc = ss.dstChan;
-                        GetSetTrackSendInfo(tr, 0, si, "D_VOL",      &v);
+                        if (!keepLevel) GetSetTrackSendInfo(tr, 0, si, "D_VOL", &v);
                         GetSetTrackSendInfo(tr, 0, si, "D_PAN",      &p);
                         GetSetTrackSendInfo(tr, 0, si, "B_MUTE",     &m);
                         GetSetTrackSendInfo(tr, 0, si, "I_SENDMODE", &sm);
@@ -1921,8 +1921,11 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                 double* pp = (double*)GetSetTrackSendInfo(tr, cat, liveIdx, "D_PAN", nullptr);
                 double curVol = pv ? *pv : 1.0;
                 double curPan = pp ? *pp : 0.0;
+                // Send Level safe: hold the live level. Sends this recall
+                // created were already set to the scene's level at t=0.
+                const double endVol = (safe & TS_SENDLEVEL) ? curVol : ss.vol;
 
-                const bool volMoves = fabs(ss.vol - curVol) >= 1e-9;
+                const bool volMoves = fabs(endVol - curVol) >= 1e-9;
                 const bool panMoves = fabs(ss.pan - curPan) >= 1e-9;
                 if (volMoves || panMoves)
                 {
@@ -1933,7 +1936,7 @@ void TransitionEngine::BuildLerpLists(const TransitionSnapshot* snap, int mask,
                     sl.isHW         = ss.isHW;
                     sl.hwDstChan    = ss.hwDstChan;
                     sl.startVol     = curVol;
-                    sl.endVol       = ss.vol;
+                    sl.endVol       = endVol;
                     sl.startPan     = curPan;
                     sl.endPan       = ss.pan;
                     sl.pendingRemove = false;
@@ -2317,6 +2320,11 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         double ts0 = QpcMs();
         if ((effMask & TS_SENDS) && !ts.sends.empty())
         {
+            // New sends normally start silent and fade in via SendLerp. With
+            // Send Level safed, BuildLerpLists holds every level where it is,
+            // so a new send has to be created at the scene's level instead.
+            const bool keepLevel = (safe & TS_SENDLEVEL) != 0;
+
             // Build live send maps
             std::map<GUID, int, GUIDLess> liveSends;
             {
@@ -2384,7 +2392,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                             int newIdx = CreateTrackSend(tr, nullptr);
                             if (newIdx >= 0)
                             {
-                                int ch = ss.hwDstChan;  double v = 0.0;
+                                int ch = ss.hwDstChan;  double v = keepLevel ? ss.vol : 0.0;
                                 int sc = ss.hwSrcChan;
                                 GetSetTrackSendInfo(tr, 1, newIdx, "I_DSTCHAN", &ch);
                                 GetSetTrackSendInfo(tr, 1, newIdx, "I_SRCCHAN", &sc);
@@ -2404,7 +2412,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
                                 int newIdx = CreateTrackSend(tr, destIt->second);
                                 if (newIdx >= 0)
                                 {
-                                    double v = 0.0;  int sm = ss.sendMode;
+                                    double v = keepLevel ? ss.vol : 0.0;  int sm = ss.sendMode;
                                     int sc = ss.srcChan;  int dc = ss.dstChan;
                                     GetSetTrackSendInfo(tr, 0, newIdx, "D_VOL",      &v);
                                     GetSetTrackSendInfo(tr, 0, newIdx, "I_SENDMODE", &sm);

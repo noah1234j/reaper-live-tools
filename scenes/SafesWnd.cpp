@@ -3,7 +3,9 @@
 #include "TransitionSnapshot.h"  // TS_* bit flags, SafeSet
 #include "api.h"                 // GetNumTracks, GetTrack, GetSetMediaTrackInfo, etc.
 #include "resource.h"
+#include "ReaperTheme.h"
 #include "../layers/LayersEngine.h"   // layer names for the layer safe rows
+#include "TransitionWnd.h"            // g_snapshots: how many layers each scene holds
 
 extern bool g_trackSafesEnabled;
 
@@ -17,10 +19,22 @@ extern bool g_trackSafesEnabled;
 #include <string>
 
 // ---------------------------------------------------------------------------
-// Full column definitions (used internally for bit mapping)
+// Per-track grid columns
+//
+// The track number on its color, the name, then one dot column per safe.
+// A track inside a folder is marked the way a subscene is in the Scenes list:
+// indented by its depth with a corner in front of the name. Nothing folds —
+// every track always has a row.
+//
+// Visibility, name and track order are not safes any more: layers own what
+// each track shows and where it sits, so there is nothing for a safe to hold
+// back. Color and height went the same way. Their TS_* bits still load and
+// save, so a project that had them set recalls the way it always did; there
+// is just no control for them here.
 // ---------------------------------------------------------------------------
 enum SafeCol {
-    COL_TRACK = 0,
+    COL_NUM = 0,
+    COL_TRACK,
     COL_VOL,
     COL_PAN,
     COL_MUTE,
@@ -28,18 +42,14 @@ enum SafeCol {
     COL_PHASE,
     COL_FX,
     COL_SENDS,
-    COL_VIS,
-    COL_SEL,
-    COL_NAME,
-    COL_COLOR,
-    COL_HEIGHT,
-    COL_ORDER,
+    COL_SENDLVL,
     COL_ALL,
     COL_COUNT
 };
 
 // Mapping: SafeCol enum → TS_* bit(s)
 static const int k_colBit[COL_COUNT] = {
+    0,                           // COL_NUM   – no bit
     0,                           // COL_TRACK – no bit
     TS_VOL,
     TS_PAN,
@@ -48,55 +58,56 @@ static const int k_colBit[COL_COUNT] = {
     TS_PHASE,
     TS_FXPARAMS | TS_FXCHAIN,    // FX column covers both
     TS_SENDS,                    // track sends + hardware outputs
-    TS_VIS,
-    TS_SELECTION,
-    TS_TRACKNAME,
-    TS_TRACKCOLOR,
-    TS_TRACKHEIGHT,
-    TS_TRACKORDER,
+    TS_SENDLEVEL,                // send levels only; routing still recalls
     0,                           // COL_ALL – handled specially
 };
 
+// Full names are the header items' text; the header paints the short forms.
 static const char* k_colName[COL_COUNT] = {
-    "Track", "Vol", "Pan", "Mute", "Solo", "Phase", "FX", "Sends", "Vis", "Sel",
-    "Name", "Color", "Height", "Order", "All"
+    "#", "Track", "Vol", "Pan", "Mute", "Solo", "Phase", "FX", "Sends",
+    "Send Level", "All"
 };
 static const int k_colWidth[COL_COUNT] = {
-    140, 32, 32, 36, 36, 40, 32, 40, 32, 32,
-    38, 40, 44, 40, 36
+    44, 160, 28, 28, 28, 28, 28, 28, 34, 34, 30
 };
 
-// Bitmask covering all safe-able parameters (used by COL_ALL toggle)
-static const int k_allBits =
-    TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
-    TS_FXPARAMS | TS_FXCHAIN | TS_SENDS | TS_VIS | TS_SELECTION |
-    TS_TRACKNAME | TS_TRACKCOLOR | TS_TRACKHEIGHT | TS_TRACKORDER | TS_LAYERS |
-    TS_FXSLOTS;
-
-// ---------------------------------------------------------------------------
-// Per-track ListView columns: subset that omits Vis / Sel / Height / Order.
-// List view column index → SafeCol mapping and back.
-// ---------------------------------------------------------------------------
-// The per-track list has these columns (in order):
-//   0: Track, 1: Vol, 2: Pan, 3: Mute, 4: Solo, 5: Phase, 6: FX, 7: Sends,
-//   8: Name, 9: Color, 10: All
-static const int k_ptColToSafeCol[] = {
-    COL_TRACK, COL_VOL, COL_PAN, COL_MUTE, COL_SOLO, COL_PHASE, COL_FX,
-    COL_SENDS, COL_NAME, COL_COLOR, COL_ALL
+// Header labels. Phase is the null sign, as on a console; everything else is
+// plain ASCII.
+#ifdef _WIN32
+static const wchar_t* k_colAbbr[COL_COUNT] = {
+    L"#", L"Track", L"V", L"P", L"M", L"S", L"Ø", L"FX", L"Snd", L"SLv", L"All"
 };
-static const int k_ptColCount = (int)(sizeof(k_ptColToSafeCol) / sizeof(k_ptColToSafeCol[0]));
+#else
+static const char* k_colAbbr[COL_COUNT] = {
+    "#", "Track", "V", "P", "M", "S", "Ã", "FX", "Snd", "SLv", "All"
+};
+#endif
 
-// Bitmask for COL_ALL in per-track mode (excludes Vis/Sel/Height/Order)
+// The grid shows every column, so a list view column index is its SafeCol.
+static const int k_ptColCount = COL_COUNT;
+
+// Columns that hold a clickable dot.
+static bool IsDotCol(int sc) { return sc >= COL_VOL && sc < COL_COUNT; }
+
+// Bitmask for COL_ALL: every safe the grid has a column for.
 static const int k_ptAllBits =
     TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_PHASE |
-    TS_FXPARAMS | TS_FXCHAIN | TS_SENDS | TS_TRACKNAME | TS_TRACKCOLOR;
+    TS_FXPARAMS | TS_FXCHAIN | TS_SENDS | TS_SENDLEVEL;
+
+// Folder indent per nesting level, and the color box in the # column.
+static const int kFolderIndent = 12;
+static const int kColorBoxSize = 10;
 
 // ---------------------------------------------------------------------------
 // Row data
 // ---------------------------------------------------------------------------
 struct SafeRow {
     std::string label;
-    GUID        guid;
+    GUID        guid      = {};
+    int         trackNum  = 0;      // 1-based project position
+    int         depth     = 0;      // folder nesting level
+    bool        hasColor  = false;
+    COLORREF    color     = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -134,14 +145,14 @@ static SafesTarget SetTarget(SafeSet& s)
 struct SafesPane {
     HWND hDlg       = nullptr;
     HWND hList      = nullptr;
-    HWND hLayerList = nullptr;   // main window, Project tab only
+    HWND hLayerList = nullptr;   // main window, Layers tab only
     HWND hTabs      = nullptr;   // main window only
 
     std::vector<SafeRow> rows;
     SafesTarget          tgt;
 
     bool     isMain   = false;   // main window: tabs + layer table
-    int      tab      = 0;       // 0 = Project, 1 = Subscenes
+    int      tab      = 0;       // k_tabProject / k_tabSubscenes / k_tabLayers
     SafeSet* sceneSet = nullptr; // popup only: the snapshot's own set
     bool     dirty    = false;   // popup only: did the user change anything
     HFONT    hBanner  = nullptr; // popup only: bold font for the banner
@@ -152,6 +163,15 @@ struct SafesPane {
     int  s_cbDragLastRow  = -1;
     int  s_cbDragLastCol  = -1;
     bool s_suppressClick  = false;
+
+    // Layer rows as last populated, so the refresh timer can tell whether the
+    // layer set has changed.
+    std::vector<std::string> layerLabels;
+
+    // Drag state for the Layers tab's Safe column
+    bool lyrDragActive  = false;
+    bool lyrDragOn      = false;    // what the drag is writing
+    int  lyrDragLastRow = -1;
 };
 
 // The dockable window's pane. Created once at startup and only hidden on
@@ -164,9 +184,20 @@ static SafesPane* PaneOf(HWND hDlg)
     return (SafesPane*)GetWindowLongPtr(hDlg, DWLP_USER);
 }
 
-// Tab labels for the main window.
-static const char* k_tabName[] = { "Project", "Subscenes" };
-static const int   k_tabCount  = 2;
+// Tab labels for the main window. Project and Subscenes both drive the track
+// grid; Layers swaps the grid out for the layer table.
+static const char* k_tabName[] = { "Project", "Subscenes", "Layers" };
+static const int   k_tabCount  = 3;
+enum { k_tabProject = 0, k_tabSubscenes = 1, k_tabLayers = 2 };
+
+// Every control that belongs to the track grid's tabs, hidden on Layers.
+static const int k_trackTabIds[] = {
+    IDC_GSAFES_GROUP,
+    IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO, IDC_GSAFE_PHASE,
+    IDC_GSAFE_FX,  IDC_GSAFE_SENDS, IDC_GSAFE_SENDLVL,
+    IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS,
+    IDC_SAFESLIST
+};
 
 // ---------------------------------------------------------------------------
 // Layer safes live in their own list (hLayerList) rather than as rows in the
@@ -177,14 +208,14 @@ static const int   k_tabCount  = 2;
 static bool LayerRowSafed(int layerIdx)
 {
     if (layerIdx < 0 || layerIdx >= kLayerSafeCount) return false;
-    return (g_layerSafeMask & (1 << layerIdx)) != 0;
+    return ((unsigned)g_layerSafeMask & (1u << layerIdx)) != 0;
 }
 
 static void SetLayerRowSafed(int layerIdx, bool on)
 {
     if (layerIdx < 0 || layerIdx >= kLayerSafeCount) return;
-    if (on) g_layerSafeMask |=  (1 << layerIdx);
-    else    g_layerSafeMask &= ~(1 << layerIdx);
+    if (on) g_layerSafeMask = (int)((unsigned)g_layerSafeMask |  (1u << layerIdx));
+    else    g_layerSafeMask = (int)((unsigned)g_layerSafeMask & ~(1u << layerIdx));
 }
 
 // ---------------------------------------------------------------------------
@@ -250,11 +281,7 @@ static void SyncGlobalCheckboxes(SafesPane* p)
     CheckDlgButton(hDlg, IDC_GSAFE_PHASE,  (m & TS_PHASE) ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_FX,     (m & (TS_FXPARAMS|TS_FXCHAIN)) ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_SENDS,  (m & TS_SENDS)       ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_GSAFE_VIS,    (m & TS_VIS)         ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_GSAFE_NAME,   (m & TS_TRACKNAME)   ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_GSAFE_COLOR,  (m & TS_TRACKCOLOR)  ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_GSAFE_HEIGHT, (m & TS_TRACKHEIGHT) ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(hDlg, IDC_GSAFE_ORDER,  (m & TS_TRACKORDER)  ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(hDlg, IDC_GSAFE_SENDLVL,(m & TS_SENDLEVEL)   ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_LAYERS, (m & TS_LAYERS)      ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(hDlg, IDC_GSAFE_SLOTS,  (m & TS_FXSLOTS)     ? BST_CHECKED : BST_UNCHECKED);
 
@@ -263,27 +290,13 @@ static void SyncGlobalCheckboxes(SafesPane* p)
     if (!LT_SlotHintsSupported())
         EnableWindow(GetDlgItem(hDlg, IDC_GSAFE_SLOTS), FALSE);
 
-    // "All Tracks" checkbox - checked if every track row has all per-track bits
-    // set. Only the dockable window has one.
-    if (GetDlgItem(hDlg, IDC_GSAFE_ALL))
-    {
-        bool allSet = !p->rows.empty();
-        for (int i = 0; allSet && i < (int)p->rows.size(); ++i)
-            if ((GetRowMask(p, i) & k_ptAllBits) != k_ptAllBits) allSet = false;
-        CheckDlgButton(hDlg, IDC_GSAFE_ALL, allSet ? BST_CHECKED : BST_UNCHECKED);
-    }
 
-    CheckDlgButton(hDlg, IDC_TRACK_SAFES_EN,
-        *p->tgt.trackEn ? BST_CHECKED : BST_UNCHECKED);
 
     // Popup-only switches.
     if (p->sceneSet)
     {
-        CheckDlgButton(hDlg, IDC_SCSAFE_ENABLE,
-            p->sceneSet->enabled ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hDlg, IDC_SCSAFE_REPLACE,
             p->sceneSet->replaceGlobal ? BST_CHECKED : BST_UNCHECKED);
-        EnableWindow(GetDlgItem(hDlg, IDC_SCSAFE_REPLACE), p->sceneSet->enabled);
     }
 }
 
@@ -299,21 +312,28 @@ static void SyncDlgFromState()
 }
 
 // ---------------------------------------------------------------------------
-// Layer safe list: one fixed row per slot.
+// Layer safe list: one row per layer slot.
 //
 // Slots by index rather than one row per existing layer: a scene recall
 // replaces the whole layer set, so the slot number is the only reference that
-// still means anything on the other side of one. Slots past the end of the
-// current layer list are shown too, so a safe set now still applies to a layer
-// created later.
+// still means anything on the other side of one. The list is as long as the
+// largest layer set any scene holds (or the current one, if that is larger),
+// so every slot a recall can bring in has a row.
 // ---------------------------------------------------------------------------
-static void PopulateLayerList(SafesPane* p)
+static int LayerSafeRowCount()
 {
-    if (!p || !p->hLayerList) return;
-    ListView_DeleteAllItems(p->hLayerList);
+    int n = LayersEngine::Get().GetLayerCount();
+    for (const auto& snap : g_snapshots)
+        if (snap && (int)snap->m_layers.size() > n) n = (int)snap->m_layers.size();
+    return n < kLayerSafeCount ? n : kLayerSafeCount;
+}
 
+static std::vector<std::string> LayerRowLabels()
+{
+    std::vector<std::string> out;
     const int layerCount = LayersEngine::Get().GetLayerCount();
-    for (int i = 0; i < kLayerSafeCount; ++i)
+    const int rows       = LayerSafeRowCount();
+    for (int i = 0; i < rows; ++i)
     {
         char lbl[160];
         if (i < layerCount)
@@ -321,65 +341,182 @@ static void PopulateLayerList(SafesPane* p)
                      i + 1, LayersEngine::Get().GetLayer(i).name);
         else
             snprintf(lbl, sizeof(lbl), "%d.  (no layer)", i + 1);
+        out.push_back(lbl);
+    }
+    return out;
+}
 
+static void PopulateLayerList(SafesPane* p)
+{
+    if (!p || !p->hLayerList) return;
+    ListView_DeleteAllItems(p->hLayerList);
+
+    p->layerLabels = LayerRowLabels();
+    for (int i = 0; i < (int)p->layerLabels.size(); ++i)
+    {
         LVITEMA item = {};
         item.mask    = LVIF_TEXT;
         item.iItem   = i;
-        item.pszText = lbl;
+        item.pszText = (LPSTR)p->layerLabels[i].c_str();
         ListView_InsertItem(p->hLayerList, &item);
         ListView_SetItemText(p->hLayerList, i, 1, (LPSTR)" ");
     }
 }
 
 // ---------------------------------------------------------------------------
-// Rebuild rows from the current REAPER project
+// Rebuild rows from the current REAPER project: every track, in project
+// order, with its folder depth.
 // ---------------------------------------------------------------------------
 static void RebuildRows(SafesPane* p)
 {
     if (!p) return;
     p->rows.clear();
 
+    int depth = 0;
     const int n = GetNumTracks();
     for (int i = 0; i < n; ++i)
     {
         MediaTrack* tr = GetTrack(nullptr, i);
         if (!tr) continue;
 
+        int fd = 0;
+        if (int* pfd = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr)) fd = *pfd;
+
         SafeRow r;
+        GUID* pg = (GUID*)GetSetMediaTrackInfo(tr, "GUID", nullptr);
+        r.guid     = pg ? *pg : GUID{};
+        r.trackNum = i + 1;
+        r.depth    = depth;
 
         char name[256] = {};
         if (!GetTrackName(tr, name, sizeof(name)) || name[0] == '\0')
             snprintf(name, sizeof(name), "Track %d", i + 1);
         r.label = name;
 
-        GUID* pg = (GUID*)GetSetMediaTrackInfo(tr, "GUID", nullptr);
-        r.guid = pg ? *pg : GUID{};
-
+        // Same convention as GetTrackColor: 0 is "no color", anything else
+        // is a native color with 0x1000000 set.
+        const int nc = GetTrackColor(tr);
+        if (nc != 0)
+        {
+            int cr = 0, cg = 0, cb = 0;
+            ColorFromNative(nc & 0xFFFFFF, &cr, &cg, &cb);
+            r.hasColor = true;
+            r.color    = RGB(cr, cg, cb);
+        }
         p->rows.push_back(r);
+
+        // I_FOLDERDEPTH is the change in depth after this track.
+        depth += fd;
+        if (depth < 0) depth = 0;
     }
 }
 
 // ---------------------------------------------------------------------------
-// Populate the ListView from the pane's rows
+// Populate the ListView from the pane's rows. The list holds only the number
+// and name text; dots, colors and arrows are painted from p->rows.
 // ---------------------------------------------------------------------------
 static void PopulateList(SafesPane* p)
 {
     if (!p || !p->hList) return;
+    SendMessage(p->hList, WM_SETREDRAW, FALSE, 0);
     ListView_DeleteAllItems(p->hList);
 
     for (int i = 0; i < (int)p->rows.size(); ++i)
     {
+        char num[16];
+        snprintf(num, sizeof(num), "%d", p->rows[i].trackNum);
+
         LVITEMA item = {};
         item.mask    = LVIF_TEXT;
         item.iItem   = i;
-        item.pszText = (LPSTR)p->rows[i].label.c_str();
+        item.pszText = num;
         ListView_InsertItem(p->hList, &item);
+        ListView_SetItemText(p->hList, i, COL_TRACK, (LPSTR)p->rows[i].label.c_str());
 
-        // Sub-items: we use the custom-draw to paint checkboxes, but we set
-        // a placeholder space so the item has the right number of sub-items.
-        for (int c = 1; c < k_ptColCount; ++c)
+        for (int c = COL_TRACK + 1; c < k_ptColCount; ++c)
             ListView_SetItemText(p->hList, i, c, (LPSTR)" ");
     }
+    SendMessage(p->hList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(p->hList, nullptr, TRUE);
+}
+
+// Refill the grid from p->rows, keeping the scroll position.
+static void RepopulateKeepScroll(SafesPane* p)
+{
+    const int top = ListView_GetTopIndex(p->hList);
+    PopulateList(p);
+    RECT rcItem;
+    if (top > 0 && ListView_GetItemRect(p->hList, 0, &rcItem, LVIR_BOUNDS))
+        ListView_Scroll(p->hList, 0, top * (rcItem.bottom - rcItem.top));
+}
+
+
+// Same tracks, names, colors and folder shape as the rows on screen?
+static bool SameRows(const std::vector<SafeRow>& a, const std::vector<SafeRow>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        const SafeRow& x = a[i];
+        const SafeRow& y = b[i];
+        if (!IsEqualGUID(x.guid, y.guid) || x.label != y.label ||
+            x.trackNum != y.trackNum || x.depth != y.depth ||
+            x.hasColor != y.hasColor || (x.hasColor && x.color != y.color))
+            return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Keep the dockable window current without a Refresh button: while it is
+// visible, a timer rebuilds the rows off the project and repaints only when
+// something the grid shows (tracks, names, colors, folder depth, layer names) has
+// actually changed, so a click on a dot is never fighting a rebuild.
+// ---------------------------------------------------------------------------
+static const UINT_PTR kSafesRefreshTimer = 1;
+
+static void RefreshIfChanged(SafesPane* p)
+{
+    if (!p || !p->hDlg || !IsWindowVisible(p->hDlg)) return;
+    if (p->s_cbDragActive || p->lyrDragActive) return;
+
+    SafesPane probe;
+    RebuildRows(&probe);
+    if (!SameRows(probe.rows, p->rows))
+    {
+        p->rows.swap(probe.rows);
+        if (p->hList) RepopulateKeepScroll(p);
+    }
+    if (p->hLayerList && LayerRowLabels() != p->layerLabels)
+        PopulateLayerList(p);
+}
+
+// Text colour for a custom-drawn cell, matching the background
+// ReaperTheme_ListCellBg picked for it.
+static COLORREF CellFg(HWND hList, int row)
+{
+    const ReaperListColors& lc = ReaperTheme_List();
+    const COLORREF bg = ReaperTheme_ListCellBg(hList, row);
+    if (bg == lc.selBg)   return lc.selFg;
+    if (bg == lc.selInBg) return lc.selInFg;
+    return lc.fg;
+}
+
+// A filled dot in the middle of a cell, as in the Layers window.
+static void PaintDot(HDC hdc, const RECT& rc, COLORREF fg)
+{
+    const int cx = (rc.left + rc.right)  / 2;
+    const int cy = (rc.top  + rc.bottom) / 2;
+    const int r  = 2;
+    HBRUSH hb  = CreateSolidBrush(fg);
+    HPEN   hp  = CreatePen(PS_SOLID, 1, fg);
+    HGDIOBJ ob = SelectObject(hdc, hb);
+    HGDIOBJ op = SelectObject(hdc, hp);
+    Ellipse(hdc, cx - r, cy - r, cx + r + 1, cy + r + 1);
+    SelectObject(hdc, ob);
+    SelectObject(hdc, op);
+    DeleteObject(hb);
+    DeleteObject(hp);
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +526,7 @@ static void PopulateList(SafesPane* p)
 static int PtLvcToSafeCol(int lvc)
 {
     if (lvc < 0 || lvc >= k_ptColCount) return -1;
-    return k_ptColToSafeCol[lvc];
+    return lvc;
 }
 
 // ---------------------------------------------------------------------------
@@ -416,7 +553,8 @@ static void ApplyCellToggle(SafesPane* p, int row, int sc, bool checking)
 }
 
 // ---------------------------------------------------------------------------
-// SafesHeaderSubclassProc – paints rotated column labels for the per-track list
+// SafesHeaderSubclassProc – paints the per-track list's column labels in theme
+// colours: the short forms, level, centred over the dot columns.
 // ---------------------------------------------------------------------------
 static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
                                                   WPARAM wParam, LPARAM lParam,
@@ -429,80 +567,42 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
 
         RECT rcClient;
         GetClientRect(hHdr, &rcClient);
-        // Fill background
-        FillRect(hdc, &rcClient, (HBRUSH)(COLOR_BTNFACE + 1));
+        HBRUSH hbrFace = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+        FillRect(hdc, &rcClient, hbrFace);
+        DeleteObject(hbrFace);
 
-        int itemCount = Header_GetItemCount(hHdr);
-
-        // Create rotated font (escapement = 90°, counter-clockwise)
-        LOGFONTA lf = {};
-        GetObject(GetStockObject(DEFAULT_GUI_FONT), sizeof(lf), &lf);
-        lf.lfEscapement  = 900;
-        lf.lfOrientation = 900;
-        HFONT hRotFont = CreateFontIndirectA(&lf);
-
-        // Normal font for Track column (col 0)
-        HFONT hNormFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-
+        HGDIOBJ oldFont = SelectObject(hdc, (HFONT)SendMessage(hHdr, WM_GETFONT, 0, 0));
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, GetSysColor(COLOR_BTNTEXT));
+        SetTextColor(hdc, ReaperTheme_Sys(COLOR_BTNTEXT));
 
-        for (int i = 0; i < itemCount; ++i)
+        HPEN hPen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
+        HGDIOBJ oldPen = SelectObject(hdc, hPen);
+
+        const int itemCount = Header_GetItemCount(hHdr);
+        for (int i = 0; i < itemCount && i < COL_COUNT; ++i)
         {
             RECT rcItem;
             Header_GetItemRect(hHdr, i, &rcItem);
 
-            // Draw separator line
-            HPEN hPen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
-            HPEN hOld = (HPEN)SelectObject(hdc, hPen);
             MoveToEx(hdc, rcItem.right - 1, rcItem.top, nullptr);
             LineTo(hdc, rcItem.right - 1, rcItem.bottom);
-            SelectObject(hdc, hOld);
-            DeleteObject(hPen);
 
-            // Get column label
-            char text[64] = {};
-            HDITEM hdi = {};
-            hdi.mask      = HDI_TEXT;
-            hdi.pszText   = text;
-            hdi.cchTextMax = (int)sizeof(text) - 1;
-            Header_GetItem(hHdr, i, &hdi);
-
-            if (i == 0)
-            {
-                // Track column: horizontal text, vertically centred
-                SelectObject(hdc, hNormFont);
-                RECT rc = rcItem;
-                rc.left += 4;
-                DrawTextA(hdc, text, -1, &rc, DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_END_ELLIPSIS);
-            }
-            else
-            {
-                // Other columns: rotated 90° text
-                SelectObject(hdc, hRotFont);
-                int cx = (rcItem.left + rcItem.right) / 2;
-                // Draw from bottom of header upward (text ascends)
-                TextOutA(hdc, cx + 5, rcItem.bottom - 3, text, (int)strlen(text));
-            }
+            RECT rc = rcItem;
+            UINT fmt = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS;
+            if (i == COL_TRACK) { rc.left += 4; fmt |= DT_LEFT; }
+            else                fmt |= DT_CENTER;
+#ifdef _WIN32
+            DrawTextW(hdc, k_colAbbr[i], -1, &rc, fmt);
+#else
+            DrawTextA(hdc, k_colAbbr[i], -1, &rc, fmt);
+#endif
         }
 
-        DeleteObject(hRotFont);
+        SelectObject(hdc, oldPen);
+        DeleteObject(hPen);
+        SelectObject(hdc, oldFont);
         EndPaint(hHdr, &ps);
         return 0;
-    }
-
-    // Set minimum header height to fit rotated labels (about 54px)
-    if (msg == HDM_LAYOUT)
-    {
-        LRESULT r = DefSubclassProc(hHdr, msg, wParam, lParam);
-        HDLAYOUT* phl = (HDLAYOUT*)lParam;
-        if (phl && phl->prc && phl->pwpos)
-        {
-            const int kHeaderH = 54;
-            phl->pwpos->cy = kHeaderH;
-            phl->prc->top  = kHeaderH;
-        }
-        return r;
     }
 
     return DefSubclassProc(hHdr, msg, wParam, lParam);
@@ -521,6 +621,7 @@ static LRESULT CALLBACK SafesListSubclassProc(HWND hList, UINT msg,
     switch (msg)
     {
     case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK:   // a quick second press on a dot is still a press
     {
         POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         LVHITTESTINFO ht = {}; ht.pt = pt;
@@ -528,7 +629,8 @@ static LRESULT CALLBACK SafesListSubclassProc(HWND hList, UINT msg,
         const int row = ht.iItem;
         const int lvc = ht.iSubItem;
         const int sc  = PtLvcToSafeCol(lvc);
-        if (row >= 0 && lvc > 0 && sc > 0)
+
+        if (row >= 0 && IsDotCol(sc))
         {
             // Determine whether this click is checking or unchecking
             int bit = k_colBit[sc];
@@ -561,8 +663,8 @@ static LRESULT CALLBACK SafesListSubclassProc(HWND hList, UINT msg,
         const int row = ht.iItem;
         const int lvc = ht.iSubItem;
         const int sc  = PtLvcToSafeCol(lvc);
-        // Only process if we've moved to a new cell with a valid checkbox column
-        if (row >= 0 && lvc > 0 && sc > 0 &&
+        // Only process if we've moved to a new cell with a dot column
+        if (row >= 0 && IsDotCol(sc) &&
             (row != p->s_cbDragLastRow || lvc != p->s_cbDragLastCol))
         {
             p->s_cbDragLastRow = row;
@@ -596,6 +698,79 @@ static LRESULT CALLBACK SafesListSubclassProc(HWND hList, UINT msg,
 }
 
 // ---------------------------------------------------------------------------
+// LayerListSubclassProc – the Layers tab's Safe column, with the same press
+// and drag as the track grid: the first cell decides whether the drag fills
+// or clears, and every row it crosses gets that.
+// ---------------------------------------------------------------------------
+static void ApplyLayerDot(SafesPane* p, int row, bool on)
+{
+    if (row < 0 || row >= ListView_GetItemCount(p->hLayerList)) return;
+    if (LayerRowSafed(row) == on) return;
+    SetLayerRowSafed(row, on);
+    RECT rcRow;
+    if (ListView_GetItemRect(p->hLayerList, row, &rcRow, LVIR_BOUNDS))
+        InvalidateRect(p->hLayerList, &rcRow, FALSE);
+    MarkProjectDirty(nullptr);
+}
+
+static LRESULT CALLBACK LayerListSubclassProc(HWND hList, UINT msg,
+                                              WPARAM wParam, LPARAM lParam,
+                                              ULONG_PTR /*uId*/, DWORD_PTR dwRef)
+{
+    SafesPane* p = (SafesPane*)dwRef;
+    if (!p) return DefSubclassProc(hList, msg, wParam, lParam);
+
+    switch (msg)
+    {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK:   // a quick second press is still a press
+    {
+        LVHITTESTINFO ht = {};
+        ht.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ListView_SubItemHitTest(hList, &ht);
+        if (ht.iItem >= 0 && ht.iSubItem == 1)
+        {
+            p->lyrDragOn      = !LayerRowSafed(ht.iItem);
+            p->lyrDragActive  = true;
+            p->lyrDragLastRow = ht.iItem;
+            ApplyLayerDot(p, ht.iItem, p->lyrDragOn);
+            SetFocus(hList);
+            SetCapture(hList);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_MOUSEMOVE:
+    {
+        if (!p->lyrDragActive) break;
+        if (!(wParam & MK_LBUTTON)) { ReleaseCapture(); break; }
+        // Rows only: the drag follows the pointer up and down the list
+        // wherever it is horizontally, so a slightly wobbly drag still lands.
+        LVHITTESTINFO ht = {};
+        ht.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ListView_SubItemHitTest(hList, &ht);
+        if (ht.iItem >= 0 && ht.iItem != p->lyrDragLastRow)
+        {
+            p->lyrDragLastRow = ht.iItem;
+            ApplyLayerDot(p, ht.iItem, p->lyrDragOn);
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONUP:
+        if (p->lyrDragActive) { ReleaseCapture(); return 0; }
+        break;
+
+    case WM_CAPTURECHANGED:
+        p->lyrDragActive  = false;
+        p->lyrDragLastRow = -1;
+        break;
+    }
+    return DefSubclassProc(hList, msg, wParam, lParam);
+}
+
+// ---------------------------------------------------------------------------
 // CreateGrid – build the per-track ListView over its placeholder.
 // Shared by both templates; they use the same IDC_SAFESLIST id.
 // ---------------------------------------------------------------------------
@@ -622,16 +797,16 @@ static void CreateGrid(SafesPane* p)
 
     ListView_SetExtendedListViewStyle(p->hList,
         LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    ReaperTheme_ApplyListView(p->hList);
 
     LVCOLUMNA col = {};
     col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
-    for (int lvc = 0; lvc < k_ptColCount; ++lvc)
+    for (int sc = 0; sc < k_ptColCount; ++sc)
     {
-        int sc = k_ptColToSafeCol[lvc];
         col.pszText = (LPSTR)k_colName[sc];
         col.cx      = k_colWidth[sc];
         col.fmt     = (sc == COL_TRACK) ? LVCFMT_LEFT : LVCFMT_CENTER;
-        ListView_InsertColumn(p->hList, lvc, &col);
+        ListView_InsertColumn(p->hList, sc, &col);
     }
 
     HWND hHdr = ListView_GetHeader(p->hList);
@@ -645,19 +820,17 @@ static void CreateGrid(SafesPane* p)
 // LayoutGlobalRow – position the row of global checkboxes inside their
 // groupbox. Shared by both templates so they stay visually identical.
 // ---------------------------------------------------------------------------
-static void LayoutGlobalRow(HWND hDlg, int x, int y, int w, int chkH, bool withAll)
+static void LayoutGlobalRow(HWND hDlg, int x, int y, int w, int chkH)
 {
-    // Row 0: Vol    Pan    Mutes  Solo   Phase
-    // Row 1: FX     Sends  Vis    Name   Color
-    // Row 2: Height Order  Layers Slots  (All Tracks)
+    // Row 0: Vol    Pan    Mutes      Solo    Phase
+    // Row 1: FX     Sends  Send Level Layers  Slots
     static const int k_gsIds[] = {
         IDC_GSAFE_VOL, IDC_GSAFE_PAN, IDC_GSAFE_MUTE, IDC_GSAFE_SOLO, IDC_GSAFE_PHASE,
-        IDC_GSAFE_FX,  IDC_GSAFE_SENDS, IDC_GSAFE_VIS, IDC_GSAFE_NAME, IDC_GSAFE_COLOR,
-        IDC_GSAFE_HEIGHT, IDC_GSAFE_ORDER, IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS, IDC_GSAFE_ALL
+        IDC_GSAFE_FX,  IDC_GSAFE_SENDS, IDC_GSAFE_SENDLVL, IDC_GSAFE_LAYERS, IDC_GSAFE_SLOTS,
     };
-    static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1, 2,2,2,2, 2 };
-    static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4, 0,1,2,3, 4 };
-    const int count = withAll ? 15 : 14;
+    static const int k_gsRow[] = { 0,0,0,0,0, 1,1,1,1,1 };
+    static const int k_gsCol[] = { 0,1,2,3,4, 0,1,2,3,4 };
+    const int count = (int)(sizeof(k_gsIds) / sizeof(k_gsIds[0]));
     const int slot5 = w / 5;
     for (int i = 0; i < count; ++i)
     {
@@ -688,11 +861,7 @@ static bool HandleGlobalToggle(SafesPane* p, int id)
         { IDC_GSAFE_PHASE,  TS_PHASE },
         { IDC_GSAFE_FX,     TS_FXPARAMS | TS_FXCHAIN },
         { IDC_GSAFE_SENDS,  TS_SENDS },
-        { IDC_GSAFE_VIS,    TS_VIS },
-        { IDC_GSAFE_NAME,   TS_TRACKNAME },
-        { IDC_GSAFE_COLOR,  TS_TRACKCOLOR },
-        { IDC_GSAFE_HEIGHT, TS_TRACKHEIGHT },
-        { IDC_GSAFE_ORDER,  TS_TRACKORDER },
+        { IDC_GSAFE_SENDLVL,TS_SENDLEVEL },
         { IDC_GSAFE_LAYERS, TS_LAYERS },
         { IDC_GSAFE_SLOTS,  TS_FXSLOTS },
     };
@@ -727,7 +896,7 @@ static bool HandleGridNotify(SafesPane* p, NMHDR* pnm, LPARAM lParam)
         const int row = ht.iItem;
         const int lvc = ht.iSubItem;
         const int sc  = PtLvcToSafeCol(lvc);
-        if (row >= 0 && lvc > 0 && sc > 0)
+        if (row >= 0 && IsDotCol(sc))
         {
             if (sc == COL_ALL)
             {
@@ -757,7 +926,8 @@ static bool HandleGridNotify(SafesPane* p, NMHDR* pnm, LPARAM lParam)
         return true;
 
     case CDDS_ITEMPREPAINT:
-        SetWindowLongPtr(p->hDlg, DWLP_MSGRESULT, CDRF_NOTIFYSUBITEMDRAW);
+        ReaperTheme_ListItemPrePaint(pcd, p->hList, false);
+        SetWindowLongPtr(p->hDlg, DWLP_MSGRESULT, CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT);
         return true;
 
     case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
@@ -765,32 +935,94 @@ static bool HandleGridNotify(SafesPane* p, NMHDR* pnm, LPARAM lParam)
         const int row = (int)pcd->nmcd.dwItemSpec;
         const int lvc = (int)pcd->iSubItem;
         const int sc  = PtLvcToSafeCol(lvc);
-        if (sc == COL_TRACK) return false; // let default draw track name
-        if (sc < 0) return false;
+        if (sc < 0 || row < 0 || row >= (int)p->rows.size())
+        {
+            ReaperTheme_ListItemPrePaint(pcd, p->hList, false);
+            SetWindowLongPtr(p->hDlg, DWLP_MSGRESULT, CDRF_NEWFONT);
+            return true;
+        }
 
-        HDC   hdc  = pcd->nmcd.hdc;
-        RECT  rcIt = pcd->nmcd.rc;
+        HDC  hdc = pcd->nmcd.hdc;
+        const SafeRow&  r  = p->rows[row];
+        const COLORREF  bg = ReaperTheme_ListCellBg(p->hList, row);
+        const COLORREF  fg = CellFg(p->hList, row);
 
-        const bool isSelected = (ListView_GetItemState(p->hList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-        COLORREF bg = isSelected ? GetSysColor(COLOR_HIGHLIGHT) : GetSysColor(COLOR_WINDOW);
+        // Column 0's custom-draw rect spans the whole row on some comctl
+        // versions, so the text cells are measured rather than trusted.
+        RECT rcIt = pcd->nmcd.rc;
+        if (sc == COL_NUM)
+        {
+            if (ListView_GetItemRect(p->hList, row, &rcIt, LVIR_BOUNDS))
+                rcIt.right = rcIt.left + ListView_GetColumnWidth(p->hList, COL_NUM);
+        }
+        else if (sc == COL_TRACK)
+        {
+            ListView_GetSubItemRect(p->hList, row, COL_TRACK, LVIR_BOUNDS, &rcIt);
+        }
+
         SetBkColor(hdc, bg);
         ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, fg);
 
-        const int rowMask = GetRowMask(p, row);
-        const bool checked = (sc == COL_ALL)
-            ? (rowMask & k_ptAllBits) == k_ptAllBits
-            : (rowMask & k_colBit[sc]) != 0;
+        if (sc == COL_NUM)
+        {
+            // A color box on every row, then the track number. An uncolored
+            // track gets an empty outline so the column reads the same all the
+            // way down.
+            const int bs = kColorBoxSize;
+            const int by = (rcIt.top + rcIt.bottom - bs) / 2;
+            RECT rb = { rcIt.left + 4, by, rcIt.left + 4 + bs, by + bs };
+            HPEN    hp = CreatePen(PS_SOLID, 1, ReaperTheme_List().muted);
+            HBRUSH  hb = r.hasColor ? CreateSolidBrush(r.color) : nullptr;
+            HGDIOBJ op = SelectObject(hdc, hp);
+            HGDIOBJ ob = SelectObject(hdc, hb ? (HGDIOBJ)hb : GetStockObject(NULL_BRUSH));
+            Rectangle(hdc, rb.left, rb.top, rb.right, rb.bottom);
+            SelectObject(hdc, op);
+            SelectObject(hdc, ob);
+            DeleteObject(hp);
+            if (hb) DeleteObject(hb);
 
-        const int cbSize = 13;
-        RECT rcCb;
-        rcCb.left   = rcIt.left  + (rcIt.right  - rcIt.left  - cbSize) / 2;
-        rcCb.top    = rcIt.top   + (rcIt.bottom - rcIt.top   - cbSize) / 2;
-        rcCb.right  = rcCb.left  + cbSize;
-        rcCb.bottom = rcCb.top   + cbSize;
-
-        UINT dfcs = DFCS_BUTTONCHECK | DFCS_FLAT;
-        if (checked) dfcs |= DFCS_CHECKED;
-        DrawFrameControl(hdc, &rcCb, DFC_BUTTON, dfcs);
+            char num[16];
+            snprintf(num, sizeof(num), "%d", r.trackNum);
+            RECT rn = rcIt;
+            rn.left = rb.right + 2;
+            DrawTextA(hdc, num, -1, &rn, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        else if (sc == COL_TRACK)
+        {
+            RECT rt = rcIt;
+            rt.left += 4;
+            if (r.depth > 0)
+            {
+                // Indent, then U+2514 U+2500 (box-drawing corner): the same
+                // mark the Scenes list puts in front of a subscene.
+                rt.left += (r.depth - 1) * kFolderIndent;
+                RECT rc2 = rt;
+#ifdef _WIN32
+                DrawTextW(hdc, L"\u2514\u2500 ", -1, &rc2,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+                DrawTextW(hdc, L"\u2514\u2500 ", -1, &rt,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+#else
+                DrawTextA(hdc, "\xE2\x94\x94\xE2\x94\x80 ", -1, &rc2,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+                DrawTextA(hdc, "\xE2\x94\x94\xE2\x94\x80 ", -1, &rt,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+#endif
+                rt.left += rc2.right - rc2.left;
+            }
+            DrawTextA(hdc, r.label.c_str(), -1, &rt,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
+        else
+        {
+            const int rowMask = GetRowMask(p, row);
+            const bool on = (sc == COL_ALL)
+                ? (rowMask & k_ptAllBits) == k_ptAllBits
+                : (rowMask & k_colBit[sc]) != 0;
+            if (on) PaintDot(hdc, rcIt, fg);
+        }
 
         SetWindowLongPtr(p->hDlg, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
         return true;
@@ -800,23 +1032,28 @@ static bool HandleGridNotify(SafesPane* p, NMHDR* pnm, LPARAM lParam)
 }
 
 // ---------------------------------------------------------------------------
-// SwitchTab – repoint the main window's grid at the other safes set.
+// SwitchTab – repoint the main window's grid at the other safes set, or swap
+// the grid out for the layer table.
 // ---------------------------------------------------------------------------
 static void SwitchTab(SafesPane* p, int tab)
 {
     if (!p || !p->isMain) return;
-    if (tab < 0 || tab >= k_tabCount) tab = 0;
+    if (tab < 0 || tab >= k_tabCount) tab = k_tabProject;
     p->tab = tab;
-    p->tgt = (tab == 0) ? ProjectTarget() : SetTarget(g_subsceneSafes);
+    // The Layers tab keeps the project set behind the (hidden) grid controls
+    // so they always have a valid target.
+    p->tgt = (tab == k_tabSubscenes) ? SetTarget(g_subsceneSafes) : ProjectTarget();
 
     SetDlgItemText(p->hDlg, IDC_GSAFES_GROUP,
-        tab == 0 ? "Global Safes"
-                 : "Subscene Global Safes  (added to the project safes on every subscene recall)");
+        tab == k_tabSubscenes
+            ? "Subscene Global Safes  (added to the project safes on every subscene recall)"
+            : "Global Safes");
 
-    // Layers are project-level: a subscene has no layer set of its own, so the
-    // table would be editing the same ten bits under a heading that implied
-    // otherwise. Hide it and give the grid the space instead.
-    const bool showLayers = (tab == 0);
+    // Layers are project-level (a subscene has no layer set of its own) and
+    // share nothing with the track grid's columns, so they get their own tab.
+    const bool showLayers = (tab == k_tabLayers);
+    for (int id : k_trackTabIds)
+        if (HWND h = GetDlgItem(p->hDlg, id)) ShowWindow(h, showLayers ? SW_HIDE : SW_SHOW);
     if (p->hLayerList) ShowWindow(p->hLayerList, showLayers ? SW_SHOW : SW_HIDE);
     HWND hLbl = GetDlgItem(p->hDlg, IDC_SAFESLAYERLBL);
     if (hLbl) ShowWindow(hLbl, showLayers ? SW_SHOW : SW_HIDE);
@@ -836,6 +1073,10 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 {
     SafesPane* p = PaneOf(hDlg);
 
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hDlg, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hDlg);
+
     switch (msg)
     {
     case WM_INITDIALOG:
@@ -844,7 +1085,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         SetWindowLongPtr(hDlg, DWLP_USER, (LONG_PTR)p);
         p->hDlg   = hDlg;
         p->isMain = true;
-        p->tab    = 0;
+        p->tab    = k_tabProject;
         p->tgt    = ProjectTarget();
 
         CreateGrid(p);
@@ -860,7 +1101,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
                 ti.pszText = (LPSTR)k_tabName[i];
                 SendMessageA(p->hTabs, TCM_INSERTITEMA, i, (LPARAM)&ti);
             }
-            TabCtrl_SetCurSel(p->hTabs, 0);
+            TabCtrl_SetCurSel(p->hTabs, k_tabProject);
         }
 
         // ---- Layer recall safes: its own small table ---------------------
@@ -882,6 +1123,8 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 
             ListView_SetExtendedListViewStyle(p->hLayerList,
                 LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+            ReaperTheme_ApplyListView(p->hLayerList);
+            SetWindowSubclass(p->hLayerList, LayerListSubclassProc, 3, (DWORD_PTR)p);
 
             LVCOLUMNA lc = {};
             lc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
@@ -899,6 +1142,11 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         // the same pass used whenever that state changes from outside.
         SyncGlobalCheckboxes(p);
 
+        // Start on the Project tab, which hides the layer table.
+        SwitchTab(p, k_tabProject);
+
+        SetTimer(hDlg, kSafesRefreshTimer, 500, nullptr);
+
         return TRUE;
     }
 
@@ -910,10 +1158,9 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         const int W = rcDlg.right;
         const int H = rcDlg.bottom;
         const int MARGIN = 5;
-        const int BTN_H = 24, BTN_W = 70;
         const int TAB_H = 22;   // tab strip
-        const int GRP_H = 68;   // Global Safes groupbox (3 rows)
-        const int CHK_H = 14;   // per-track enable checkbox row
+        const int GRP_H = 50;   // Global Safes groupbox (2 rows)
+        const int CHK_H = 14;   // one checkbox row
 
         if (p->hTabs)
             SetWindowPos(p->hTabs, nullptr, MARGIN, MARGIN, W - MARGIN*2, TAB_H, SWP_NOZORDER);
@@ -922,41 +1169,25 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         HWND hGrp = GetDlgItem(hDlg, IDC_GSAFES_GROUP);
         if (hGrp) SetWindowPos(hGrp, nullptr, MARGIN, grpTop, W - MARGIN*2, GRP_H, SWP_NOZORDER);
 
-        LayoutGlobalRow(hDlg, MARGIN + 7, grpTop + 13, W - MARGIN*2 - 14, CHK_H, true);
+        LayoutGlobalRow(hDlg, MARGIN + 7, grpTop + 13, W - MARGIN*2 - 14, CHK_H);
 
-        // Per-track enable checkbox
-        const int trackEnY = grpTop + GRP_H + MARGIN;
-        HWND hTrackEn = GetDlgItem(hDlg, IDC_TRACK_SAFES_EN);
-        if (hTrackEn) SetWindowPos(hTrackEn, nullptr, MARGIN, trackEnY, 160, CHK_H, SWP_NOZORDER);
-
-        // The layer table keeps a fixed height at the bottom — it holds a
-        // known ten rows — and the track list absorbs everything left over.
-        // On the Subscenes tab the table is hidden and the grid takes its room.
-        const bool showLayers = (p->tab == 0);
-        const int LBL_H  = showLayers ? 12  : 0;
-        const int LYR_H  = showLayers ? 118 : 0;
-
-        const int listTop = trackEnY + CHK_H + MARGIN;
-        const int by      = H - BTN_H - MARGIN;
-        const int lyrTop  = by - MARGIN - LYR_H;
-        const int lblTop  = lyrTop - LBL_H;
-        int listBottom    = lblTop - MARGIN;
+        // Project / Subscenes: the track list takes everything below.
+        const int listTop = grpTop + GRP_H + MARGIN;
+        int listBottom    = H - MARGIN;
         if (listBottom < listTop + 40) listBottom = listTop + 40;
-
         SetWindowPos(p->hList, nullptr,
             MARGIN, listTop, W - MARGIN*2, listBottom - listTop, SWP_NOZORDER);
 
-        if (showLayers)
-        {
-            HWND hLyrLbl = GetDlgItem(hDlg, IDC_SAFESLAYERLBL);
-            if (hLyrLbl) SetWindowPos(hLyrLbl, nullptr, MARGIN, lblTop, W - MARGIN*2, 12, SWP_NOZORDER);
-            if (p->hLayerList) SetWindowPos(p->hLayerList, nullptr, MARGIN, lyrTop, W - MARGIN*2, 118, SWP_NOZORDER);
-        }
-
-        HWND hRefresh = GetDlgItem(hDlg, IDC_REFRESH_SAFES);
-        HWND hClear   = GetDlgItem(hDlg, IDC_CLEAR_SAFES);
-        if (hRefresh) SetWindowPos(hRefresh, nullptr, MARGIN,              by, BTN_W, BTN_H, SWP_NOZORDER);
-        if (hClear)   SetWindowPos(hClear,   nullptr, MARGIN + BTN_W + MARGIN, by, BTN_W, BTN_H, SWP_NOZORDER);
+        // Layers: label under the tab strip, table fills the rest.
+        const int LBL_H  = 12;
+        const int lyrTop = grpTop + LBL_H + 2;
+        int lyrBottom    = H - MARGIN;
+        if (lyrBottom < lyrTop + 40) lyrBottom = lyrTop + 40;
+        HWND hLyrLbl = GetDlgItem(hDlg, IDC_SAFESLAYERLBL);
+        if (hLyrLbl) SetWindowPos(hLyrLbl, nullptr, MARGIN, grpTop, W - MARGIN*2, LBL_H, SWP_NOZORDER);
+        if (p->hLayerList)
+            SetWindowPos(p->hLayerList, nullptr,
+                MARGIN, lyrTop, W - MARGIN*2, lyrBottom - lyrTop, SWP_NOZORDER);
         break;
     }
 
@@ -965,48 +1196,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         if (!p) break;
         const int id = LOWORD(wParam);
 
-        if (HandleGlobalToggle(p, id)) break;
-
-        switch (id)
-        {
-        case IDC_REFRESH_SAFES:
-            RebuildRows(p);
-            PopulateList(p);
-            PopulateLayerList(p);
-            SyncGlobalCheckboxes(p);
-            break;
-
-        case IDC_CLEAR_SAFES:
-            *p->tgt.mask = 0;
-            p->tgt.tracks->clear();
-            // Layer safes belong to the project tab only.
-            if (p->tab == 0) g_layerSafeMask = 0;
-            if (p->hLayerList) InvalidateRect(p->hLayerList, nullptr, FALSE);
-            SyncGlobalCheckboxes(p);
-            if (p->hList) InvalidateRect(p->hList, nullptr, FALSE);
-            NoteChange(p);
-            break;
-
-        case IDC_GSAFE_ALL:
-            if (IsDlgButtonChecked(hDlg, IDC_GSAFE_ALL) == BST_CHECKED)
-            {
-                for (int i = 0; i < (int)p->rows.size(); ++i)
-                    SetRowMask(p, i, GetRowMask(p, i) | k_ptAllBits);
-            }
-            else
-            {
-                p->tgt.tracks->clear();
-            }
-            if (p->hList) InvalidateRect(p->hList, nullptr, FALSE);
-            NoteChange(p);
-            break;
-
-        case IDC_TRACK_SAFES_EN:
-            *p->tgt.trackEn = (IsDlgButtonChecked(hDlg, IDC_TRACK_SAFES_EN) == BST_CHECKED);
-            if (p->hList) InvalidateRect(p->hList, nullptr, FALSE);
-            NoteChange(p);
-            break;
-        }
+        HandleGlobalToggle(p, id);
         break;
     }
 
@@ -1025,22 +1215,9 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         // ---- Layer safe table --------------------------------------------
         if (p->hLayerList && pnm->hwndFrom == p->hLayerList)
         {
-            if (pnm->code == NM_CLICK)
-            {
-                NMITEMACTIVATE* nia = (NMITEMACTIVATE*)lParam;
-                LVHITTESTINFO ht = {};
-                ht.pt = nia->ptAction;
-                ListView_SubItemHitTest(p->hLayerList, &ht);
-                if (ht.iItem >= 0 && ht.iSubItem == 1)
-                {
-                    SetLayerRowSafed(ht.iItem, !LayerRowSafed(ht.iItem));
-                    RECT rcRow;
-                    ListView_GetItemRect(p->hLayerList, ht.iItem, &rcRow, LVIR_BOUNDS);
-                    InvalidateRect(p->hLayerList, &rcRow, FALSE);
-                    MarkProjectDirty(nullptr);
-                }
-            }
-            else if (pnm->code == NM_CUSTOMDRAW)
+            // Presses on the Safe column are handled (and dragged) in
+            // LayerListSubclassProc, so only painting comes through here.
+            if (pnm->code == NM_CUSTOMDRAW)
             {
                 NMLVCUSTOMDRAW* pcd = (NMLVCUSTOMDRAW*)lParam;
                 switch (pcd->nmcd.dwDrawStage)
@@ -1049,31 +1226,28 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
                     SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NOTIFYITEMDRAW);
                     return TRUE;
                 case CDDS_ITEMPREPAINT:
-                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NOTIFYSUBITEMDRAW);
+                    ReaperTheme_ListItemPrePaint(pcd, p->hLayerList, false);
+                    SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NOTIFYSUBITEMDRAW | CDRF_NEWFONT);
                     return TRUE;
                 case CDDS_ITEMPREPAINT | CDDS_SUBITEM:
                 {
-                    if (pcd->iSubItem != 1) break;   // column 0 draws normally
+                    if (pcd->iSubItem != 1)
+                    {
+                        // Column 0 draws normally, in theme colours
+                        ReaperTheme_ListItemPrePaint(pcd, p->hLayerList, false);
+                        SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_NEWFONT);
+                        return TRUE;
+                    }
 
                     const int  row = (int)pcd->nmcd.dwItemSpec;
                     HDC        hdc = pcd->nmcd.hdc;
                     RECT       rcIt = pcd->nmcd.rc;
-                    const bool sel = (ListView_GetItemState(p->hLayerList, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
 
-                    SetBkColor(hdc, sel ? GetSysColor(COLOR_HIGHLIGHT)
-                                        : GetSysColor(COLOR_WINDOW));
+                    SetBkColor(hdc, ReaperTheme_ListCellBg(p->hLayerList, row));
                     ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
 
-                    const int cbSize = 13;
-                    RECT rcCb;
-                    rcCb.left   = rcIt.left + (rcIt.right  - rcIt.left - cbSize) / 2;
-                    rcCb.top    = rcIt.top  + (rcIt.bottom - rcIt.top  - cbSize) / 2;
-                    rcCb.right  = rcCb.left + cbSize;
-                    rcCb.bottom = rcCb.top  + cbSize;
-
-                    UINT dfcs = DFCS_BUTTONCHECK | DFCS_FLAT;
-                    if (LayerRowSafed(row)) dfcs |= DFCS_CHECKED;
-                    DrawFrameControl(hdc, &rcCb, DFC_BUTTON, dfcs);
+                    if (LayerRowSafed(row))
+                        PaintDot(hdc, rcIt, CellFg(p->hLayerList, row));
 
                     SetWindowLongPtr(hDlg, DWLP_MSGRESULT, CDRF_SKIPDEFAULT);
                     return TRUE;
@@ -1086,6 +1260,10 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         if (HandleGridNotify(p, pnm, lParam)) return TRUE;
         break;
     }
+
+    case WM_TIMER:
+        if (wParam == kSafesRefreshTimer) RefreshIfChanged(p);
+        break;
 
     case WM_CLOSE:
         ShowWindow(hDlg, SW_HIDE);
@@ -1100,7 +1278,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
 //
 // A recall filter is a safe that belongs to one scene — what that scene's
 // recall leaves alone — so it is the same grid, with no tabs and no layer
-// table, plus the banner and the two switches that decide how this set
+// table, plus the banner and the switch that decides how this set
 // combines with the project safes.
 // ---------------------------------------------------------------------------
 struct SceneSafesInit {
@@ -1111,6 +1289,10 @@ struct SceneSafesInit {
 static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     SafesPane* p = PaneOf(hDlg);
+
+    // Dialog colours come from the REAPER theme (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hDlg, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hDlg);
 
     switch (msg)
     {
@@ -1123,6 +1305,8 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         p->isMain   = false;
         p->sceneSet = init->set;
         p->tgt      = SetTarget(*init->set);
+        // Per-track filters are always on, as in the Global Safes window.
+        init->set->trackSafesEnabled = true;
 
         CreateGrid(p);
         RebuildRows(p);
@@ -1146,8 +1330,13 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         }
 
         SyncGlobalCheckboxes(p);
+        SetTimer(hDlg, kSafesRefreshTimer, 500, nullptr);
         return TRUE;
     }
+
+    case WM_TIMER:
+        if (wParam == kSafesRefreshTimer) RefreshIfChanged(p);
+        break;
 
     case WM_SIZE:
     {
@@ -1159,29 +1348,23 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         const int MARGIN = 5;
         const int BTN_H = 24, BTN_W = 70;
         const int TITLE_H = 32;
-        const int GRP_H = 68;
+        const int GRP_H = 50;   // two checkbox rows
         const int CHK_H = 14;
 
         HWND hTitle = GetDlgItem(hDlg, IDC_SCSAFE_TITLE);
         if (hTitle) SetWindowPos(hTitle, nullptr, MARGIN, MARGIN, W - MARGIN*2, TITLE_H, SWP_NOZORDER);
 
         const int swY = MARGIN + TITLE_H + 2;
-        HWND hEn = GetDlgItem(hDlg, IDC_SCSAFE_ENABLE);
         HWND hRp = GetDlgItem(hDlg, IDC_SCSAFE_REPLACE);
-        if (hEn) SetWindowPos(hEn, nullptr, MARGIN + 3, swY, W / 2 - 20, CHK_H, SWP_NOZORDER);
-        if (hRp) SetWindowPos(hRp, nullptr, W / 2,      swY, W / 2 - MARGIN, CHK_H, SWP_NOZORDER);
+        if (hRp) SetWindowPos(hRp, nullptr, MARGIN + 3, swY, W - MARGIN*2 - 3, CHK_H, SWP_NOZORDER);
 
         const int grpTop = swY + CHK_H + 4;
         HWND hGrp = GetDlgItem(hDlg, IDC_GSAFES_GROUP);
         if (hGrp) SetWindowPos(hGrp, nullptr, MARGIN, grpTop, W - MARGIN*2, GRP_H, SWP_NOZORDER);
 
-        LayoutGlobalRow(hDlg, MARGIN + 7, grpTop + 13, W - MARGIN*2 - 14, CHK_H, false);
+        LayoutGlobalRow(hDlg, MARGIN + 7, grpTop + 13, W - MARGIN*2 - 14, CHK_H);
 
-        const int trackEnY = grpTop + GRP_H + MARGIN;
-        HWND hTrackEn = GetDlgItem(hDlg, IDC_TRACK_SAFES_EN);
-        if (hTrackEn) SetWindowPos(hTrackEn, nullptr, MARGIN, trackEnY, 160, CHK_H, SWP_NOZORDER);
-
-        const int listTop = trackEnY + CHK_H + MARGIN;
+        const int listTop = grpTop + GRP_H + MARGIN;
         const int by      = H - BTN_H - MARGIN;
         int listBottom    = by - MARGIN;
         if (listBottom < listTop + 40) listBottom = listTop + 40;
@@ -1189,12 +1372,8 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         SetWindowPos(p->hList, nullptr,
             MARGIN, listTop, W - MARGIN*2, listBottom - listTop, SWP_NOZORDER);
 
-        HWND hRefresh = GetDlgItem(hDlg, IDC_REFRESH_SAFES);
-        HWND hClear   = GetDlgItem(hDlg, IDC_CLEAR_SAFES);
-        HWND hClose   = GetDlgItem(hDlg, IDC_SCSAFE_CLOSE);
-        if (hRefresh) SetWindowPos(hRefresh, nullptr, MARGIN,                   by, BTN_W, BTN_H, SWP_NOZORDER);
-        if (hClear)   SetWindowPos(hClear,   nullptr, MARGIN + BTN_W + MARGIN,  by, BTN_W, BTN_H, SWP_NOZORDER);
-        if (hClose)   SetWindowPos(hClose,   nullptr, W - MARGIN - BTN_W,       by, BTN_W, BTN_H, SWP_NOZORDER);
+        HWND hClose = GetDlgItem(hDlg, IDC_SCSAFE_CLOSE);
+        if (hClose) SetWindowPos(hClose, nullptr, W - MARGIN - BTN_W, by, BTN_W, BTN_H, SWP_NOZORDER);
         break;
     }
 
@@ -1207,36 +1386,9 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
 
         switch (id)
         {
-        case IDC_SCSAFE_ENABLE:
-            p->sceneSet->enabled =
-                (IsDlgButtonChecked(hDlg, IDC_SCSAFE_ENABLE) == BST_CHECKED);
-            EnableWindow(GetDlgItem(hDlg, IDC_SCSAFE_REPLACE), p->sceneSet->enabled);
-            NoteChange(p);
-            break;
-
         case IDC_SCSAFE_REPLACE:
             p->sceneSet->replaceGlobal =
                 (IsDlgButtonChecked(hDlg, IDC_SCSAFE_REPLACE) == BST_CHECKED);
-            NoteChange(p);
-            break;
-
-        case IDC_REFRESH_SAFES:
-            RebuildRows(p);
-            PopulateList(p);
-            SyncGlobalCheckboxes(p);
-            break;
-
-        case IDC_CLEAR_SAFES:
-            *p->tgt.mask = 0;
-            p->tgt.tracks->clear();
-            SyncGlobalCheckboxes(p);
-            if (p->hList) InvalidateRect(p->hList, nullptr, FALSE);
-            NoteChange(p);
-            break;
-
-        case IDC_TRACK_SAFES_EN:
-            *p->tgt.trackEn = (IsDlgButtonChecked(hDlg, IDC_TRACK_SAFES_EN) == BST_CHECKED);
-            if (p->hList) InvalidateRect(p->hList, nullptr, FALSE);
             NoteChange(p);
             break;
 
@@ -1256,6 +1408,7 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         break;
 
     case WM_DESTROY:
+        KillTimer(hDlg, kSafesRefreshTimer);
         if (p)
         {
             SetWindowLongPtr(hDlg, DWLP_USER, 0);
@@ -1292,7 +1445,7 @@ void SafesWnd_Init(HINSTANCE hInstance)
     InitCommonControlsEx(&icx);
     g_mainPane.hDlg = CreateDialogParamA(hInstance, MAKEINTRESOURCEA(IDD_SAFES),
                                           nullptr, SafesDlgProc, 0);
-    if (g_mainPane.hDlg) SetWindowTextA(g_mainPane.hDlg, "Live Tools - Safes");
+    if (g_mainPane.hDlg) SetWindowTextA(g_mainPane.hDlg, "Global Safes");
 }
 
 void SafesWnd_Cleanup()
@@ -1314,20 +1467,6 @@ void SafesWnd_ShowHide()
         ShowWindow(hDlg, SW_SHOW);
         SetForegroundWindow(hDlg);
     }
-}
-
-void SafesWnd_ShowSubsceneTab()
-{
-    HWND hDlg = g_mainPane.hDlg;
-    if (!hDlg) return;
-    SafesWnd_Refresh();
-    if (g_mainPane.hTabs)
-    {
-        TabCtrl_SetCurSel(g_mainPane.hTabs, 1);
-        SwitchTab(&g_mainPane, 1);
-    }
-    ShowWindow(hDlg, SW_SHOW);
-    SetForegroundWindow(hDlg);
 }
 
 bool SafesWnd_IsVisible()
@@ -1437,8 +1576,11 @@ bool SafesWnd_ProcessLine(const char* line)
         { g_globalSafeMask = val; SyncDlgFromState(); return true; }
     if (sscanf(line, "LTSAFELAYERS %d", &val) == 1)
         { g_layerSafeMask = val; SyncDlgFromState(); return true; }
+    // Per-track safes are always on for the project and subscene sets; the
+    // switch for them is gone, so a saved "off" is read and dropped rather
+    // than leaving a grid that silently does nothing.
     if (sscanf(line, "LTSAFETRACKSEN %d", &val) == 1)
-        { g_trackSafesEnabled = (val != 0); SyncDlgFromState(); return true; }
+        { g_trackSafesEnabled = true; SyncDlgFromState(); return true; }
 
     // ---- Subscene safes ---------------------------------------------------
     if (sscanf(line, "LTSUBSAFEGLOBAL %d", &val) == 1)
@@ -1456,7 +1598,7 @@ bool SafesWnd_ProcessLine(const char* line)
         return true;
     }
     if (sscanf(line, "LTSUBSAFETRACKSEN %d", &val) == 1)
-        { g_subsceneSafes.trackSafesEnabled = (val != 0); SyncDlgFromState(); return true; }
+        { g_subsceneSafes.trackSafesEnabled = true; SyncDlgFromState(); return true; }
 
     char sguid[80] = {};
     if (sscanf(line, "LTSUBSAFETRACK %79s %d", sguid, &val) == 2)

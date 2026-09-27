@@ -53,6 +53,11 @@ static const int TS_TRACKORDER  = 0x4000; // track order within the project
 static const int TS_LAYERS      = 0x8000; // active layer (LayersEngine)
 static const int TS_FXSLOTS     = 0x10000;// TCP/MCP empty-slot positions for FX and sends
                                           // (REAPER v7.75+; purely visual, applied instantly)
+// Safe-only bit: never captured, never in a recall mask. When safed, sends are
+// still recalled (added, removed, muted, rerouted) but an existing send keeps
+// its live level. A send the recall creates has no live level, so it takes the
+// scene's. Redundant when TS_SENDS is safed as well.
+static const int TS_SENDLEVEL   = 0x20000;
 
 // Convenience presets
 static const int TS_MIX    = (TS_VOL | TS_PAN | TS_MUTE | TS_SOLO | TS_FXPARAMS | TS_PHASE);
@@ -98,7 +103,7 @@ struct TrackSafeEntry {
 
 struct SafeSet
 {
-    bool enabled           = false;  // set participates in recall at all
+    bool enabled           = false;  // subscene set only; per-scene sets always apply
     bool replaceGlobal     = false;  // ignore the project set for this recall
     int  globalMask        = 0;      // TS_* bits safe on every track
     bool trackSafesEnabled = true;   // master switch for the per-track list
@@ -275,6 +280,9 @@ struct CapturedLayerTrack
     // true, which is what scenes written before the flags existed meant.
     bool showTcp  = true;
     bool showMcp  = true;
+    // LayerTrack::folderCompact, so a recalled layer folds its folders the way
+    // they were folded when the scene was saved. 0 (open) for older scenes.
+    int  folderCompact = 0;
 };
 
 struct CapturedLayer
@@ -315,7 +323,7 @@ public:
     // scenes is unusable if every subscene springs open on load.
     bool        m_collapsed = false;
 
-    // Per-scene safes. Only consulted when m_safes.enabled; see SafeSet.
+    // Per-scene safes (recall filters), applied on every recall of this scene; see SafeSet.
     SafeSet     m_safes;
 
     int         m_slot     = 0;
