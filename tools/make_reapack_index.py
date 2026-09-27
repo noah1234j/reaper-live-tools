@@ -79,7 +79,11 @@ def releases():
                          "--limit", "200", "--json", "tagName,isDraft"))
     out = []
     for rel in data:
-        if rel["isDraft"]:
+        # Dev-channel builds ("vX.Y.Z-dev.N") are published in index-dev.xml
+        # by make_reapack_dev_index.py and never belong here. Matched by tag,
+        # not by GitHub's pre-release flag: some early stable releases carry
+        # that flag too, and they have always been in this index.
+        if rel["isDraft"] or "-dev" in rel["tagName"]:
             continue
         tag = rel["tagName"]
         detail = json.loads(sh("gh", "release", "view", tag, "--repo", REPO,
@@ -101,7 +105,14 @@ def version_of(tag):
 
 
 def changelogs():
-    """Map version number -> that version's CHANGELOG.md section, as plain text."""
+    """Map tag -> that release's CHANGELOG.md section, as plain text.
+
+    Keyed by the full tag ("v0.0.47-beta"), not the bare version number: the
+    dev builds of a version ("v0.0.47-dev.1" ...) have sections of their own,
+    and by number alone whichever came last would stand in for the release.
+    Bare numbers are added too, for stable sections only, as a fallback for a
+    tag whose heading is spelled differently.
+    """
     with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as f:
         text = f.read()
 
@@ -114,7 +125,10 @@ def changelogs():
         body = re.sub(r"^### ", "", body, flags=re.M)
         body = body.replace("**", "").replace("`", "")
         body = re.sub(r"\n{3,}", "\n\n", body).strip()
-        sections[version_of(m.group(1))] = body
+        tag = m.group(1)
+        sections[tag] = body
+        if "-dev" not in tag:
+            sections.setdefault(version_of(tag), body)
     return sections
 
 
@@ -142,8 +156,9 @@ def build():
         v = ET.SubElement(pkg, "version", {
             "name": ver, "author": "noah1234j", "time": rel["time"],
         })
-        if ver in logs:
-            ET.SubElement(v, "changelog").text = logs[ver]
+        log = logs.get(rel["tag"], logs.get(ver))
+        if log:
+            ET.SubElement(v, "changelog").text = log
         for platform, install_path, asset in sources:
             src = ET.SubElement(v, "source",
                                 {"platform": platform, "file": install_path})
