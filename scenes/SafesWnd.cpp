@@ -1,6 +1,7 @@
 #include "SafesWnd.h"
 #include "TransitionEngine.h"    // g_globalSafeMask, g_trackSafes, g_subsceneSafes
 #include "TransitionSnapshot.h"  // TS_* bit flags, SafeSet
+#include "GuidUtil.h"
 #include "api.h"                 // GetNumTracks, GetTrack, GetSetMediaTrackInfo, etc.
 #include "resource.h"
 #include "ReaperTheme.h"
@@ -82,6 +83,22 @@ static const char* k_colAbbr[COL_COUNT] = {
     "#", "Track", "V", "P", "M", "S", "Ã", "FX", "Snd", "SLv", "All"
 };
 #endif
+
+// Hover text for each header label, since the short forms don't say much.
+// Null means no tooltip.
+static const char* k_colTip[COL_COUNT] = {
+    nullptr,
+    nullptr,
+    "Volume: recalls leave this track's fader alone",
+    "Pan: recalls leave this track's pan alone",
+    "Mute: recalls leave this track's mute alone",
+    "Solo: recalls leave this track's solo alone",
+    "Phase: recalls leave this track's polarity alone",
+    "FX: recalls leave this track's plugin parameters and FX chain alone",
+    "Sends: recalls leave this track's sends and hardware outputs alone",
+    "Send Level: recalls leave send volumes alone; the routing itself still recalls",
+    "All: every safe on this track at once",
+};
 
 // The grid shows every column, so a list view column index is its SafeCol.
 static const int k_ptColCount = COL_COUNT;
@@ -567,22 +584,38 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
 
         RECT rcClient;
         GetClientRect(hHdr, &rcClient);
-        HBRUSH hbrFace = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+        HBRUSH hbrFace = CreateSolidBrush(ReaperTheme_HeaderBg());
         FillRect(hdc, &rcClient, hbrFace);
         DeleteObject(hbrFace);
 
         HGDIOBJ oldFont = SelectObject(hdc, (HFONT)SendMessage(hHdr, WM_GETFONT, 0, 0));
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, ReaperTheme_Sys(COLOR_BTNTEXT));
+        SetTextColor(hdc, ReaperTheme_Text());
 
-        HPEN hPen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
+        HPEN hPen = CreatePen(PS_SOLID, 1, ReaperTheme_Line());   // like the grid
         HGDIOBJ oldPen = SelectObject(hdc, hPen);
 
+#ifdef _WIN32
+        // Column widths and the scroll position move the labels, and every
+        // such change repaints, so this is where the tooltip rects follow.
+        HWND hTip = (HWND)GetProp(hHdr, "LT_HdrTip");
+#endif
         const int itemCount = Header_GetItemCount(hHdr);
         for (int i = 0; i < itemCount && i < COL_COUNT; ++i)
         {
             RECT rcItem;
             Header_GetItemRect(hHdr, i, &rcItem);
+#ifdef _WIN32
+            if (hTip && k_colTip[i])
+            {
+                TOOLINFOA ti = {};
+                ti.cbSize = sizeof(ti);
+                ti.hwnd   = hHdr;
+                ti.uId    = (UINT_PTR)i;
+                ti.rect   = rcItem;
+                SendMessage(hTip, TTM_NEWTOOLRECTA, 0, (LPARAM)&ti);
+            }
+#endif
 
             MoveToEx(hdc, rcItem.right - 1, rcItem.top, nullptr);
             LineTo(hdc, rcItem.right - 1, rcItem.bottom);
@@ -597,6 +630,8 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
             DrawTextA(hdc, k_colAbbr[i], -1, &rc, fmt);
 #endif
         }
+        MoveToEx(hdc, rcClient.left, rcClient.bottom - 1, nullptr);
+        LineTo(hdc, rcClient.right, rcClient.bottom - 1);
 
         SelectObject(hdc, oldPen);
         DeleteObject(hPen);
@@ -604,6 +639,10 @@ static LRESULT CALLBACK SafesHeaderSubclassProc(HWND hHdr, UINT msg,
         EndPaint(hHdr, &ps);
         return 0;
     }
+#ifdef _WIN32
+    if (msg == WM_NCDESTROY)
+        RemoveProp(hHdr, "LT_HdrTip");
+#endif
 
     return DefSubclassProc(hHdr, msg, wParam, lParam);
 }
@@ -813,6 +852,35 @@ static void CreateGrid(SafesPane* p)
     if (hHdr)
         SetWindowSubclass(hHdr, SafesHeaderSubclassProc, 1, (DWORD_PTR)p);
 
+#ifdef _WIN32
+    // One tool per labelled column; the header's paint pass keeps the rects
+    // lined up with the columns. Owned by the dialog, so it goes with it.
+    if (hHdr)
+    {
+        HWND hTip = CreateWindowExA(0, TOOLTIPS_CLASSA, nullptr,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+            hDlg, nullptr, g_hInst, nullptr);
+        if (hTip)
+        {
+            for (int sc = 0; sc < k_ptColCount; ++sc)
+            {
+                if (!k_colTip[sc]) continue;
+                TOOLINFOA ti = {};
+                ti.cbSize   = sizeof(ti);
+                ti.uFlags   = TTF_SUBCLASS;
+                ti.hwnd     = hHdr;
+                ti.uId      = (UINT_PTR)sc;
+                ti.lpszText = (LPSTR)k_colTip[sc];
+                Header_GetItemRect(hHdr, sc, &ti.rect);
+                SendMessage(hTip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+            }
+            SendMessage(hTip, TTM_SETMAXTIPWIDTH, 0, 300);
+            SetProp(hHdr, "LT_HdrTip", hTip);
+        }
+    }
+#endif
+
     SetWindowSubclass(p->hList, SafesListSubclassProc, 2, (DWORD_PTR)p);
 }
 
@@ -841,6 +909,43 @@ static void LayoutGlobalRow(HWND hDlg, int x, int y, int w, int chkH)
             y + k_gsRow[i] * 16,
             slot5 - 2, chkH, SWP_NOZORDER);
     }
+}
+
+// ---------------------------------------------------------------------------
+// EraseAroundChildren – WM_ERASEBKGND for both dialogs. The default erase
+// paints the background over every control on each resize step, so the list
+// and checkboxes flash before they repaint. Only the gaps between controls
+// are filled here; group boxes don't paint their interior, so they stay in.
+// ---------------------------------------------------------------------------
+static bool EraseAroundChildren(HWND hDlg, HDC hdc)
+{
+#ifdef _WIN32
+    HBRUSH hb = (HBRUSH)ReaperTheme_CtlColor(hDlg, WM_CTLCOLORDLG, (WPARAM)hdc, (LPARAM)hDlg);
+    if (!hb) hb = GetSysColorBrush(COLOR_BTNFACE);
+
+    const int saved = SaveDC(hdc);
+    for (HWND c = GetWindow(hDlg, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
+    {
+        if (!IsWindowVisible(c)) continue;
+        char cls[16] = {};
+        GetClassNameA(c, cls, sizeof(cls));
+        if (!_stricmp(cls, "Button") &&
+            (GetWindowLong(c, GWL_STYLE) & BS_TYPEMASK) == BS_GROUPBOX)
+            continue;
+        RECT r;
+        GetWindowRect(c, &r);
+        MapWindowPoints(nullptr, hDlg, (POINT*)&r, 2);
+        ExcludeClipRect(hdc, r.left, r.top, r.right, r.bottom);
+    }
+    RECT rc;
+    GetClientRect(hDlg, &rc);
+    FillRect(hdc, &rc, hb);
+    RestoreDC(hdc, saved);
+    return true;
+#else
+    (void)hDlg; (void)hdc;
+    return false;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -960,8 +1065,7 @@ static bool HandleGridNotify(SafesPane* p, NMHDR* pnm, LPARAM lParam)
             ListView_GetSubItemRect(p->hList, row, COL_TRACK, LVIR_BOUNDS, &rcIt);
         }
 
-        SetBkColor(hdc, bg);
-        ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+        FillSolid(hdc, &rcIt, bg);
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, fg);
 
@@ -1150,6 +1254,14 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         return TRUE;
     }
 
+    case WM_ERASEBKGND:
+        if (EraseAroundChildren(hDlg, (HDC)wParam))
+        {
+            SetWindowLongPtr(hDlg, DWLP_MSGRESULT, 1);
+            return TRUE;
+        }
+        break;
+
     case WM_SIZE:
     {
         if (!p || !p->hList) break;
@@ -1243,8 +1355,7 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
                     HDC        hdc = pcd->nmcd.hdc;
                     RECT       rcIt = pcd->nmcd.rc;
 
-                    SetBkColor(hdc, ReaperTheme_ListCellBg(p->hLayerList, row));
-                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+                    FillSolid(hdc, &rcIt, ReaperTheme_ListCellBg(p->hLayerList, row));
 
                     if (LayerRowSafed(row))
                         PaintDot(hdc, rcIt, CellFg(p->hLayerList, row));
@@ -1330,12 +1441,26 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         }
 
         SyncGlobalCheckboxes(p);
+
+        // Lay the controls out now; a modal dialog gets no WM_SIZE of its
+        // own until the user resizes it.
+        RECT rc; GetClientRect(hDlg, &rc);
+        SendMessage(hDlg, WM_SIZE, 0, MAKELPARAM(rc.right, rc.bottom));
+
         SetTimer(hDlg, kSafesRefreshTimer, 500, nullptr);
         return TRUE;
     }
 
     case WM_TIMER:
         if (wParam == kSafesRefreshTimer) RefreshIfChanged(p);
+        break;
+
+    case WM_ERASEBKGND:
+        if (EraseAroundChildren(hDlg, (HDC)wParam))
+        {
+            SetWindowLongPtr(hDlg, DWLP_MSGRESULT, 1);
+            return TRUE;
+        }
         break;
 
     case WM_SIZE:
@@ -1346,7 +1471,6 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         const int W = rcDlg.right;
         const int H = rcDlg.bottom;
         const int MARGIN = 5;
-        const int BTN_H = 24, BTN_W = 70;
         const int TITLE_H = 32;
         const int GRP_H = 50;   // two checkbox rows
         const int CHK_H = 14;
@@ -1365,15 +1489,11 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
         LayoutGlobalRow(hDlg, MARGIN + 7, grpTop + 13, W - MARGIN*2 - 14, CHK_H);
 
         const int listTop = grpTop + GRP_H + MARGIN;
-        const int by      = H - BTN_H - MARGIN;
-        int listBottom    = by - MARGIN;
+        int listBottom    = H - MARGIN;
         if (listBottom < listTop + 40) listBottom = listTop + 40;
 
         SetWindowPos(p->hList, nullptr,
             MARGIN, listTop, W - MARGIN*2, listBottom - listTop, SWP_NOZORDER);
-
-        HWND hClose = GetDlgItem(hDlg, IDC_SCSAFE_CLOSE);
-        if (hClose) SetWindowPos(hClose, nullptr, W - MARGIN - BTN_W, by, BTN_W, BTN_H, SWP_NOZORDER);
         break;
     }
 
@@ -1392,7 +1512,6 @@ static INT_PTR CALLBACK SceneSafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LP
             NoteChange(p);
             break;
 
-        case IDC_SCSAFE_CLOSE:
         case IDOK:
         case IDCANCEL:
             // Every edit is applied in place as it is made, so there is no
@@ -1514,30 +1633,6 @@ void SafesWnd_AddSelectedTracksToSafes()
 }
 
 // ---------------------------------------------------------------------------
-// GUID helpers (local – same pattern as TransitionSnapshot.cpp)
-// ---------------------------------------------------------------------------
-static std::string SafesGuidToString(const GUID& g)
-{
-    WCHAR wbuf[64];
-    StringFromGUID2(g, wbuf, 64);
-    char buf[64];
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
-    return buf;
-}
-
-static GUID SafesStringToGuid(const char* s)
-{
-    GUID g = {};
-    if (!s || !s[0]) return g;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (wlen <= 0) return g;
-    std::vector<WCHAR> wbuf(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf.data(), wlen);
-    CLSIDFromString(wbuf.data(), &g);
-    return g;
-}
-
-// ---------------------------------------------------------------------------
 // Project persistence
 // ---------------------------------------------------------------------------
 
@@ -1603,14 +1698,14 @@ bool SafesWnd_ProcessLine(const char* line)
     char sguid[80] = {};
     if (sscanf(line, "LTSUBSAFETRACK %79s %d", sguid, &val) == 2)
     {
-        g_subsceneSafes.trackSafes.push_back({ SafesStringToGuid(sguid), val });
+        g_subsceneSafes.trackSafes.push_back({ StringToGuid(sguid), val });
         return true;
     }
 
     if (sscanf(line, "LTSAFETRACK %79s %d", sguid, &val) == 2)
     {
         TrackSafeEntry e;
-        e.guid = SafesStringToGuid(sguid);
+        e.guid = StringToGuid(sguid);
         e.mask = val;
         g_trackSafes.push_back(e);
         return true;
@@ -1627,7 +1722,7 @@ void SafesWnd_SaveConfig(ProjectStateContext* ctx)
     for (const auto& e : g_trackSafes)
     {
         if (e.mask == 0) continue;
-        std::string sg = SafesGuidToString(e.guid);
+        std::string sg = GuidToString(e.guid);
         ctx->AddLine("LTSAFETRACK %s %d", sg.c_str(), e.mask);
     }
 
@@ -1639,7 +1734,7 @@ void SafesWnd_SaveConfig(ProjectStateContext* ctx)
     for (const auto& e : g_subsceneSafes.trackSafes)
     {
         if (e.mask == 0) continue;
-        std::string sg = SafesGuidToString(e.guid);
+        std::string sg = GuidToString(e.guid);
         ctx->AddLine("LTSUBSAFETRACK %s %d", sg.c_str(), e.mask);
     }
 }

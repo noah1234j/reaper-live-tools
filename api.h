@@ -54,7 +54,7 @@
 #define REAPERAPI_WANT_Undo_OnStateChangeEx
 #define REAPERAPI_WANT_GetMainHwnd
 
-// Project state change polling (Layers track-order sync, shadow-map staleness)
+// Project state change polling (Layers track-order sync)
 #define REAPERAPI_WANT_GetProjectStateChangeCount
 
 // Plugin registration (timer, projectconfig, command_id, gaccel, hookcommand)
@@ -177,3 +177,4 @@
 
 #include "WDL/wdltypes.h"
 #include "reaper_plugin_functions.h"
+#include "Platform.h"   // Win32 calls SWELL lacks (macOS)

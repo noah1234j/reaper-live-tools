@@ -2,35 +2,12 @@
 // DcaGroup.cpp  –  DCA group data model + RPP serialization
 // ---------------------------------------------------------------------------
 #include "DcaGroup.h"
+#include "GuidUtil.h"
 #include "api.h"
 
 #include <cstdio>
 #include <cstring>
 #include <vector>
-
-// ---------------------------------------------------------------------------
-// GUID helpers (Windows-only; matches TransitionSnapshot.cpp pattern)
-// ---------------------------------------------------------------------------
-static std::string GuidToStr(const GUID& g)
-{
-    WCHAR wbuf[64];
-    StringFromGUID2(g, wbuf, 64);
-    char buf[64];
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
-    return buf;
-}
-
-static GUID StrToGuid(const char* s)
-{
-    GUID g = {};
-    if (!s || !s[0]) return g;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (wlen <= 0) return g;
-    std::vector<WCHAR> wbuf(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf.data(), wlen);
-    CLSIDFromString(wbuf.data(), &g);
-    return g;
-}
 
 // ---------------------------------------------------------------------------
 // Serialize
@@ -40,7 +17,7 @@ static GUID StrToGuid(const char* s)
 // ---------------------------------------------------------------------------
 void DcaGroup::Serialize(ProjectStateContext* ctx) const
 {
-    std::string sguid = GuidToStr(trackGuid);
+    std::string sguid = GuidToString(trackGuid);
 
     // Escape double-quotes in the name
     std::string safeName = name;
@@ -82,7 +59,7 @@ DcaGroup* DcaGroup::Deserialize(const char* headerLine,
     auto* dca       = new DcaGroup();
     dca->groupNum   = groupNum;
     dca->flags      = (uint32_t)flags;
-    dca->trackGuid  = StrToGuid(sguid);
+    dca->trackGuid  = StringToGuid(sguid);
     dca->name       = name;
 
     // Drain child lines until '>'

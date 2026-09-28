@@ -85,9 +85,7 @@ bool g_trackSafesEnabled = true;
 std::vector<TrackSafeEntry> g_trackSafes;
 
 // Shared UI preferences (defined non-static in TransitionWnd.cpp)
-extern bool g_preloadOffline;
 extern bool g_skipUnchangedParams;
-extern bool g_shadowParams;
 extern bool g_chunkAllInstant;
 
 // Subscene safes and the recall-scoped scene overlay (see TransitionEngine.h)
@@ -178,93 +176,6 @@ TransitionEngine& TransitionEngine::Get()
 {
     static TransitionEngine s_inst;
     return s_inst;
-}
-
-// ---------------------------------------------------------------------------
-// FX Parameter Shadow Map – implementation
-// ---------------------------------------------------------------------------
-
-// Internal IReaperControlSurface that listens for CSURF_EXT_SETFXPARAM
-// notifications and writes them into the TransitionEngine shadow map.
-// Registered as a hidden "csurf_inst" surface so REAPER drives it alongside
-// all other surfaces. When g_shadowParams is off the handler is a fast no-op.
-class FXShadowSurface : public IReaperControlSurface
-{
-public:
-    const char* GetTypeString() override { return "LT_SHADOW"; }
-    const char* GetDescString() override { return "Live Tools Shadow Surface"; }
-    const char* GetConfigString() override { return ""; }
-    void CloseNoReset() override {}
-
-    int Extended(int call, void* p1, void* p2, void* p3) override
-    {
-        if (call != CSURF_EXT_SETFXPARAM || !g_shadowParams) return 0;
-        if (!p1 || !p2 || !p3) return 0;
-
-        MediaTrack* tr = static_cast<MediaTrack*>(p1);
-        int packed   = *static_cast<int*>(p2);
-        int fxIdx    = (packed >> 16) & 0xFFFF;
-        int paramIdx = packed & 0xFFFF;
-        double val   = *static_cast<double*>(p3);
-
-        GUID* tg = GetTrackGUID(tr);
-        if (!tg) return 0;
-
-        char ident[512] = {};
-        if (!TrackFX_GetNamedConfigParm(tr, fxIdx, "fx_ident", ident, (int)sizeof(ident)))
-            return 0;
-        if (!ident[0]) return 0;
-
-        TransitionEngine::Get().ShadowWrite(*tg, ident, paramIdx, val);
-        return 0;
-    }
-};
-
-static FXShadowSurface s_shadowSurface;
-
-void TransitionEngine::RegisterShadowSurface()
-{
-    plugin_register("csurf_inst", static_cast<IReaperControlSurface*>(&s_shadowSurface));
-}
-
-void TransitionEngine::UnregisterShadowSurface()
-{
-    plugin_register("-csurf_inst", static_cast<IReaperControlSurface*>(&s_shadowSurface));
-}
-
-void TransitionEngine::ShadowClear()
-{
-    m_shadow.clear();
-}
-
-void TransitionEngine::ShadowInvalidate(const GUID& guid, const char* fxIdent)
-{
-    auto it = m_shadow.find(guid);
-    if (it == m_shadow.end()) return;
-    it->second.erase(fxIdent);
-}
-
-void TransitionEngine::ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val)
-{
-    if (paramIdx < 0 || paramIdx > 8192) return; // sanity guard
-    auto& pvec = m_shadow[guid][fxIdent];
-    if (paramIdx >= static_cast<int>(pvec.size()))
-        pvec.resize(static_cast<size_t>(paramIdx + 1), kShadowEmpty);
-    pvec[static_cast<size_t>(paramIdx)] = val;
-}
-
-bool TransitionEngine::ShadowGet(const GUID& guid, const char* fxIdent, int paramIdx, double& outVal) const
-{
-    auto it = m_shadow.find(guid);
-    if (it == m_shadow.end()) return false;
-    auto it2 = it->second.find(fxIdent);
-    if (it2 == it->second.end()) return false;
-    const auto& pvec = it2->second;
-    if (paramIdx < 0 || paramIdx >= static_cast<int>(pvec.size())) return false;
-    double v = pvec[static_cast<size_t>(paramIdx)];
-    if (v == kShadowEmpty) return false;
-    outVal = v;
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -799,27 +710,6 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             if (isNewPlugin)
             {
                 if (out_fxOps) opT.wasNew = true;
-                if (g_preloadOffline)
-                {
-                    // Offline sandwich: briefly take offline so resume() fires
-                    // cleanly, then bring back online before writing params.
-                    // Always close the FX window first — REAPER may have auto-opened
-                    // it when AddByName fired. Don't re-open: this is a new add, not
-                    // a user-opened window being preserved.
-                    TrackFX_Show(tr, slot, 0);
-                    if (out_fxOps)
-                    {
-                        double t0 = QpcMs();
-                        TrackFX_SetOffline(tr, slot, true);
-                        TrackFX_SetOffline(tr, slot, false);
-                        opT.offlineSandwich_ms = QpcMs() - t0;
-                    }
-                    else
-                    {
-                        TrackFX_SetOffline(tr, slot, true);
-                        TrackFX_SetOffline(tr, slot, false);
-                    }
-                }
             }
             else if (TrackFX_GetOffline(tr, slot))
             {
@@ -888,10 +778,6 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                                      fxs.normVals.empty()
                                        ? "NOTHING - scene stored no params"
                                        : "per-param recall");
-                // A chunk write changes params without CSURF notifications —
-                // the shadow map entries for this plugin are now stale.
-                if (chunkOk)
-                    TransitionEngine::Get().ShadowInvalidate(ts.guid, fxs.fxIdent);
             }
             else if (!fxs.fxChunk.empty())
             {
@@ -903,36 +789,19 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
             {
                 // Opt B: for existing (not newly added) plugins, skip params that
                 // already match the saved value to avoid redundant API calls.
-                // g_shadowParams (VST3): compare against the in-memory shadow map —
-                //   no API read-back needed; falls through to write only on mismatch.
-                // g_skipUnchangedParams (fallback): reads the live value via API.
-                // Both strategies write through and update the shadow on any write.
-                const bool isVST3 = (strncmp(fxs.name, "VST3:", 5) == 0);
                 if (out_fxOps)
                 {
                     double t0 = QpcMs();
                     for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     {
                         const double target = fxs.normVals[p];
-                        if (!isNewPlugin)
+                        if (!isNewPlugin && g_skipUnchangedParams)
                         {
-                            if (isVST3 && g_shadowParams)
-                            {
-                                double sv;
-                                if (TransitionEngine::Get().ShadowGet(ts.guid, fxs.fxIdent, p, sv)
-                                    && fabs(sv - target) < 1e-7)
-                                    continue;
-                            }
-                            else if (g_skipUnchangedParams)
-                            {
-                                double cur = TrackFX_GetParamNormalized(tr, slot, p);
-                                if (fabs(cur - target) < 1e-7) continue;
-                            }
+                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                            if (fabs(cur - target) < 1e-7) continue;
                         }
                         TrackFX_SetParamNormalized(tr, slot, p, target);
                         ++nParamsWritten;
-                        if (isVST3 && g_shadowParams)
-                            TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                     opT.paramLoop_ms = QpcMs() - t0;
                 }
@@ -941,25 +810,13 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                     for (int p = 0; p < (int)fxs.normVals.size(); ++p)
                     {
                         const double target = fxs.normVals[p];
-                        if (!isNewPlugin)
+                        if (!isNewPlugin && g_skipUnchangedParams)
                         {
-                            if (isVST3 && g_shadowParams)
-                            {
-                                double sv;
-                                if (TransitionEngine::Get().ShadowGet(ts.guid, fxs.fxIdent, p, sv)
-                                    && fabs(sv - target) < 1e-7)
-                                    continue;
-                            }
-                            else if (g_skipUnchangedParams)
-                            {
-                                double cur = TrackFX_GetParamNormalized(tr, slot, p);
-                                if (fabs(cur - target) < 1e-7) continue;
-                            }
+                            double cur = TrackFX_GetParamNormalized(tr, slot, p);
+                            if (fabs(cur - target) < 1e-7) continue;
                         }
                         TrackFX_SetParamNormalized(tr, slot, p, target);
                         ++nParamsWritten;
-                        if (isVST3 && g_shadowParams)
-                            TransitionEngine::Get().ShadowWrite(ts.guid, fxs.fxIdent, p, target);
                     }
                 }
             }
@@ -1049,8 +906,6 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                 // Plugin is now online (post-resume) — apply vst_chunk directly.
                 // See site-1 comment: must NOT be wrapped in an offline sandwich.
                 chunkOk = TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
-                if (chunkOk)
-                    TransitionEngine::Get().ShadowInvalidate(ts.guid, target->fxIdent);
             }
             if (!chunkOk)
             {
@@ -1099,9 +954,7 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
                     // Chunk-only plugin: apply vst_chunk directly on the online plugin.
                     // Wet lerp handled normally by BuildLerpLists (current→target).
                     chunkOk2 = TrackFX_SetNamedConfigParm(tr, i, "vst_chunk", target->fxChunk.c_str());
-                    if (chunkOk2)
-                        TransitionEngine::Get().ShadowInvalidate(ts.guid, target->fxIdent);
-                    else
+                    if (!chunkOk2)
                         RecallLog_Printf("    FX \"%s\"  CHUNK FAILED (%zu bytes) "
                                          "- falling back to %s", target->name,
                                          target->fxChunk.size(),
@@ -1168,8 +1021,6 @@ void TransitionEngine::SyncFXChain(MediaTrack* tr, const TrackState& ts,
         {
             // Plugin is online post-resume — apply vst_chunk directly.
             chunkOk = TrackFX_SetNamedConfigParm(tr, slot, "vst_chunk", fxs.fxChunk.c_str());
-            if (chunkOk)
-                TransitionEngine::Get().ShadowInvalidate(ts.guid, fxs.fxIdent);
         }
         if (!chunkOk)
         {
@@ -2160,18 +2011,8 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         ~RecallLogScope()                              { RecallLog_End(); }
     } recallLogScope(snap->m_name.c_str(), mask, duration);
 
-    RecallLog_Printf("settings: chunkAllInstant=%d shadowParams=%d "
-                     "skipUnchanged=%d preloadOffline=%d",
-                     g_chunkAllInstant ? 1 : 0, g_shadowParams ? 1 : 0,
-                     g_skipUnchangedParams ? 1 : 0, g_preloadOffline ? 1 : 0);
-
-    // Shadow map trust check: if anything changed the project since our last
-    // recall completed (SWS snapshot, preset load, ...), CSURF notifications
-    // may not have covered it — drop the map rather than skip param writes
-    // based on stale values.
-    if (g_shadowParams
-        && GetProjectStateChangeCount(nullptr) != m_shadowStateCount)
-        ShadowClear();
+    RecallLog_Printf("settings: chunkAllInstant=%d skipUnchanged=%d",
+                     g_chunkAllInstant ? 1 : 0, g_skipUnchangedParams ? 1 : 0);
 
     lastTimings = RecallTimings{};  // reset
     double tRecallStart = QpcMs();
@@ -2202,9 +2043,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
 
         // Snapshot active settings for the duration debug report
         lastTimings.s_skipUnchanged   = g_skipUnchangedParams;
-        lastTimings.s_shadowParams    = g_shadowParams;
         lastTimings.s_chunkAllInstant = g_chunkAllInstant;
-        lastTimings.s_preloadOffline  = g_preloadOffline;
 
         double t0 = QpcMs();
         TrackMap tmap = BuildTrackMap();
@@ -2224,9 +2063,6 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
         lastTimings.total = QpcMs() - tRecallStart;
 
         m_active = false;
-        // Our own writes bumped the state count; record it so the next recall
-        // doesn't mistake them for an external change.
-        m_shadowStateCount = GetProjectStateChangeCount(nullptr);
         if (onTransitionComplete) onTransitionComplete();
         return;
     }
@@ -2238,9 +2074,7 @@ void TransitionEngine::Recall(const TransitionSnapshot* snap,
 
     // Snapshot active settings for the duration debug report
     lastTimings.s_skipUnchanged   = g_skipUnchangedParams;
-    lastTimings.s_shadowParams    = g_shadowParams;
     lastTimings.s_chunkAllInstant = g_chunkAllInstant;
-    lastTimings.s_preloadOffline  = g_preloadOffline;
 
     double t0 = QpcMs();
     TrackMap tmap = BuildTrackMap();
@@ -2618,9 +2452,6 @@ void TransitionEngine::TimerCallback()
 
         plugin_register("-timer", (void*)&TransitionEngine::TimerCallback);
         eng.m_active = false;
-        // Our own writes bumped the state count; record it so the next recall
-        // doesn't mistake them for an external change.
-        eng.m_shadowStateCount = GetProjectStateChangeCount(nullptr);
         snprintf(eng.m_statusBuf, sizeof(eng.m_statusBuf), "Done %s", eng.m_targetSceneName.c_str());
         if (eng.onTransitionComplete) eng.onTransitionComplete();
     }

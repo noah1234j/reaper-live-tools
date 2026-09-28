@@ -1063,11 +1063,14 @@ static LRESULT CALLBACK ListWndProc(HWND hwnd, UINT msg,
             InvalidateRect(hwnd, nullptr, FALSE);
         }
 
+#ifdef _WIN32
         TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
         TrackMouseEvent(&tme);
+#endif
         return 0;
     }
 
+#ifdef _WIN32   // SWELL has no leave tracking; the hot row clears on the next move
     case WM_MOUSELEAVE:
         if (s_hotRow != -1 || s_hotZone != kRH_None)
         {
@@ -1076,6 +1079,7 @@ static LRESULT CALLBACK ListWndProc(HWND hwnd, UINT msg,
             InvalidateRect(hwnd, nullptr, FALSE);
         }
         return 0;
+#endif
 
     // ── Keyboard ─────────────────────────────────────────────────────────────
     case WM_KEYDOWN:

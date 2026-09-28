@@ -37,27 +37,22 @@ PUSHBUTTON      "Recall",     IDC_RECALL,       207,  3, 48, 13
 // Scenes are renamed inline in the list (right-click > Rename, or F2), so
 // there is no name box here.
 
-// ---- Add Subscene: a variation under the selected scene ------------
-PUSHBUTTON      "Add Subscene", IDC_ADDSUB_BTN, 158, 20, 97, 13
-
-// ---- Safes button ---------------------------------------------------
-PUSHBUTTON      "Global Safes...", IDC_SAFES_BTN,   158, 37, 97, 13
-
-// ---- Cue list setup button ------------------------------------------
-PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN, 158, 54, 97, 13
-
-// ---- Settings button (opens global settings) -------------------------
-PUSHBUTTON      "Settings...", IDC_SETTINGS_BTN, 158, 71, 97, 13
-
-// ---- Layers window ------------------------------------------------------
-PUSHBUTTON      "Layers...", IDC_LAYERS_BTN, 158, 88, 97, 13
+// ---- Half-width button pairs, same split as New / Recall above -------
+// Add Subscene makes a variation under the selected scene; Recall Filters
+// opens the selected scene's own safes.
+PUSHBUTTON      "Add Subscene", IDC_ADDSUB_BTN,     158, 20, 46, 13
+PUSHBUTTON      "Recall Filters", IDC_RECALLFILT_BTN, 207, 20, 48, 13
+PUSHBUTTON      "Global Safes", IDC_SAFES_BTN,      158, 37, 46, 13
+PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN,  207, 37, 48, 13
+PUSHBUTTON      "Settings...",  IDC_SETTINGS_BTN,   158, 54, 46, 13
+PUSHBUTTON      "Layers...",    IDC_LAYERS_BTN,     207, 54, 48, 13
 
 // ---- Scene notes (multiline, last control in the sidebar stack) -------
 // The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
 // a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
 // run time, so the height below is only the default.
-LTEXT           "Notes:", IDC_STATIC,       158, 106, 97,  8
-EDITTEXT        IDC_SNAPNOTES,              158, 116, 97, 82,
+LTEXT           "Notes:", IDC_STATIC,       158, 72, 97,  8
+EDITTEXT        IDC_SNAPNOTES,              158, 82, 97, 116,
 ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
 CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
 158, 198, 97, 6
@@ -159,40 +154,40 @@ CONTROL         "Single click to recall scene",    IDC_GSET_SINGLE_CLICK,   "But
 CONTROL         "Alt+click to delete scene",       IDC_GSET_ALT_DELETE,     "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 209, 185, 10
 CONTROL         "Ctrl+click to overwrite scene",   IDC_GSET_CTRL_OVERWRITE, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 10, 222, 185, 10
 
-GROUPBOX        "Live Performance", IDC_STATIC, 5, 248, 194, 108
-CONTROL         "Preload new plugins offline (reduces live audio stuttering)", IDC_GSET_PRELOAD_OFFLINE, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 258, 185, 10
+GROUPBOX        "Live Performance", IDC_STATIC, 5, 248, 194, 82
 CONTROL         "Skip writing unchanged params on recall (faster for stable FX chains)", IDC_GSET_SKIP_UNCHANGED, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 271, 185, 10
-PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 285, 120, 13
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 258, 185, 10
+PUSHBUTTON      "Chunk Recall Plugins...", IDC_GSET_CHUNK_BTN, 10, 272, 120, 13
 CONTROL         "Duration debug (print step timing to console)", IDC_GSET_DURATION_DEBUG, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 301, 185, 10
-CONTROL         "Shadow VST3 params (skip unchanged writes on instant recall)", IDC_GSET_SHADOW_PARAMS, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 314, 185, 10
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 288, 185, 10
 CONTROL         "Recall all plugins by chunk on instant path (re-save scenes)", IDC_GSET_CHUNK_ALL_INSTANT, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 327, 185, 10
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 301, 185, 10
 CONTROL         "Write recall log to file (live_tools_recall.log in REAPER folder)", IDC_GSET_RECALL_LOG, "Button",
-BS_AUTOCHECKBOX | WS_TABSTOP, 10, 340, 185, 10
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 314, 185, 10
 
 // ---- Layers (moved here from the Layers window's own Settings dialog) --
-GROUPBOX        "Layers", IDC_STATIC, 5, 360, 194, 84
+GROUPBOX        "Layers", IDC_STATIC, 5, 334, 194, 84
 CONTROL         "Apply track visibility (TCP and MCP)", IDC_LYR_SET_MCPVIS, "Button",
-                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 372, 185, 10
+                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 346, 185, 10
 CONTROL         "Reorder tracks to match layer order", IDC_LYR_SET_REORDER, "Button",
-                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 385, 185, 10
+                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 359, 185, 10
 CONTROL         "Restore all tracks visible on deactivate", IDC_LYR_SET_RESTORE, "Button",
-                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 398, 185, 10
+                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 372, 185, 10
 CONTROL         "Trigger MCP select (refresh control surface channels)", IDC_LYR_SET_TRIGGERMCP, "Button",
-                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 411, 185, 10
-LTEXT           "Max channels (all layers):", IDC_STATIC, 10, 428, 92, 8
-EDITTEXT        IDC_LYR_MAXCH_EDIT, 105, 426, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
+                BS_AUTOCHECKBOX | WS_TABSTOP, 10, 385, 185, 10
+LTEXT           "Max channels (all layers):", IDC_STATIC, 10, 402, 92, 8
+EDITTEXT        IDC_LYR_MAXCH_EDIT, 105, 400, 36, 12, ES_NUMBER | ES_AUTOHSCROLL
 CONTROL         "", IDC_LYR_MAXCH_SPIN, "msctls_updown32",
                 UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | WS_CHILD | WS_VISIBLE,
-                141, 426, 12, 12
-LTEXT           "(0 = all)", IDC_STATIC, 157, 428, 40, 8
+                141, 400, 12, 12
+LTEXT           "(0 = all)", IDC_STATIC, 157, 402, 40, 8
 
-DEFPUSHBUTTON   "OK",     IDOK,      75, 451, 50, 14
-PUSHBUTTON      "Cancel", IDCANCEL, 135, 451, 50, 14
+GROUPBOX        "Appearance", IDC_STATIC, 5, 422, 194, 26
+CONTROL         "Dark mode (REAPER theme colours)", IDC_GSET_MATCH_THEME, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 434, 185, 10
+
+DEFPUSHBUTTON   "OK",     IDOK,      75, 453, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 135, 453, 50, 14
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_GLOBAL_SETTINGS)
 
@@ -246,7 +241,7 @@ SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_ADD_KEYWORD)
 #endif
 SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_CUE_SETUP,SET_IDD_CUE_SETUP_STYLE,"Cue List Setup",315,215,SET_IDD_CUE_SETUP_SCALE)
 BEGIN
-LTEXT           "Scenes (drag or dbl-click \x2192)", IDC_CUE_LEFT_LBL , 5,  3, 148, 8
+LTEXT           "Scenes (drag or dbl-click ->)", IDC_CUE_LEFT_LBL , 5,  3, 148, 8
 LTEXT           "Cue Order",                         IDC_CUE_RIGHT_LBL, 162, 3, 148, 8
 
 // List placeholders – replaced by SysListView32 in WM_INITDIALOG
@@ -332,10 +327,7 @@ CONTROL "Sends",  IDC_GSAFE_SENDS,  "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366,
 CONTROL "Send Level",  IDC_GSAFE_SENDLVL, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 366, 84, 56, 10
 
 // ListView placeholder - replaced dynamically in WM_INITDIALOG
-LTEXT           "", IDC_SAFESLIST, 5, 114, 420, 150
-
-// ---- Bottom button ---------------------------------------------------
-DEFPUSHBUTTON   "Close",     IDC_SCSAFE_CLOSE,  369, 280, 56, 14
+LTEXT           "", IDC_SAFESLIST, 5, 114, 420, 181
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SCENE_SAFES)
 

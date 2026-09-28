@@ -12,6 +12,10 @@
 #  include <commctrl.h>
 #  include <commdlg.h>
 #  include <windowsx.h>
+#else
+// SWELL has no GetKeyState; the async form reports the same modifiers
+// (VK_CONTROL is Cmd, VK_MENU is Option).
+#  define GetKeyState GetAsyncKeyState
 #endif
 #include <cstdio>
 #include <cstring>
@@ -150,11 +154,9 @@ static bool g_startRecAfterRecall = false;
 static bool g_singleClickRecall   = false;  // single click recalls a scene
 static bool g_altClickDelete      = false;  // Alt+click deletes a scene
 static bool g_ctrlClickOverwrite  = false;  // Ctrl+click overwrites a scene
-// FX window setting (non-static so TransitionEngine.cpp can extern it)
-bool g_preloadOffline             = false;  // keep FX windows open during recall
+// Recall settings (non-static so TransitionEngine.cpp can extern it)
 bool g_skipUnchangedParams        = false;  // skip writing params that haven't changed
 bool g_durationDebug              = false;  // print step-timing report to REAPER console on recall
-bool g_shadowParams               = false;  // maintain VST3 param shadow map for instant recall
 bool g_chunkAllInstant            = false;  // capture+restore all plugins by chunk on instant path
 bool g_recallLog                  = false;  // write a per-recall trace to live_tools_recall.log
 
@@ -694,9 +696,7 @@ void TransitionWnd_ResetSettings()
     g_singleClickRecall  = false;
     g_altClickDelete     = false;
     g_ctrlClickOverwrite = false;
-    g_preloadOffline     = false;
     g_skipUnchangedParams = false;
-    g_shadowParams        = false;
     g_chunkAllInstant     = false;
     g_recallLog           = false;
     g_chunkRecallKeywords = GetChunkRecallDefaults();  // restore defaults on project reset
@@ -739,25 +739,16 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
     // layer index, so the line is only swallowed for older projects.
     if (strncmp(line, "LTSTOREACTIVELAYER ", 19) == 0)
         return true;
-    if (strncmp(line, "LTPRELOADOFFLINE ", 17) == 0)
-    {
-        int val = 0;
-        sscanf(line + 17, "%d", &val);
-        g_preloadOffline = (val != 0);
+    // Retired "preload offline" and "shadow VST3 params" settings: swallowed
+    // so older projects load cleanly.
+    if (strncmp(line, "LTPRELOADOFFLINE ", 17) == 0
+        || strncmp(line, "LTSHADOWPARAMS ", 15) == 0)
         return true;
-    }
     if (strncmp(line, "LTSKIPUNCHANGED ", 16) == 0)
     {
         int val = 0;
         sscanf(line + 16, "%d", &val);
         g_skipUnchangedParams = (val != 0);
-        return true;
-    }
-    if (strncmp(line, "LTSHADOWPARAMS ", 15) == 0)
-    {
-        int val = 0;
-        sscanf(line + 15, "%d", &val);
-        g_shadowParams = (val != 0);
         return true;
     }
     if (strncmp(line, "LTCHUNKALLINSTANT ", 18) == 0)
@@ -847,9 +838,7 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
                  g_ctrlClickOverwrite ? 1 : 0);
     ctx->AddLine("LTSUBDEFSETTINGS %.4f %d %.4f",
                  g_defaultSubDuration, g_defaultSubTaper, g_defaultSubTaperExp);
-    ctx->AddLine("LTPRELOADOFFLINE %d", g_preloadOffline ? 1 : 0);
     ctx->AddLine("LTSKIPUNCHANGED %d", g_skipUnchangedParams ? 1 : 0);
-    ctx->AddLine("LTSHADOWPARAMS %d", g_shadowParams ? 1 : 0);
     ctx->AddLine("LTCHUNKALLINSTANT %d", g_chunkAllInstant ? 1 : 0);
     ctx->AddLine("LTRECALLLOG %d", g_recallLog ? 1 : 0);
     for (const auto& kw : g_chunkRecallKeywords)
@@ -1458,6 +1447,10 @@ static std::string SceneDisplayLabel(int idx)
 static void SetItemTextU8(HWND hList, int item, int subItem, const char* utf8)
 {
     if (!hList || !utf8) return;
+#ifndef _WIN32
+    // SWELL list views take UTF-8 as-is; there is no codepage to route around.
+    ListView_SetItemText(hList, item, subItem, const_cast<char*>(utf8));
+#else
     const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
     if (wlen <= 0)
     {
@@ -1478,6 +1471,7 @@ static void SetItemTextU8(HWND hList, int item, int subItem, const char* utf8)
         // blank, which is worse than the mojibake this exists to avoid.
         ListView_SetItemText(hList, item, subItem, const_cast<char*>(utf8));
     }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -1593,6 +1587,18 @@ static int GetSelectedSnapIndex(HWND hwnd)
     if (g_cueMode)
         return (row < (int)g_cueList.size()) ? g_cueList[row] : -1;
     return RowToSnap(row);
+}
+
+// The sidebar's per-scene buttons (Add Subscene, Recall Filters) act on one
+// scene, so they are greyed out unless exactly one scene is selected: nothing
+// selected, a multi-selection and a spacer row all disable them.
+static void UpdateSceneButtons(HWND hwnd)
+{
+    HWND hList = GetDlgItem(hwnd, IDC_LIST);
+    const bool one = hList && ListView_GetSelectedCount(hList) == 1 &&
+                     SelectedSnapshotIndex(hwnd, nullptr) >= 0;
+    EnableWindow(GetDlgItem(hwnd, IDC_ADDSUB_BTN),     one);
+    EnableWindow(GetDlgItem(hwnd, IDC_RECALLFILT_BTN), one);
 }
 
 // ---------------------------------------------------------------------------
@@ -1975,6 +1981,7 @@ static void RefreshListView(HWND hwnd)
             LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
         ListView_EnsureVisible(hList, selRow, FALSE);
     }
+    UpdateSceneButtons(hwnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -2112,9 +2119,11 @@ static void DoAddSubscene(HWND hwnd, int snapIdx)
 }
 
 // The button and the action have no row under the pointer to go on, so they
-// use the selected scene, falling back to the last one created, recalled or
-// saved — "a variation of what is on the desk now" is the usual intent when
-// nothing is selected. Returns false when there is neither.
+// use the selected scene. The action falls back to the last one created,
+// recalled or saved — "a variation of what is on the desk now" is the usual
+// intent when nothing is selected; the button is greyed out without exactly
+// one selection (UpdateSceneButtons), so it never gets that far. Returns false
+// when there is neither.
 static bool AddSubsceneToCurrent(HWND hwnd)
 {
     int snapIdx = SelectedSnapshotIndex(hwnd, nullptr);
@@ -2124,6 +2133,20 @@ static bool AddSubsceneToCurrent(HWND hwnd)
         return false;
     DoAddSubscene(hwnd, snapIdx);
     return true;
+}
+
+// A scene's recall filters: its own safes, applied to its recalls only. The
+// context menu and the sidebar button both open it.
+static void EditRecallFilters(HWND hwnd, int snapIdx)
+{
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return;
+    TransitionSnapshot* snap = g_snapshots[snapIdx].get();
+    if (snap->m_isSpacer) return;
+    char title[512];
+    snprintf(title, sizeof(title), "Recall Filters for %s",
+             SceneDisplayLabel(snapIdx).c_str());
+    if (SafesWnd_EditSceneSafes(hwnd, snap->m_safes, title))
+        MarkProjectDirty(nullptr);
 }
 
 // ---------------------------------------------------------------------------
@@ -2330,11 +2353,9 @@ static void DoRecall(HWND hwnd, int listIndex)
         // Settings line (shown for both instant and timed)
         char settingsBuf[256];
         snprintf(settingsBuf, sizeof(settingsBuf),
-            "  Settings:  ShadowParams=%s  ChunkInstant=%s  SkipUnchanged=%s  PreloadOffline=%s\n",
-            t.s_shadowParams    ? "ON" : "off",
+            "  Settings:  ChunkInstant=%s  SkipUnchanged=%s\n",
             t.s_chunkAllInstant ? "ON" : "off",
-            t.s_skipUnchanged   ? "ON" : "off",
-            t.s_preloadOffline  ? "ON" : "off");
+            t.s_skipUnchanged   ? "ON" : "off");
 
         char buf[2048];
         if (t.instantPath)
@@ -2550,6 +2571,41 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// PickSceneFile – .lts save/open picker. fn holds the suggested name on save
+// and receives the chosen path; false if the user cancelled.
+// ---------------------------------------------------------------------------
+static bool PickSceneFile(HWND hwnd, bool save, char* fn, int fnSize)
+{
+    static const char kFilter[] = "Scene Files (*.lts)\0*.lts\0All Files (*.*)\0*.*\0";
+#ifdef _WIN32
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = hwnd;
+    ofn.lpstrFilter = kFilter;
+    ofn.lpstrFile   = fn;
+    ofn.nMaxFile    = (DWORD)fnSize;
+    ofn.lpstrDefExt = "lts";
+    ofn.Flags       = save ? (OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST)
+                           : (OFN_FILEMUSTEXIST  | OFN_PATHMUSTEXIST);
+    ofn.lpstrTitle  = save ? "Export Scene" : "Import Scene";
+    return save ? GetSaveFileNameA(&ofn) != 0 : GetOpenFileNameA(&ofn) != 0;
+#else
+    (void)hwnd;
+    if (save)
+    {
+        char suggested[512];
+        snprintf(suggested, sizeof(suggested), "%s.lts", fn);
+        return BrowseForSaveFile("Export Scene", nullptr, suggested, kFilter, fn, fnSize);
+    }
+    char* picked = BrowseForFiles("Import Scene", nullptr, nullptr, false, kFilter);
+    if (!picked) return false;
+    snprintf(fn, (size_t)fnSize, "%s", picked);
+    free(picked);
+    return true;
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // ExportScene – write a single scene to a .lts file
 // ---------------------------------------------------------------------------
 static void ExportScene(HWND hwnd, int item)
@@ -2558,26 +2614,15 @@ static void ExportScene(HWND hwnd, int item)
     if (g_snapshots[item]->m_isSpacer) return;
 
     char szFile[MAX_PATH] = {};
-    strncpy_s(szFile, g_snapshots[item]->m_name.c_str(), MAX_PATH - 1);
+    snprintf(szFile, sizeof(szFile), "%s", g_snapshots[item]->m_name.c_str());
     for (char& c : szFile)
         if (c == '/' || c == '\\' || c == ':' || c == '*' ||
             c == '?' || c == '"'  || c == '<' || c == '>' || c == '|')
             c = '_';
 
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner   = hwnd;
-    ofn.lpstrFilter = "Scene Files (*.lts)\0*.lts\0All Files (*.*)\0*.*\0";
-    ofn.lpstrFile   = szFile;
-    ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrDefExt = "lts";
-    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle  = "Export Scene";
+    if (!PickSceneFile(hwnd, true, szFile, sizeof(szFile))) return;
 
-    if (!GetSaveFileNameA(&ofn)) return;
-
-    FILE* fp = nullptr;
-    fopen_s(&fp, szFile, "w");
+    FILE* fp = fopen(szFile, "w");
     if (!fp)
     {
         MessageBoxA(hwnd, "Could not create file.", "Export Error", MB_OK | MB_ICONERROR);
@@ -2594,20 +2639,9 @@ static void ExportScene(HWND hwnd, int item)
 static void ImportScene(HWND hwnd)
 {
     char szFile[MAX_PATH] = {};
-    OPENFILENAMEA ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner   = hwnd;
-    ofn.lpstrFilter = "Scene Files (*.lts)\0*.lts\0All Files (*.*)\0*.*\0";
-    ofn.lpstrFile   = szFile;
-    ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrDefExt = "lts";
-    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    ofn.lpstrTitle  = "Import Scene";
+    if (!PickSceneFile(hwnd, false, szFile, sizeof(szFile))) return;
 
-    if (!GetOpenFileNameA(&ofn)) return;
-
-    FILE* fp = nullptr;
-    fopen_s(&fp, szFile, "r");
+    FILE* fp = fopen(szFile, "r");
     if (!fp)
     {
         MessageBoxA(hwnd, "Could not open file.", "Import Error", MB_OK | MB_ICONERROR);
@@ -3120,32 +3154,11 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_SINGLE_CLICK,    g_singleClickRecall   ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_ALT_DELETE,      g_altClickDelete      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_CTRL_OVERWRITE,  g_ctrlClickOverwrite  ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_GSET_PRELOAD_OFFLINE,  g_preloadOffline      ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_SKIP_UNCHANGED,   g_skipUnchangedParams ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_DURATION_DEBUG,   g_durationDebug       ? BST_CHECKED : BST_UNCHECKED);
-        CheckDlgButton(hwnd, IDC_GSET_SHADOW_PARAMS,     g_shadowParams       ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_CHUNK_ALL_INSTANT, g_chunkAllInstant    ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_RECALL_LOG,        g_recallLog          ? BST_CHECKED : BST_UNCHECKED);
-
-        // Tooltip for the preload offline checkbox
-        HWND hwndTip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
-            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
-            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
-            hwnd, NULL, g_hInstance, NULL);
-        if (hwndTip)
-        {
-            TOOLINFO ti = {};
-            ti.cbSize   = sizeof(ti);
-            ti.uFlags   = TTF_IDISHWND | TTF_SUBCLASS;
-            ti.hwnd     = hwnd;
-            ti.uId      = (UINT_PTR)GetDlgItem(hwnd, IDC_GSET_PRELOAD_OFFLINE);
-            ti.lpszText = (LPSTR)"Preloads newly added plugins offline ahead of time to reduce "
-                                 "live audio stuttering, but may delay the scene recall slightly "
-                                 "depending on the plugin. Use \"Prime Scenes...\" to pre-load "
-                                 "all plugins before the show instead.";
-            SendMessage(hwndTip, TTM_ADDTOOL, 0, (LPARAM)&ti);
-            SendMessage(hwndTip, TTM_SETMAXTIPWIDTH, 0, 300);
-        }
+        CheckDlgButton(hwnd, IDC_GSET_MATCH_THEME,       ReaperTheme_MatchTheme() ? BST_CHECKED : BST_UNCHECKED);
 
         char buf[64];
         snprintf(buf, sizeof(buf), "%.2f", instant ? 2.0 : g_defaultDuration);
@@ -3293,13 +3306,26 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_singleClickRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SINGLE_CLICK)    == BST_CHECKED);
             g_altClickDelete      = (IsDlgButtonChecked(hwnd, IDC_GSET_ALT_DELETE)       == BST_CHECKED);
             g_ctrlClickOverwrite  = (IsDlgButtonChecked(hwnd, IDC_GSET_CTRL_OVERWRITE)   == BST_CHECKED);
-            g_preloadOffline      = (IsDlgButtonChecked(hwnd, IDC_GSET_PRELOAD_OFFLINE)   == BST_CHECKED);
             g_skipUnchangedParams = (IsDlgButtonChecked(hwnd, IDC_GSET_SKIP_UNCHANGED)    == BST_CHECKED);
             g_durationDebug       = (IsDlgButtonChecked(hwnd, IDC_GSET_DURATION_DEBUG)    == BST_CHECKED);
-            g_shadowParams        = (IsDlgButtonChecked(hwnd, IDC_GSET_SHADOW_PARAMS)     == BST_CHECKED);
             g_chunkAllInstant     = (IsDlgButtonChecked(hwnd, IDC_GSET_CHUNK_ALL_INSTANT) == BST_CHECKED);
             g_recallLog           = (IsDlgButtonChecked(hwnd, IDC_GSET_RECALL_LOG)        == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
+
+            // Dark mode is machine-wide (ExtState), not per project.
+            // Setting it re-reads the colours itself, so the Scenes window's
+            // theme timer would see nothing new: repaint it here.
+            const bool matchTheme = (IsDlgButtonChecked(hwnd, IDC_GSET_MATCH_THEME) == BST_CHECKED);
+            if (matchTheme != ReaperTheme_MatchTheme())
+            {
+                ReaperTheme_SetMatchTheme(matchTheme);
+                if (g_wnd && IsWindow(g_wnd))
+                {
+                    ReaperTheme_ApplyListView(GetDlgItem(g_wnd, IDC_LIST));
+                    RedrawWindow(g_wnd, nullptr, nullptr,
+                                 RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
+                }
+            }
 
             // Layers. SetSettings re-applies the active layer, so it is only
             // called when something actually changed — pressing OK here for an
@@ -3883,7 +3909,7 @@ static INT_PTR CALLBACK CueSetupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, L
         if (dis && dis->CtlID == IDC_CUE_SPLITTER)
         {
             // A single hairline down the gutter, like the Scenes window's.
-            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_DialogBg());
             FillRect(dis->hDC, &dis->rcItem, face);
             DeleteObject(face);
             const int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
@@ -4095,15 +4121,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
         break;
 
     case CTX_SCENE_SAFES:
-        if (hasItem && !isSpacer)
-        {
-            TransitionSnapshot* snap = g_snapshots[snapIdx].get();
-            char title[512];
-            snprintf(title, sizeof(title), "Recall Filters for %s",
-                     SceneDisplayLabel(snapIdx).c_str());
-            if (SafesWnd_EditSceneSafes(hwnd, snap->m_safes, title))
-                MarkProjectDirty(nullptr);
-        }
+        if (hasItem && !isSpacer) EditRecallFilters(hwnd, snapIdx);
         break;
 
     case CTX_TOGGLE_FOLD:
@@ -4391,7 +4409,9 @@ static LRESULT CALLBACK ListSubclassProc(HWND hList, UINT msg,
         // Upgrade tracking to an active drag once threshold is crossed.
         // Require both a minimum distance AND a minimum hold time (200 ms)
         // so that a quick click never accidentally initiates a drag.
-        if (s_lbTracking && g_dragSrc < 0)
+        // The cue list is ordered from the cue setup dialog, not by dragging
+        // here, so no drag (or drop bar) starts in cue mode.
+        if (s_lbTracking && g_dragSrc < 0 && !g_cueMode)
         {
             bool movedEnough = (abs(pt.x - s_lbDownPt.x) > GetSystemMetrics(SM_CXDRAG) ||
                                 abs(pt.y - s_lbDownPt.y) > GetSystemMetrics(SM_CYDRAG));
@@ -4825,7 +4845,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         {
             // A single hairline down the gutter: enough to read as a divider
             // without drawing a heavy bar between the two columns.
-            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_DialogBg());
             FillRect(dis->hDC, &dis->rcItem, face);
             DeleteObject(face);
             int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
@@ -4840,7 +4860,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         if (dis && dis->CtlID == IDC_NOTES_GRIP)
         {
             // Two short rules centred in the strip, the usual "drag me" cue.
-            HBRUSH face = CreateSolidBrush(ReaperTheme_Sys(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_DialogBg());
             FillRect(dis->hDC, &dis->rcItem, face);
             DeleteObject(face);
             int midY = (dis->rcItem.top + dis->rcItem.bottom) / 2;
@@ -4982,6 +5002,13 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             AddSubsceneToCurrent(hwnd);
             break;
 
+        case IDC_RECALLFILT_BTN:
+        {
+            const int snapIdx = SelectedSnapshotIndex(hwnd, nullptr);
+            if (snapIdx >= 0) EditRecallFilters(hwnd, snapIdx);
+            break;
+        }
+
         case IDC_SETTINGS_BTN:
             // Opens global default transition settings
             DialogBoxParam(g_hInstance, MAKEINTRESOURCE(IDD_GLOBAL_SETTINGS),
@@ -5090,6 +5117,7 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                     else
                         LoadEditorFromSnapshot(hwnd, nullptr);
                 }
+                if (nlv->uChanged & LVIF_STATE) UpdateSceneButtons(hwnd);
             }
             else if (hdr->code == LVN_BEGINLABELEDIT)
             {

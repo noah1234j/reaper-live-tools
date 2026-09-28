@@ -1,6 +1,7 @@
 #include "TransitionSnapshot.h"
 #include "ChunkRecallList.h"
 #include "LayersEngine.h"
+#include "GuidUtil.h"
 #include "api.h"
 
 #include <cstdio>
@@ -42,30 +43,6 @@ bool LT_SlotHintsSupported()
         s_cached = (GetTrackNumSends(mt, 0x10000001) == 0x10000000) ? 1 : 0;
     }
     return s_cached == 1;
-}
-
-// ---------------------------------------------------------------------------
-// Helpers: GUID <-> string (Windows-only, no WDL required)
-// ---------------------------------------------------------------------------
-static std::string GuidToString(const GUID& g)
-{
-    WCHAR wbuf[64];
-    StringFromGUID2(g, wbuf, 64);
-    char buf[64];
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
-    return buf;
-}
-
-static GUID StringToGuid(const char* s)
-{
-    GUID g = {};
-    if (!s || !s[0]) return g;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (wlen <= 0) return g;
-    std::vector<WCHAR> wbuf(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf.data(), wlen);
-    CLSIDFromString(wbuf.data(), &g);
-    return g;
 }
 
 // ---------------------------------------------------------------------------

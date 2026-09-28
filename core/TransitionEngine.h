@@ -144,9 +144,7 @@ public:
 
         // Settings that were active at recall time (logged when g_durationDebug)
         bool   s_skipUnchanged    = false;
-        bool   s_shadowParams     = false;
         bool   s_chunkAllInstant  = false;
-        bool   s_preloadOffline   = false;
 
         // Per-FX operation timing for the instant path.
         // Only populated when g_durationDebug is true.
@@ -186,33 +184,6 @@ public:
     // Callback registered with plugin_register("timer", ...)
     // – must be a plain static function (no captures)
     static void TimerCallback();
-
-    // -----------------------------------------------------------------------
-    // FX Parameter Shadow Map
-    // -----------------------------------------------------------------------
-    // Tracks the last-written normalized value for each (track GUID, fxIdent,
-    // paramIdx) triple.  Populated two ways:
-    //   (a) Write-through: after each TrackFX_SetParamNormalized in SyncFXChain.
-    //   (b) CSURF_EXT_SETFXPARAM notifications via the FXShadowSurface class.
-    // Used during instant recall of VST3 plugins: if the shadow value already
-    // matches the target, the SetParamNormalized call (and the plugin DSP
-    // recalc it triggers) is skipped.
-    //
-    // Shadow is per-plugin identified by fxIdent ("fx_ident" named config parm).
-    // It is cleared on project load to prevent stale data from a previous project.
-    // -----------------------------------------------------------------------
-    void ShadowWrite(const GUID& guid, const char* fxIdent, int paramIdx, double val);
-    bool ShadowGet  (const GUID& guid, const char* fxIdent, int paramIdx, double& outVal) const;
-    void ShadowClear();
-    // Drop all entries for one plugin instance. Needed after a vst_chunk
-    // write: it changes params without CSURF notifications, so the plugin's
-    // shadow entries are provably stale.
-    void ShadowInvalidate(const GUID& guid, const char* fxIdent);
-
-    // Register / unregister the internal CSURF surface that feeds the shadow map.
-    // Called from ReaperPluginEntry on load and unload.
-    static void RegisterShadowSurface();
-    static void UnregisterShadowSurface();
 
     // Optional notify: set by TransitionWnd so the engine can poke UI on finish
     std::function<void()> onTransitionComplete;
@@ -351,23 +322,4 @@ private:
     std::vector<SendLerp>    m_sendLerps;
 
     char   m_statusBuf[256]   = "Idle";
-
-    // -----------------------------------------------------------------------
-    // Shadow map storage
-    // Key: track GUID → fxIdent string → per-param values (indexed by param idx)
-    // A value of -1e308 (kShadowEmpty) means "not yet observed".
-    // -----------------------------------------------------------------------
-    using ShadowParamVec = std::vector<double>;
-    using ShadowFXMap    = std::unordered_map<std::string, ShadowParamVec>;
-    using ShadowTrackMap = std::unordered_map<GUID, ShadowFXMap, GUIDHash, GUIDEqual>;
-    ShadowTrackMap m_shadow;
-    static constexpr double kShadowEmpty = -1e308;
-
-    // Project state change count observed when the last recall finished.
-    // If it differs at the next recall's entry, something external (SWS
-    // snapshot, preset load, manual edit REAPER didn't notify us about)
-    // touched the project — the shadow map can no longer be trusted and is
-    // cleared. Trade-off: any external edit costs one unoptimized recall;
-    // back-to-back scene recalls (the optimization's target) keep the map.
-    int m_shadowStateCount = -1;
 };

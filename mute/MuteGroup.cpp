@@ -2,6 +2,7 @@
 // MuteGroup.cpp  –  MuteGroupsEngine implementation
 // ---------------------------------------------------------------------------
 #include "MuteGroup.h"
+#include "GuidUtil.h"
 #include "api.h"
 
 #include <cstdio>
@@ -34,23 +35,7 @@ MuteGroupsEngine& MuteGroupsEngine::Get()
 // ---------------------------------------------------------------------------
 std::string MuteGroupsEngine::GuidToStr(const GUID& g)
 {
-    WCHAR wbuf[64] = {};
-    StringFromGUID2(g, wbuf, 64);
-    char buf[64] = {};
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
-    return buf;
-}
-
-static GUID StrToGuid(const char* s)
-{
-    GUID g = {};
-    if (!s || !s[0]) return g;
-    int wlen = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-    if (wlen <= 0) return g;
-    std::vector<WCHAR> wbuf(wlen);
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, wbuf.data(), wlen);
-    CLSIDFromString(wbuf.data(), &g);
-    return g;
+    return GuidToString(g);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +186,7 @@ bool MuteGroupsEngine::ProcessLine(const char* line)
         std::string gstr = gs;
         while (!gstr.empty() && (gstr.back() == ' ' || gstr.back() == '\r' || gstr.back() == '\n'))
             gstr.pop_back();
-        GUID g = StrToGuid(gstr.c_str());
+        GUID g = StringToGuid(gstr.c_str());
         m_groups.back().group.trackGuids.push_back(g);
         return true;
     }
@@ -362,16 +347,7 @@ MuteGroup* MuteGroup_Deserialize(const char* line, ProjectStateContext* ctx)
             while (!gs.empty() && (gs.back() == ' ' || gs.back() == '\r' || gs.back() == '\n'))
                 gs.pop_back();
 
-            // Convert GUID string to GUID
-            int wlen = MultiByteToWideChar(CP_UTF8, 0, gs.c_str(), -1, nullptr, 0);
-            if (wlen > 0)
-            {
-                std::vector<WCHAR> wbuf(wlen);
-                MultiByteToWideChar(CP_UTF8, 0, gs.c_str(), -1, wbuf.data(), wlen);
-                GUID g = {};
-                CLSIDFromString(wbuf.data(), &g);
-                mg->trackGuids.push_back(g);
-            }
+            mg->trackGuids.push_back(StringToGuid(gs.c_str()));
         }
     }
 
