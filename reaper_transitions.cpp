@@ -203,7 +203,6 @@ static void ResetProjectState(bool isUndo)
     TransitionEngine::Get().StopAndReset();
     g_snapshots.clear();
     g_dcaGroups.clear();
-    TransitionEngine::Get().ShadowClear();
     TransitionWnd_ResetCueList();
     TransitionWnd_ResetTouchedScene();
     TransitionWnd_ResetSettings();
@@ -459,7 +458,6 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("-timer", (void*)LayersEngine::TimerCallback);  // track-order sync
         DcaWnd_Cleanup();
         plugin_register("-timer",          (void*)LiveLockEngine::TimerCallback);
-        TransitionEngine::UnregisterShadowSurface();
         plugin_register("-timer",          (void*)&TransitionEngine::TimerCallback);
         plugin_register("-timer",          (void*)ProjectTabTimerCallback);
         plugin_register("-projectconfig",  &g_projectconfig);
@@ -702,9 +700,6 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     LayersWnd_Init(hInstance);
     plugin_register("timer", (void*)LayersEngine::TimerCallback);  // track-order sync
     DcaWnd_Init(hInstance);
-
-    // Register the hidden CSURF surface that feeds the VST3 parameter shadow map
-    TransitionEngine::RegisterShadowSurface();
 
     return 1; // success
 }

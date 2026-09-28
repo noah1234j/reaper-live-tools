@@ -35,18 +35,6 @@ static const FlagGroupNames k_flagGroups[] =
 static const int k_flagCount = (int)(sizeof(k_flagGroups) / sizeof(k_flagGroups[0]));
 
 // ---------------------------------------------------------------------------
-// GUID helpers
-// ---------------------------------------------------------------------------
-static std::string GuidToStr(const GUID& g)
-{
-    WCHAR wbuf[64];
-    StringFromGUID2(g, wbuf, 64);
-    char buf[64];
-    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, buf, 64, nullptr, nullptr);
-    return buf;
-}
-
-// ---------------------------------------------------------------------------
 // SetGroupBit: set or clear one bit in a group membership word
 // ---------------------------------------------------------------------------
 static void SetGroupBit(MediaTrack* tr, const char* groupName,

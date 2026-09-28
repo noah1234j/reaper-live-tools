@@ -1640,8 +1640,7 @@ static INT_PTR CALLBACK LiveOptDlgProc(HWND hwnd, UINT msg,
                 // Fill background
                 const bool isSel = (ListView_GetItemState(g_hList, idx, LVIS_SELECTED) & LVIS_SELECTED) != 0;
                 COLORREF bg = isSel ? GetSysColor(COLOR_HIGHLIGHT) : GetSysColor(COLOR_WINDOW);
-                SetBkColor(hdc, bg);
-                ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rcIt, "", 0, nullptr);
+                FillSolid(hdc, &rcIt, bg);
 
                 // Draw colored circle
                 COLORREF dotColor;

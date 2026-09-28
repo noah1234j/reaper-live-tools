@@ -6,8 +6,8 @@
 // Right column : ListView of every track in the project, in the project's own
 //                order, laid out like REAPER's Track Manager. Columns:
 //                #  Name  TCP  MCP  Spacer. # is the track number on the
-//                track's color; Name is indented by folder, and a folder's
-//                arrow folds the list like the TCP. A dot in TCP/MCP means the
+//                track's color; Name is indented by folder, with a folder's
+//                children marked like the Scenes list's subscenes. A dot in TCP/MCP means the
 //                selected layer shows that channel in that panel; click one to
 //                toggle it, which is also what puts the channel in the layer
 //                or takes it out — live, when the layer is the active one. A
@@ -23,6 +23,7 @@
 #include "LayersEngine.h"
 #include "api.h"
 #include "resource.h"
+#include "ReaperTheme.h"
 
 #ifdef _WIN32
 #  include <windowsx.h>
@@ -78,8 +79,9 @@ static DWORD   s_trkLbDownTime     = 0;
 // that channel in, and a marker in Spacer for the visual gaps.
 //
 // The first column is the track number on the track's own color, as in the
-// Track Manager, and Name is indented by folder depth with an open/closed
-// arrow on folder parents that folds the list the way the TCP does.
+// Track Manager, and Name is indented by folder depth, each child marked
+// with the same corner the Scenes list puts in front of a subscene. Folders
+// do not fold here: every project track always has a row.
 enum {
     LYRCOL_NUM    = 0,
     LYRCOL_NAME   = 1,
@@ -90,7 +92,6 @@ enum {
 
 // Folder tree geometry in the Name cell.
 static const int kFolderIndent = 12;   // per nesting level
-static const int kFolderArrowW = 12;   // arrow box, reserved on every row so names line up
 
 // Track color box in the # cell, left of the number.
 static const int kColorBoxSize = 10;
@@ -146,15 +147,14 @@ struct LyrRow {
     int      trackNum  = 0;      // 1-based project position
     int      depth     = 0;      // folder nesting level
     bool     isFolder  = false;  // opens a folder
-    bool     collapsed = false;  // folder shown closed; its children have no rows
+    int      folderCompact = 0;  // the project's I_FOLDERCOMPACT, for a folder joining a layer
     bool     hasColor  = false;
     COLORREF color     = 0;
 };
 static std::vector<LyrRow> s_trackRows;
 
-// Every project track, in project order, folded or not. The rows above leave
-// out folded children, so anything that needs the project's
-// own order reads this instead.
+// Every project track, in project order. The same tracks as the rows above,
+// for code that wants just the project's own order.
 static std::vector<GUID> s_projGuids;
 
 // A row in range.
@@ -172,34 +172,15 @@ static COLORREF BlendColor(COLORREF a, COLORREF b, int pctB)
                (GetBValue(a) * pa + GetBValue(b) * pctB) / 100);
 }
 
-// Background for a row's cells. Selected rows take the selection color; a
-// colored track is tinted toward its color the way the TCP tints it.
-static COLORREF RowBg(const LyrRow& lr, bool sel)
+// Background for a row's cells, in the REAPER theme's list colours like the
+// other windows. Selected rows take the selection color; a colored track is
+// tinted toward its color the way the TCP tints it.
+static COLORREF RowBg(HWND hList, const LyrRow& lr, int row)
 {
-    if (sel) return GetSysColor(COLOR_HIGHLIGHT);
-    const COLORREF win = GetSysColor(COLOR_WINDOW);
-    if (lr.hasColor) return BlendColor(win, lr.color, 35);
-    return win;
-}
-
-// Folders folded in the list that the selected layer does not hold. A folder
-// the layer holds folds by the layer's own folderCompact instead, since that
-// is what recall puts on the tracks. Anything not listed here follows the
-// project's current I_FOLDERCOMPACT.
-static std::vector<std::pair<GUID, bool>> s_viewFolded;
-
-static bool ViewFolded(const GUID& g, bool& folded)
-{
-    for (const auto& vf : s_viewFolded)
-        if (memcmp(&vf.first, &g, sizeof(GUID)) == 0) { folded = vf.second; return true; }
-    return false;
-}
-
-static void SetViewFolded(const GUID& g, bool folded)
-{
-    for (auto& vf : s_viewFolded)
-        if (memcmp(&vf.first, &g, sizeof(GUID)) == 0) { vf.second = folded; return; }
-    s_viewFolded.push_back({ g, folded });
+    const COLORREF bg = ReaperTheme_ListCellBg(hList, row);
+    if (bg != ReaperTheme_List().bg) return bg;   // selected
+    if (lr.hasColor) return BlendColor(bg, lr.color, 35);
+    return bg;
 }
 
 // The layer's entry for a project track, or null when the layer does not
@@ -501,15 +482,13 @@ static void RefreshTrackList(HWND hwnd)
     // Rows are the project's tracks, in the project's order, whatever layer is
     // selected — and whether or not one is. Only the dots change with the
     // selection, so the list reads the same way every time it is opened.
-    // Children of a folded folder get no row, as in the TCP.
     s_trackRows.clear();
     s_projGuids.clear();
     {
         const int nt = CountTracks(0);
         s_trackRows.reserve((size_t)nt);
         s_projGuids.reserve((size_t)nt);
-        std::vector<bool> openFolders;   // folded state of each enclosing folder
-        int hiddenBy = 0;                // enclosing folders that are folded
+        int depth = 0;                   // enclosing folders
         for (int t = 0; t < nt; t++)
         {
             MediaTrack* tr = GetTrack(0, t);
@@ -523,24 +502,13 @@ static void RefreshTrackList(HWND hwnd)
             LyrRow row;
             if (tg) row.guid = *tg;
             row.trackNum = t + 1;
-            row.depth    = (int)openFolders.size();
+            row.depth    = depth;
             row.isFolder = fd >= 1;
             if (row.isFolder)
-            {
-                const LayerTrack* lt = ld && tg ? FindLayerTrack(*ld, *tg) : nullptr;
-                bool folded = false;
-                if (lt)
-                    folded = lt->folderCompact == 2;
-                else if (!tg || !ViewFolded(*tg, folded))
-                {
-                    int fc = 0;
-                    if (int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr)) fc = *p;
-                    folded = fc == 2;
-                }
-                row.collapsed = folded;
-            }
+                if (int* p = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERCOMPACT", nullptr))
+                    row.folderCompact = *p;
 
-            if (tg && hiddenBy == 0)
+            if (tg)
             {
                 char nm[128] = {};
                 if (!GetTrackName(tr, nm, sizeof(nm)) || nm[0] == '\0')
@@ -561,19 +529,8 @@ static void RefreshTrackList(HWND hwnd)
                 s_trackRows.push_back(row);
             }
 
-            if (row.isFolder)
-            {
-                openFolders.push_back(row.collapsed);
-                if (row.collapsed) hiddenBy++;
-            }
-            else if (fd < 0)
-            {
-                for (int k = 0; k < -fd && !openFolders.empty(); k++)
-                {
-                    if (openFolders.back()) hiddenBy--;
-                    openFolders.pop_back();
-                }
-            }
+            if (row.isFolder)  depth++;
+            else if (fd < 0)   depth = (depth + fd > 0) ? depth + fd : 0;
         }
     }
 
@@ -583,7 +540,7 @@ static void RefreshTrackList(HWND hwnd)
 
     // Same row count: rewrite the text in place instead of deleting every
     // row. The list view holds only the number and Name text — dots, colors
-    // and folder arrows are read from s_trackRows at paint time — so this is
+    // and folder marks are read from s_trackRows at paint time — so this is
     // all a rebuild would change.
     const bool rebuild = ListView_GetItemCount(hList) != (int)s_trackRows.size();
     SendMessage(hList, WM_SETREDRAW, FALSE, 0);
@@ -593,7 +550,7 @@ static void RefreshTrackList(HWND hwnd)
     {
         const LyrRow& lr = s_trackRows[i];
         // Past the limit by the slot the channel holds, which is what recall
-        // counts — rows folded out of sight would throw a row count off.
+        // counts, not the row.
         const int slot = ld ? FindLayerTrackIdx(*ld, lr.guid) : -1;
 
         char dispName[200] = "";
@@ -704,51 +661,6 @@ static void CommitVisibilityEdit(int layerIdx)
         le.ApplyVisibilityNow(layerIdx);
     else
         le.MarkLayoutEdited(layerIdx);
-}
-
-// ---------------------------------------------------------------------------
-// ToggleFolderRow - the folder arrow in the Name column.
-//
-// Folds the list the way the TCP folds a folder. For a folder the selected
-// layer holds, the fold is the layer's folderCompact — what recall puts on the
-// track — so on the active layer it folds the TCP too. A folder the layer does
-// not hold folds the list only.
-// ---------------------------------------------------------------------------
-static void ToggleFolderRow(HWND hwnd, int row)
-{
-    if (!IsTrackRow(row)) return;
-    const LyrRow r = s_trackRows[row];
-    if (!r.isFolder) return;
-    const bool fold = !r.collapsed;
-
-    LayersEngine& le = LayersEngine::Get();
-    const int n = le.GetLayerCount();
-    LayerTrack* lt = (s_selLayer >= 0 && s_selLayer < n)
-                     ? FindLayerTrack(le.GetLayer(s_selLayer), r.guid) : nullptr;
-    if (lt)
-    {
-        lt->folderCompact = fold ? 2 : 0;
-        le.SaveExtState();
-        if (s_selLayer == le.GetActiveLayer())
-            le.ApplyFolderStateNow(r.guid, lt->folderCompact);
-    }
-    else
-    {
-        SetViewFolded(r.guid, fold);
-    }
-    RefreshTrackList(hwnd);
-}
-
-// Where a folder row's arrow sits, in list-client coordinates.
-static bool FolderArrowRect(HWND hList, int row, RECT& out)
-{
-    if (!IsTrackRow(row)) return false;
-    RECT rc;
-    if (!ListView_GetSubItemRect(hList, row, LYRCOL_NAME, LVIR_BOUNDS, &rc)) return false;
-    out        = rc;
-    out.left   = rc.left + 2 + s_trackRows[row].depth * kFolderIndent;
-    out.right  = out.left + kFolderArrowW;
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -923,8 +835,8 @@ static bool SetDotCell(LayerDef& ld, const LyrRow& row, int col, bool on)
         snprintf(nt.name, sizeof(nt.name), "%s", row.name);
         nt.showTcp = (col == LYRCOL_TCP);
         nt.showMcp = (col == LYRCOL_MCP);
-        // A folder joins folded the way the list shows it right now.
-        nt.folderCompact = (row.isFolder && row.collapsed) ? 2 : 0;
+        // A folder joins folded the way the project has it right now.
+        nt.folderCompact = row.isFolder ? row.folderCompact : 0;
         ld.tracks.push_back(nt);
         NormalizeLayerOrder(ld);
         return true;
@@ -1272,20 +1184,6 @@ static LRESULT CALLBACK TrackListSubclassProc(HWND hList, UINT msg, WPARAM wPara
         hti.pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ListView_SubItemHitTest(hList, &hti);
 
-        // The folder arrow. A double-click is two quick toggles, as in the
-        // TCP, rather than falling through to the list's own handling.
-        if (hti.iItem >= 0 && hti.iSubItem == LYRCOL_NAME &&
-            IsTrackRow(hti.iItem) && s_trackRows[hti.iItem].isFolder)
-        {
-            RECT ra;
-            if (FolderArrowRect(hList, hti.iItem, ra) &&
-                hti.pt.x >= ra.left - 2 && hti.pt.x < ra.right + 2)
-            {
-                ToggleFolderRow(dlg, hti.iItem);
-                SetFocus(hList);
-                return 0;
-            }
-        }
         // A double-click on a dot is just a second press. Passing it to the
         // list instead swallowed it, so toggling a cell back and forth at
         // ordinary clicking speed missed every other click.
@@ -1667,6 +1565,11 @@ static void InitLayersLayout(HWND hwnd)
 // ---------------------------------------------------------------------------
 static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    // Dialog colours and controls from the REAPER theme, as in the Scenes
+    // window and its other popups (see ReaperTheme.h).
+    if (INT_PTR r = ReaperTheme_CtlColor(hwnd, msg, wParam, lParam)) return r;
+    if (msg == WM_INITDIALOG) ReaperTheme_ApplyDialog(hwnd);
+
     switch (msg)
     {
     // -----------------------------------------------------------------------
@@ -1714,6 +1617,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 ListView_InsertColumn(hList, 1, &col);
                 s_origLayerListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)LayerListSubclassProc);
+                ReaperTheme_ApplyListView(hList);
             }
         }
 
@@ -1762,6 +1666,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 }
                 s_origTrackListProc = (WNDPROC)(LONG_PTR)SetWindowLongPtr(
                     hList, GWLP_WNDPROC, (LONG_PTR)TrackListSubclassProc);
+                ReaperTheme_ApplyListView(hList);
             }
         }
 
@@ -2192,15 +2097,15 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                 switch (cd->nmcd.dwDrawStage)
                 {
                 case CDDS_PREPAINT:
-                    res = s_boldFont ? CDRF_NOTIFYITEMDRAW : CDRF_DODEFAULT;
+                    res = CDRF_NOTIFYITEMDRAW;
                     break;
                 case CDDS_ITEMPREPAINT:
+                    // Row colours, selection included, from the REAPER theme.
+                    ReaperTheme_ListItemPrePaint(cd, hdr->hwndFrom, false);
                     if (s_boldFont &&
                         (int)cd->nmcd.dwItemSpec == LayersEngine::Get().GetActiveLayer())
-                    {
                         SelectObject(cd->nmcd.hdc, s_boldFont);
-                        res = CDRF_NEWFONT;
-                    }
+                    res = CDRF_NEWFONT;
                     break;
                 }
                 SetWindowLongPtr(hwnd, DWLP_MSGRESULT, res);
@@ -2281,6 +2186,9 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     break;
 
                 case CDDS_ITEMPREPAINT:
+                    // Theme colours for anything left to default drawing, and
+                    // the selection cleared so Windows adds no highlight.
+                    ReaperTheme_ListItemPrePaint(cd, hdr->hwndFrom, false);
                     res = CDRF_NOTIFYSUBITEMDRAW;
                     break;
 
@@ -2295,10 +2203,8 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                         const LyrRow& lr = s_trackRows[row];
                         HDC  hdc  = cd->nmcd.hdc;
                         HWND hLst = hdr->hwndFrom;
-                        const bool sel =
-                            (ListView_GetItemState(hLst, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-                        const COLORREF bg = RowBg(lr, sel);
-                        COLORREF       fg = GetSysColor(sel ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT);
+                        const COLORREF bg = RowBg(hLst, lr, row);
+                        const COLORREF fg = ReaperTheme_ListCellFg(hLst, row);
 
                         // Column 0's custom-draw rect spans the whole row on
                         // some comctl versions, so both cells are measured.
@@ -2317,8 +2223,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
                         if (col == LYRCOL_NUM)
                         {
-                            SetBkColor(hdc, bg);
-                            ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rc, "", 0, nullptr);
+                            FillSolid(hdc, &rc, bg);
 
                             // A color box on every track row, then the track
                             // number. The box is drawn whether or not the
@@ -2348,43 +2253,33 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                         }
                         else
                         {
-                            SetBkColor(hdc, bg);
-                            ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rc, "", 0, nullptr);
+                            FillSolid(hdc, &rc, bg);
 
-                            RECT ra = rc;
-                            FolderArrowRect(hLst, row, ra);
-                            if (lr.isFolder)
-                            {
-                                // Closed points right, open points down.
-                                const int ax = (ra.left + ra.right) / 2;
-                                const int ay = (rc.top + rc.bottom) / 2;
-                                POINT tri[3];
-                                if (lr.collapsed)
-                                {
-                                    tri[0] = { ax - 2, ay - 4 };
-                                    tri[1] = { ax - 2, ay + 4 };
-                                    tri[2] = { ax + 2, ay };
-                                }
-                                else
-                                {
-                                    tri[0] = { ax - 4, ay - 2 };
-                                    tri[1] = { ax + 4, ay - 2 };
-                                    tri[2] = { ax,     ay + 2 };
-                                }
-                                HBRUSH hb  = CreateSolidBrush(fg);
-                                HPEN   hp  = CreatePen(PS_SOLID, 1, fg);
-                                HGDIOBJ ob = SelectObject(hdc, hb);
-                                HGDIOBJ op = SelectObject(hdc, hp);
-                                Polygon(hdc, tri, 3);
-                                SelectObject(hdc, ob);
-                                SelectObject(hdc, op);
-                                DeleteObject(hb);
-                                DeleteObject(hp);
-                            }
-
+                            // Indent, then U+2514 U+2500 (box-drawing
+                            // corner) in front of a folder's children: the
+                            // same mark the Scenes list puts in front of a
+                            // subscene, and the Safes window in front of a
+                            // child track.
                             RECT rt = rc;
-                            rt.left = ra.right + 2;
+                            rt.left += 4;
                             SetTextColor(hdc, fg);
+                            if (lr.depth > 0)
+                            {
+                                rt.left += (lr.depth - 1) * kFolderIndent;
+                                RECT rm = rt;
+#ifdef _WIN32
+                                DrawTextW(hdc, L"\u2514\u2500 ", -1, &rm,
+                                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+                                DrawTextW(hdc, L"\u2514\u2500 ", -1, &rt,
+                                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+#else
+                                DrawTextA(hdc, "\xE2\x94\x94\xE2\x94\x80 ", -1, &rm,
+                                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
+                                DrawTextA(hdc, "\xE2\x94\x94\xE2\x94\x80 ", -1, &rt,
+                                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+#endif
+                                rt.left += rm.right - rm.left;
+                            }
                             DrawTextA(hdc, text, -1, &rt,
                                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX |
                                       DT_END_ELLIPSIS);
@@ -2410,11 +2305,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
                     HDC  hdc  = cd->nmcd.hdc;
                     RECT rc   = cd->nmcd.rc;
                     HWND hLst = hdr->hwndFrom;
-                    const bool sel =
-                        (ListView_GetItemState(hLst, row, LVIS_SELECTED) & LVIS_SELECTED) != 0;
-
-                    SetBkColor(hdc, RowBg(lr, sel));
-                    ExtTextOutA(hdc, 0, 0, ETO_OPAQUE, &rc, "", 0, nullptr);
+                    FillSolid(hdc, &rc, RowBg(hLst, lr, row));
 
                     bool on = false;
                     if (ltIdx >= 0)
@@ -2430,8 +2321,7 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
 
                     if (on)
                     {
-                        const COLORREF fg = GetSysColor(sel ? COLOR_HIGHLIGHTTEXT
-                                                            : COLOR_WINDOWTEXT);
+                        const COLORREF fg = ReaperTheme_ListCellFg(hLst, row);
                         const int cx = (rc.left + rc.right)  / 2;
                         const int cy = (rc.top  + rc.bottom) / 2;
 
@@ -2499,11 +2389,11 @@ static INT_PTR CALLBACK LayersDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (dis && dis->CtlID == IDC_LYR_SPLITTER)
         {
             // A single hairline down the gutter, like the Scenes window's.
-            HBRUSH face = CreateSolidBrush(GetSysColor(COLOR_BTNFACE));
+            HBRUSH face = CreateSolidBrush(ReaperTheme_DialogBg());
             FillRect(dis->hDC, &dis->rcItem, face);
             DeleteObject(face);
             const int cx = (dis->rcItem.left + dis->rcItem.right) / 2;
-            HPEN pen = CreatePen(PS_SOLID, 1, GetSysColor(COLOR_BTNSHADOW));
+            HPEN pen = CreatePen(PS_SOLID, 1, ReaperTheme_Sys(COLOR_BTNSHADOW));
             HGDIOBJ old = SelectObject(dis->hDC, pen);
             MoveToEx(dis->hDC, cx, dis->rcItem.top + 2, nullptr);
             LineTo  (dis->hDC, cx, dis->rcItem.bottom - 2);

@@ -9,6 +9,7 @@
 //   php vendor/WDL/WDL/swell/swell_resgen.php reaper_transitions.rc
 // ---------------------------------------------------------------------------
 
+#include "WDL/swell/swell.h"   // types the generated resources need
 #include "resource.h"
 
 #include "WDL/swell/swell-dlggen.h"

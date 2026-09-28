@@ -45,14 +45,47 @@ COLORREF ReaperTheme_Sys(int sysIdx);
 
 const ReaperListColors& ReaperTheme_List();
 
+// Window background: the mixer's (col_mixerbg) in Dark mode, the Windows
+// dialog colour otherwise. Custom-painted parts of a window (headers,
+// splitters, grips) fill with this so they sit on the same background.
+COLORREF ReaperTheme_DialogBg();
+
+// "Dark mode" (Global Settings; ExtState key match_theme_ui). On, windows are
+// painted in the REAPER theme's mixer colours. Off, they keep the plain
+// Windows look of REAPER's Preferences: system colours and native controls.
+// Saved to REAPER's ExtState; setting it re-reads the colours and restyles the
+// open windows (ReaperTheme_ReapplyAll).
+bool ReaperTheme_MatchTheme();
+void ReaperTheme_SetMatchTheme(bool on);
+
+// Text colour for dialog labels, painted buttons and tabs: the list text
+// in Dark mode, the Windows dialog text otherwise.
+COLORREF ReaperTheme_Text();
+
+// List column header face: a step off the window background. Headers draw
+// dividers in ReaperTheme_Line, like the grid.
+COLORREF ReaperTheme_HeaderBg();
+
+// Frames, grid lines and header dividers: black in Dark mode, the Windows
+// shadow colour otherwise.
+COLORREF ReaperTheme_Line();
+
 // Call first thing in a dialog proc. Non-zero means handled: return it.
 INT_PTR ReaperTheme_CtlColor(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
 
-// Once from WM_INITDIALOG: drops the visual style from checkboxes, radio
-// buttons and group boxes so their text follows the theme (Windows only).
+// Once from WM_INITDIALOG. In Dark mode, drops the visual style from buttons,
+// checkboxes, group boxes, tabs, edits and dropdowns and paints them in theme
+// colours; otherwise leaves (or puts back) the native controls. Windows only.
 void ReaperTheme_ApplyDialog(HWND hDlg);
 
-// Sets a list view's background and text colours from the theme.
+// Restyles every open dialog that went through ReaperTheme_ApplyDialog (and
+// the list views in it) for the current Dark mode setting. Called by
+// ReaperTheme_SetMatchTheme.
+void ReaperTheme_ReapplyAll();
+
+// Sets a list view's background and text colours from the theme. On Windows,
+// a list with LVS_EX_GRIDLINES gets them drawn in ReaperTheme_Line instead of the
+// system's light grey (the native style is stripped, now and if set later).
 void ReaperTheme_ApplyListView(HWND hList);
 
 // From CDDS_ITEMPREPAINT: paints the row in theme colours, including the
@@ -62,3 +95,6 @@ void ReaperTheme_ListItemPrePaint(NMLVCUSTOMDRAW* cd, HWND hList, bool muted);
 
 // Background a custom-drawn cell should use for the given row.
 COLORREF ReaperTheme_ListCellBg(HWND hList, int row);
+
+// Text colour to go with ReaperTheme_ListCellBg.
+COLORREF ReaperTheme_ListCellFg(HWND hList, int row);

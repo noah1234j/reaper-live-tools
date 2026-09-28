@@ -61,10 +61,5 @@ bool TransitionWnd_ProcessSettingsLine(const char* line);
 void TransitionWnd_ResetSettings();
 void TransitionWnd_OnProjectLoad();   // restore window state after project load
 
-// Preload flag: when true, newly-added plugins are briefly taken offline during
-// instant recall (offline sandwich) to prevent parameter snap during init.
-// Toggled via Global Settings. Saved per-project.
-extern bool g_preloadOffline;
 extern bool g_skipUnchangedParams;
-extern bool g_shadowParams;
 extern bool g_chunkAllInstant;

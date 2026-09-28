@@ -73,6 +73,7 @@
 #define IDC_VERSION              2149   // version footer, pinned to the sidebar bottom
 #define IDC_SPLITTER             2150   // draggable divider between list and sidebar
 #define IDC_ADDSUB_BTN           2151   // "Add Subscene" button (main Scenes window sidebar)
+#define IDC_RECALLFILT_BTN       2152   // "Recall Filters..." button (main Scenes window sidebar)
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
@@ -108,7 +109,7 @@
 #define IDD_SCENE_SAFES          230
 #define IDC_SCSAFE_TITLE         2271   // "Recall Filters for <name>" banner
 #define IDC_SCSAFE_REPLACE       2273   // ignore project safes for this scene
-#define IDC_SCSAFE_CLOSE         2274   // Close button
+// 2274 was IDC_SCSAFE_CLOSE (Close button, removed)
 
 // ---- Subscene transition defaults (Global Settings) -----------------------
 #define IDC_GSET_SUB_INSTANT     2275
@@ -153,9 +154,9 @@
 
 // ---- Duration debug checkbox (Global Settings) ---------------------------
 #define IDC_GSET_DURATION_DEBUG  2254   // "Duration debug" checkbox
-#define IDC_GSET_SHADOW_PARAMS      2255   // "Shadow VST3 params" checkbox
 #define IDC_GSET_CHUNK_ALL_INSTANT  2256   // "Chunk all on instant path" checkbox
 #define IDC_GSET_RECALL_LOG         2259   // "Write recall log to file" checkbox
+#define IDC_GSET_MATCH_THEME        2260   // "Dark mode" checkbox
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 // (2145-2147 now used – see IDC_SNAPNAME etc. above)
@@ -187,7 +188,6 @@
 #define IDC_GSET_SINGLE_CLICK    2241   // "Single click to recall" checkbox in global settings
 #define IDC_GSET_ALT_DELETE      2242   // "Alt+click to delete" checkbox in global settings
 #define IDC_GSET_CTRL_OVERWRITE  2243   // "Ctrl+click to overwrite" checkbox in global settings
-#define IDC_GSET_PRELOAD_OFFLINE 2245   // "Preload new plugins offline" checkbox
 #define IDC_GSET_SKIP_UNCHANGED  2246   // "Skip writing unchanged params on recall" checkbox
 #define IDC_GSET_CHUNK_BTN       2247   // "Chunk Recall Plugins..." button in global settings
 #define IDC_GSET_LAYERS_BTN      2253   // "Layers..." button in global settings
