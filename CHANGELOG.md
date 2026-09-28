@@ -1,5 +1,31 @@
 # Changelog
 
+## [v0.0.48-beta] — 2026-09-28
+
+### Added
+
+- **Dark mode setting**: Global Settings has a new **Appearance** group with a **Dark mode (REAPER theme colours)** checkbox. On, the Live Tools windows are painted in the REAPER theme's mixer colours, buttons, tabs, edits and dropdowns included. Off, they keep the plain Windows look of REAPER's Preferences. Changing it restyles the open windows straight away.
+
+- **Recall Filters sidebar button**: the Scenes sidebar has a **Recall Filters** button next to **Add Subscene**, opening the selected scene's recall filters. Both buttons are greyed out unless exactly one scene is selected.
+
+- **Global Safes column tooltips**: hovering a short column heading in the per-track grid (V, P, M, SLv...) shows what it stands for.
+
+### Changed
+
+- **Scenes sidebar buttons** are laid out in half-width pairs, like New / Recall, which gives the notes box more room.
+
+- **Layers: folders no longer fold in the list**: every project track always has a row, and a folder's children are marked with the same `└─` the Scenes list uses for subscenes.
+
+- **Global Safes window**: the **Close** button is gone (edits apply as they are made, so closing by any route is the same), the list takes its space, and resizing no longer flickers.
+
+### Removed
+
+- **Preload new plugins offline** and **Shadow VST3 params** settings. Projects saved with them still load.
+
+### Internal
+
+- Groundwork for a macOS build: the macOS CI build no longer fails on the SWELL include path, Windows-only GUID, text and file-dialog calls have portable replacements, and SWELL gaps are filled in `core/Platform.h`. There is still no macOS binary; ReaPack continues to report the package as unavailable on macOS.
+
 ## [v0.0.47-beta] — 2026-09-27
 
 Everything from the v0.0.47 dev builds (listed individually below), plus the changes since the last one.
