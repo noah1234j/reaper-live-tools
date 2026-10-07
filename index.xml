@@ -2,6 +2,26 @@
 <index version="1" name="Live Tools">
   <category name="Extensions">
     <reapack name="reaper_transitions.ext" type="extension" desc="Live Tools - scenes, layers, DCAs and mute groups for live REAPER rigs">
+      <version name="0.0.49" author="noah1234j" time="2026-10-07T20:15:28Z">
+        <changelog>Added
+
+- Track order and Track name safes: the Layers tab of the Global Safes window has two new checkboxes above the layer table. Track order stops layer recall from reordering tracks; Track name stops scene recall from renaming them. Like every safe, they only change what the next recall does.
+
+Changed
+
+- Layer recall moves as few tracks as possible: channels already in the right order relative to each other stay put and only the rest are moved, so moving one channel in a layer is one move instead of shifting every channel after it. Tracks outside the layer still never move, and folders are never restructured.
+
+- Reorder tracks to match layer order has left Global Settings; it is now the Track order safe (inverted). Projects that had reordering off open with Track order safed, so nothing starts moving.
+
+- Larger headings: the section labels above the lists and the status lines are a couple of points bigger, to read at a distance on stage.
+
+- Recall markers are only placed while REAPER is recording.
+
+Fixed
+
+- The bold (last recalled) scene now stays on the right scene when scenes are added, deleted or dragged.</changelog>
+        <source platform="win64" file="reaper_transitions.dll">https://github.com/noah1234j/reaper-live-tools/releases/download/v0.0.49-beta/reaper_transitions.dll</source>
+      </version>
       <version name="0.0.48" author="noah1234j" time="2026-09-28T18:33:16Z">
         <changelog>Added
 
