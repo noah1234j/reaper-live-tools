@@ -48,17 +48,28 @@ static void MarkTouched(int idx)
         g_lastTouchedIdx = idx;
 }
 
+// The engine's last-recalled slot (the bold row) is a position too, and is
+// fixed up alongside.
 // Call immediately BEFORE erasing row idx from g_snapshots.
 static void TouchedOnErase(int idx)
 {
     if      (g_lastTouchedIdx == idx) g_lastTouchedIdx = -1;
     else if (g_lastTouchedIdx >  idx) g_lastTouchedIdx--;
+
+    TransitionEngine& eng = TransitionEngine::Get();
+    const int cur = eng.GetCurrentSlot();
+    if      (cur == idx) eng.SetCurrentSlot(-1);
+    else if (cur >  idx) eng.SetCurrentSlot(cur - 1);
 }
 
 // Call immediately AFTER inserting a row at idx in g_snapshots.
 static void TouchedOnInsert(int idx)
 {
     if (g_lastTouchedIdx >= idx) g_lastTouchedIdx++;
+
+    TransitionEngine& eng = TransitionEngine::Get();
+    const int cur = eng.GetCurrentSlot();
+    if (cur >= idx) eng.SetCurrentSlot(cur + 1);
 }
 
 // Guard: set true when programmatically updating editor fields to prevent
@@ -451,7 +462,7 @@ void TransitionWnd_RecallScene(int index)
     // recalled from a key, MIDI or OSC binding has to obey the same rules.
     SceneSafeScope safeScope(&snap->m_safes,
                              snap->m_isSub);
-    if (g_placeMarker)
+    if (g_placeMarker && (GetPlayState() & 4))  // only while recording
     {
         double pos = GetPlayPosition();
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
@@ -2308,7 +2319,8 @@ static void DoRecall(HWND hwnd, int listIndex)
                              snap->m_isSub);
 
     // Place a named marker at the play cursor position if option is enabled
-    if (g_placeMarker)
+    // and REAPER is recording
+    if (g_placeMarker && (GetPlayState() & 4))
     {
         double pos = GetPlayPosition();
         AddProjectMarker2(nullptr, false, pos, 0.0, snap->m_name.c_str(), -1, 0);
@@ -2808,6 +2820,13 @@ static void DoEndDrag(HWND hwnd)
     // A gap inside the block, or either edge of it, leaves it where it is.
     if (tgt >= blockStart && tgt <= blockEnd) return;
 
+    // The recalled (bold) scene is re-resolved by identity once the block has
+    // landed, which also overrides whatever the Touched* helpers do to it.
+    const int recalledSlot = TransitionEngine::Get().GetCurrentSlot();
+    const TransitionSnapshot* recalled =
+        (recalledSlot >= 0 && recalledSlot < (int)g_snapshots.size())
+        ? g_snapshots[recalledSlot].get() : nullptr;
+
     std::vector<std::unique_ptr<TransitionSnapshot>> moved;
     moved.reserve((size_t)blockLen);
     for (int i = blockStart; i < blockEnd; ++i)
@@ -2849,6 +2868,8 @@ static void DoEndDrag(HWND hwnd)
 
     for (int i = 0; i < (int)g_snapshots.size(); i++)
         g_snapshots[i]->m_slot = i;
+
+    if (recalled) TransitionEngine::Get().SetCurrentSlot(recalled->m_slot);
 
     RefreshListView(hwnd);
     const int newRow = SnapToRow(insertAt);
@@ -3201,7 +3222,6 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         {
             const LayersSettings& lc = LayersEngine::Get().GetSettings();
             CheckDlgButton(hwnd, IDC_LYR_SET_MCPVIS,     lc.applyMcpVisibility  ? BST_CHECKED : BST_UNCHECKED);
-            CheckDlgButton(hwnd, IDC_LYR_SET_REORDER,    lc.reorderTracks       ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(hwnd, IDC_LYR_SET_RESTORE,    lc.restoreOnDeactivate ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(hwnd, IDC_LYR_SET_TRIGGERMCP, lc.triggerMcpSelect    ? BST_CHECKED : BST_UNCHECKED);
             HWND hSpin = GetDlgItem(hwnd, IDC_LYR_MAXCH_SPIN);
@@ -3334,14 +3354,12 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
                 LayersSettings lc = LayersEngine::Get().GetSettings();
                 const LayersSettings before = lc;
                 lc.applyMcpVisibility  = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_MCPVIS)     == BST_CHECKED);
-                lc.reorderTracks       = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_REORDER)    == BST_CHECKED);
                 lc.restoreOnDeactivate = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_RESTORE)    == BST_CHECKED);
                 lc.triggerMcpSelect    = (IsDlgButtonChecked(hwnd, IDC_LYR_SET_TRIGGERMCP) == BST_CHECKED);
                 BOOL ok = FALSE;
                 const int mc = (int)GetDlgItemInt(hwnd, IDC_LYR_MAXCH_EDIT, &ok, FALSE);
                 lc.globalMaxChannels = (ok && mc >= 0) ? mc : 0;
                 if (lc.applyMcpVisibility  != before.applyMcpVisibility  ||
-                    lc.reorderTracks       != before.reorderTracks       ||
                     lc.restoreOnDeactivate != before.restoreOnDeactivate ||
                     lc.triggerMcpSelect    != before.triggerMcpSelect    ||
                     lc.globalMaxChannels   != before.globalMaxChannels)
@@ -3757,9 +3775,15 @@ static void InitCueSetupLayout(HWND hwnd)
     g.margin    = ll.left;
     g.gutter    = rl.left - ll.right;
     if (g.gutter < 4) g.gutter = 4;
+    // Headings a couple of points up from the dialog's 8pt, so they read
+    // across a stage. Measured from the template above, before the font goes
+    // on; the lists move down by whatever the row gained.
+    ReaperTheme_ApplyHeadingFont(hwnd, IDC_CUE_LEFT_LBL);
+    ReaperTheme_ApplyHeadingFont(hwnd, IDC_CUE_RIGHT_LBL);
+
     g.labelTop  = lb.top;
-    g.labelH    = lb.bottom - lb.top;
-    g.listTop   = ll.top;
+    g.labelH    = (std::max)((int)(lb.bottom - lb.top), ReaperTheme_HeadingHeight());
+    g.listTop   = ll.top + (g.labelH - (int)(lb.bottom - lb.top));
     g.bottomGap = cr.bottom - ll.bottom;
     g.valid     = (ll.right > ll.left && rl.right > rl.left);
 
@@ -4271,6 +4295,7 @@ static void ShowContextMenu(HWND hwnd, int item, POINT pt)
                 g_cueList.clear();
                 g_snapshots.clear();
                 g_lastTouchedIdx = -1;
+                TransitionEngine::Get().SetCurrentSlot(-1);
                 RefreshListView(hwnd);
                 LoadEditorFromSnapshot(hwnd, nullptr);
                 Undo_OnStateChangeEx("Delete All Scenes", -1, -1);

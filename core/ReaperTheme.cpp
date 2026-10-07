@@ -246,6 +246,65 @@ COLORREF ReaperTheme_HeaderBg()
     return Blend(ReaperTheme_DialogBg(), ReaperTheme_Text(), 12);
 }
 
+// ---------------------------------------------------------------------------
+// Heading font (see ReaperTheme.h)
+// ---------------------------------------------------------------------------
+static HFONT s_headingFont   = nullptr;
+static int   s_headingHeight = 0;
+
+HFONT ReaperTheme_HeadingFont(HWND hRef)
+{
+    if (s_headingFont) return s_headingFont;
+    if (!hRef) return nullptr;
+
+    HFONT hBase = (HFONT)SendMessage(hRef, WM_GETFONT, 0, 0);
+    if (!hBase) hBase = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+    LOGFONT lf = {};
+    if (!GetObject(hBase, sizeof(lf), &lf)) return nullptr;
+
+    // A quarter up from the dialog font: enough to read across a stage,
+    // small enough that every label still fits the width it was given.
+    // lfHeight is negative (character height rather than cell height), so the
+    // magnitude is what grows.
+    const int base = (lf.lfHeight < 0) ? -lf.lfHeight : lf.lfHeight;
+    int grown = (base * 5 + 3) / 4;          // x1.25, rounded
+    if (grown < base + 1) grown = base + 1;  // always at least one pixel up
+    lf.lfHeight = -grown;
+    lf.lfWidth  = 0;                         // let the mapper pick the width
+
+    s_headingFont = CreateFontIndirect(&lf);
+    if (!s_headingFont) return nullptr;
+
+    // Row height the font needs, measured rather than guessed: the mapper may
+    // not give back exactly the size asked for.
+    if (HDC hdc = GetDC(hRef))
+    {
+        HGDIOBJ old = SelectObject(hdc, s_headingFont);
+        TEXTMETRIC tm = {};
+        if (GetTextMetrics(hdc, &tm))
+            s_headingHeight = tm.tmHeight + tm.tmExternalLeading + 2;
+        SelectObject(hdc, old);
+        ReleaseDC(hRef, hdc);
+    }
+    if (s_headingHeight <= 0) s_headingHeight = grown + 4;
+
+    return s_headingFont;
+}
+
+int ReaperTheme_HeadingHeight()
+{
+    return s_headingHeight;
+}
+
+void ReaperTheme_ApplyHeadingFont(HWND hDlg, int ctlId)
+{
+    HWND c = GetDlgItem(hDlg, ctlId);
+    if (!c) return;
+    if (HFONT hf = ReaperTheme_HeadingFont(c))
+        SendMessage(c, WM_SETFONT, (WPARAM)hf, TRUE);
+}
+
 COLORREF ReaperTheme_Text()
 {
     return ReaperTheme_MatchTheme() ? ReaperTheme_List().fg

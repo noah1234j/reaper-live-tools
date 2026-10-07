@@ -1537,11 +1537,21 @@ static void InitLayersLayout(HWND hwnd)
     g.margin    = ll.left;
     g.gutter    = tl.left - ll.right;
     if (g.gutter < 4) g.gutter = 4;
+    // The headings and the status line read across a stage, so they are a
+    // couple of points up from the dialog's 8pt. The template's gaps are
+    // recorded above, before the font goes on, and the rows grow from there:
+    // the headings push the lists down by what they gained, and the status
+    // line grows upward into the sidebar because its bottom is anchored.
+    ReaperTheme_ApplyHeadingFont(hwnd, IDC_LYR_LAYER_LBL);
+    ReaperTheme_ApplyHeadingFont(hwnd, IDC_LYR_TRACK_LBL);
+    ReaperTheme_ApplyHeadingFont(hwnd, IDC_LYR_STATUS);
+    const int headH = ReaperTheme_HeadingHeight();
+
     g.labelTop  = lb.top;
-    g.labelH    = lb.bottom - lb.top;
-    g.listTop   = ll.top;
+    g.labelH    = (std::max)((int)(lb.bottom - lb.top), headH);
+    g.listTop   = ll.top + (g.labelH - (int)(lb.bottom - lb.top));
     g.bottomGap = cr.bottom - ll.bottom;
-    g.statusH   = st.bottom - st.top;
+    g.statusH   = (std::max)((int)(st.bottom - st.top), headH);
     g.statusGap = cr.bottom - st.bottom;
     g.valid     = (ll.right > ll.left && tl.right > tl.left);
 

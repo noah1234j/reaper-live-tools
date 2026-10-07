@@ -16,6 +16,7 @@ extern bool g_trackSafesEnabled;
 #endif
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 #include <vector>
 #include <string>
 
@@ -27,11 +28,12 @@ extern bool g_trackSafesEnabled;
 // indented by its depth with a corner in front of the name. Nothing folds —
 // every track always has a row.
 //
-// Visibility, name and track order are not safes any more: layers own what
-// each track shows and where it sits, so there is nothing for a safe to hold
-// back. Color and height went the same way. Their TS_* bits still load and
-// save, so a project that had them set recalls the way it always did; there
-// is just no control for them here.
+// Visibility is not a safe any more: layers own what each track shows, so
+// there is nothing for a safe to hold back. Color and height went the same way.
+// Their TS_* bits still load and save, so a project that had them set recalls
+// the way it always did; there is just no control for them here. Track order
+// and track name are project-wide switches on the Layers tab instead of grid
+// columns (see SyncLayerSafeChecks).
 // ---------------------------------------------------------------------------
 enum SafeCol {
     COL_NUM = 0,
@@ -236,6 +238,58 @@ static void SetLayerRowSafed(int layerIdx, bool on)
 }
 
 // ---------------------------------------------------------------------------
+// The Layers tab's two project-wide switches.
+//
+// Track order: a layer recall puts the layer's channels into the layer's order
+// unless this is safed. It is the inverse of the old "Reorder tracks to match
+// layer order" setting and is stored in that same flag
+// (LayersSettings::reorderTracks), so a project saved with reordering off opens
+// with Track order safed and nothing starts moving.
+//
+// Track name: a scene recall renames tracks to the names it captured unless
+// this is safed. It is the TS_TRACKNAME bit of the project safe mask, which the
+// engine has always honoured; it just had no control.
+//
+// Like every safe, these only change what the next recall does.
+// ---------------------------------------------------------------------------
+static const int k_layerTabIds[] = {
+    IDC_SAFE_LYR_ORDER, IDC_SAFE_LYR_NAME, IDC_SAFESLAYERLBL,
+};
+
+static void SyncLayerSafeChecks(SafesPane* p)
+{
+    if (!p || !p->isMain || !p->hDlg) return;
+    const bool orderSafed = !LayersEngine::Get().GetSettings().reorderTracks;
+    const bool nameSafed  = (g_globalSafeMask & TS_TRACKNAME) != 0;
+    if (orderSafed != (IsDlgButtonChecked(p->hDlg, IDC_SAFE_LYR_ORDER) == BST_CHECKED))
+        CheckDlgButton(p->hDlg, IDC_SAFE_LYR_ORDER, orderSafed ? BST_CHECKED : BST_UNCHECKED);
+    if (nameSafed != (IsDlgButtonChecked(p->hDlg, IDC_SAFE_LYR_NAME) == BST_CHECKED))
+        CheckDlgButton(p->hDlg, IDC_SAFE_LYR_NAME, nameSafed ? BST_CHECKED : BST_UNCHECKED);
+}
+
+static void NoteChange(SafesPane* p);
+
+static bool HandleLayerSafeToggle(SafesPane* p, int id)
+{
+    if (!p || !p->isMain) return false;
+    const bool on = IsDlgButtonChecked(p->hDlg, id) == BST_CHECKED;
+    if (id == IDC_SAFE_LYR_ORDER)
+    {
+        // Straight into the setting rather than SetSettings: that re-applies
+        // the active layer, and a safe must not move anything by itself.
+        LayersEngine::Get().GetSettings().reorderTracks = !on;
+    }
+    else if (id == IDC_SAFE_LYR_NAME)
+    {
+        if (on) g_globalSafeMask |=  TS_TRACKNAME;
+        else    g_globalSafeMask &= ~TS_TRACKNAME;
+    }
+    else return false;
+    NoteChange(p);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Row helpers – all read and write through the pane's current target
 // ---------------------------------------------------------------------------
 static int GetRowMask(SafesPane* p, int row)
@@ -308,6 +362,8 @@ static void SyncGlobalCheckboxes(SafesPane* p)
         EnableWindow(GetDlgItem(hDlg, IDC_GSAFE_SLOTS), FALSE);
 
 
+
+    SyncLayerSafeChecks(p);
 
     // Popup-only switches.
     if (p->sceneSet)
@@ -506,6 +562,9 @@ static void RefreshIfChanged(SafesPane* p)
     }
     if (p->hLayerList && LayerRowLabels() != p->layerLabels)
         PopulateLayerList(p);
+    // Layer settings arrive with the project's layer state, which can land
+    // after the safes have synced the dialog.
+    SyncLayerSafeChecks(p);
 }
 
 // Text colour for a custom-drawn cell, matching the background
@@ -1159,8 +1218,8 @@ static void SwitchTab(SafesPane* p, int tab)
     for (int id : k_trackTabIds)
         if (HWND h = GetDlgItem(p->hDlg, id)) ShowWindow(h, showLayers ? SW_HIDE : SW_SHOW);
     if (p->hLayerList) ShowWindow(p->hLayerList, showLayers ? SW_SHOW : SW_HIDE);
-    HWND hLbl = GetDlgItem(p->hDlg, IDC_SAFESLAYERLBL);
-    if (hLbl) ShowWindow(hLbl, showLayers ? SW_SHOW : SW_HIDE);
+    for (int id : k_layerTabIds)
+        if (HWND h = GetDlgItem(p->hDlg, id)) ShowWindow(h, showLayers ? SW_SHOW : SW_HIDE);
 
     PopulateList(p);
     SyncGlobalCheckboxes(p);
@@ -1238,6 +1297,10 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
             ListView_InsertColumn(p->hLayerList, 1, &lc);
         }
 
+        // A couple of points up from the dialog's 8pt so it reads across a
+        // stage; WM_SIZE sizes the row it sits in to match.
+        ReaperTheme_ApplyHeadingFont(hDlg, IDC_SAFESLAYERLBL);
+
         RebuildRows(p);
         PopulateList(p);
         PopulateLayerList(p);
@@ -1290,13 +1353,21 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         SetWindowPos(p->hList, nullptr,
             MARGIN, listTop, W - MARGIN*2, listBottom - listTop, SWP_NOZORDER);
 
-        // Layers: label under the tab strip, table fills the rest.
-        const int LBL_H  = 12;
-        const int lyrTop = grpTop + LBL_H + 2;
+        // Layers: the two project-wide safes under the tab strip, then the
+        // label, then the table fills the rest. The label carries the heading
+        // font, so its row is whichever of the two needs more height.
+        const int CHK_W = 110;
+        if (HWND h = GetDlgItem(hDlg, IDC_SAFE_LYR_ORDER))
+            SetWindowPos(h, nullptr, MARGIN + 2,         grpTop + 2, CHK_W, CHK_H, SWP_NOZORDER);
+        if (HWND h = GetDlgItem(hDlg, IDC_SAFE_LYR_NAME))
+            SetWindowPos(h, nullptr, MARGIN + 2 + CHK_W, grpTop + 2, CHK_W, CHK_H, SWP_NOZORDER);
+        const int lblTop = grpTop + CHK_H + 8;
+        const int LBL_H  = (std::max)(12, ReaperTheme_HeadingHeight());
+        const int lyrTop = lblTop + LBL_H + 2;
         int lyrBottom    = H - MARGIN;
         if (lyrBottom < lyrTop + 40) lyrBottom = lyrTop + 40;
         HWND hLyrLbl = GetDlgItem(hDlg, IDC_SAFESLAYERLBL);
-        if (hLyrLbl) SetWindowPos(hLyrLbl, nullptr, MARGIN, grpTop, W - MARGIN*2, LBL_H, SWP_NOZORDER);
+        if (hLyrLbl) SetWindowPos(hLyrLbl, nullptr, MARGIN, lblTop, W - MARGIN*2, LBL_H, SWP_NOZORDER);
         if (p->hLayerList)
             SetWindowPos(p->hLayerList, nullptr,
                 MARGIN, lyrTop, W - MARGIN*2, lyrBottom - lyrTop, SWP_NOZORDER);
@@ -1308,7 +1379,8 @@ static INT_PTR CALLBACK SafesDlgProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM 
         if (!p) break;
         const int id = LOWORD(wParam);
 
-        HandleGlobalToggle(p, id);
+        if (!HandleGlobalToggle(p, id))
+            HandleLayerSafeToggle(p, id);
         break;
     }
 
