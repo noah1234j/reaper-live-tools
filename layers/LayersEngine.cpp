@@ -10,6 +10,7 @@
 #include "LayersEngine.h"
 #include "LayersWnd.h"
 #include "api.h"
+#include "../core/TrackOrder.h"
 
 // Layer recall safes, owned by the scenes engine (TransitionEngine.h). Declared
 // here rather than included: that header brings its own GUIDHash/GUIDEqual.
@@ -200,10 +201,11 @@ static int LayersLiveTrackIndex(MediaTrack* tr)
 // rows made it worse, since they occupy a row but no track, so every slot
 // after one was off by a further place.
 //
-// The layer's tracks are instead permuted among the project slots they already
-// occupy. Only channels that are genuinely out of order relative to each other
-// move; every track the layer does not hold keeps its position, so recalling a
-// layer whose order already matches the project performs no moves at all.
+// The layer's tracks are instead put in order relative to each other, with the
+// fewest moves that achieves it: the longest run already in order stays put and
+// each out-of-order channel is dropped next to its neighbour in the layer.
+// Tracks the layer does not hold are never moved, and recalling a layer whose
+// order already matches the project performs no moves at all.
 // ---------------------------------------------------------------------------
 static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
                                  const GUIDTrackMap& projByGUID)
@@ -253,33 +255,9 @@ static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
             if (c.parent == parent) group.push_back(c.tr);
         if (group.size() < 2) continue;
 
-        for (size_t k = 0; k < group.size(); ++k)
-        {
-            // The slots this group occupies right now, ascending. Read fresh
-            // every step: a move renumbers everything between source and
-            // destination, and acting on stale numbers is exactly what put
-            // tracks in the wrong places before.
-            std::vector<int> slots;
-            slots.reserve(group.size());
-            for (MediaTrack* tr : group)
-            {
-                const int idx = LayersLiveTrackIndex(tr);
-                if (idx >= 0) slots.push_back(idx);
-            }
-            if (slots.size() != group.size()) break;   // list changed underneath
-            std::sort(slots.begin(), slots.end());
-
-            const int dest = slots[k];
-            const int cur  = LayersLiveTrackIndex(group[k]);
-            if (cur < 0 || cur == dest) continue;      // already right: no move
-
-            // Insert-before semantics: a track moving down vacates a slot above
-            // the destination first, so aim one past it.
-            const int beforeIdx = (cur < dest) ? dest + 1 : dest;
-
-            SetOnlyTrackSelected(group[k]);
-            ReorderSelectedTracks(beforeIdx, 0);
-        }
+        // Fewest moves: channels already in order relative to each other stay
+        // put, so moving one channel is one move (see TrackOrder.h).
+        TrackOrder_ApplyMinimal(group, [](MediaTrack* tr) { SetOnlyTrackSelected(tr); });
     }
 }
 

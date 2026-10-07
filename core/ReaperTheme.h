@@ -70,6 +70,30 @@ COLORREF ReaperTheme_HeaderBg();
 // shadow colour otherwise.
 COLORREF ReaperTheme_Line();
 
+// ---------------------------------------------------------------------------
+// Heading font - the section labels above the lists ("Layers", "All Tracks",
+// "Cue Order") and the status lines along the bottom.
+//
+// The dialogs are laid out at 8pt, which is fine at a desk and too small to
+// read at arm's length on a stage. These go up a couple of points. Built once
+// from the reference control's own font so it keeps the face the dialog was
+// designed in, and owned here for the life of the process.
+//
+// The font only: a control sized for 8pt clips anything taller, so the caller
+// owns the geometry. Every window here lays its own labels out and sizes those
+// rows from ReaperTheme_HeadingHeight(); doing it in here instead would eat
+// the gaps a stacked footer measures between its controls.
+// ---------------------------------------------------------------------------
+HFONT ReaperTheme_HeadingFont(HWND hRef);
+
+// Height in pixels a row needs to show the heading font, or 0 before the font
+// has been built. Layout code takes the larger of this and its own template
+// height, so a window that never asks for the font is unaffected.
+int ReaperTheme_HeadingHeight();
+
+// Apply it to one control by id. Geometry is the caller's business.
+void ReaperTheme_ApplyHeadingFont(HWND hDlg, int ctlId);
+
 // Call first thing in a dialog proc. Non-zero means handled: return it.
 INT_PTR ReaperTheme_CtlColor(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
 

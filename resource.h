@@ -97,6 +97,8 @@
 // saved layout or binding changes.
 #define IDC_SAFESLAYERLIST       2205   // layer recall-safe list (own table)
 #define IDC_SAFESLAYERLBL        2206
+#define IDC_SAFE_LYR_ORDER       2207   // Layers tab: "Track order" safe
+#define IDC_SAFE_LYR_NAME        2208   // Layers tab: "Track name" safe
 
 // Tab strip across the top of the Safes window: Project safes vs the safes
 // applied to every subscene recall. Both tabs drive the same grid.
