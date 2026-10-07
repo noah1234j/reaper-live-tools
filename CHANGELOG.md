@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.0.49-beta] — 2026-10-07
+
+### Added
+
+- **Track order and Track name safes**: the **Layers** tab of the Global Safes window has two new checkboxes above the layer table. **Track order** stops layer recall from reordering tracks; **Track name** stops scene recall from renaming them. Like every safe, they only change what the next recall does.
+
+### Changed
+
+- **Layer recall moves as few tracks as possible**: channels already in the right order relative to each other stay put and only the rest are moved, so moving one channel in a layer is one move instead of shifting every channel after it. Tracks outside the layer still never move, and folders are never restructured.
+
+- **Reorder tracks to match layer order** has left Global Settings; it is now the **Track order** safe (inverted). Projects that had reordering off open with Track order safed, so nothing starts moving.
+
+- **Larger headings**: the section labels above the lists and the status lines are a couple of points bigger, to read at a distance on stage.
+
+- **Recall markers** are only placed while REAPER is recording.
+
+### Fixed
+
+- The bold (last recalled) scene now stays on the right scene when scenes are added, deleted or dragged.
+
 ## [v0.0.48-beta] — 2026-09-28
 
 ### Added
