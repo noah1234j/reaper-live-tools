@@ -24,6 +24,7 @@
 #include "MuteGroup.h"
 #include "MuteGroupsWnd.h"
 #include "LayersEngine.h"
+#include "MusicSheetWnd.h"
 
 // reaper_plugin.h is included transitively via api.h → reaper_plugin_functions.h
 // (the SDK SDK dir is on the include path via CMake)
@@ -85,6 +86,16 @@ static gaccel_register_t g_sceneRecallSelAccel;
 static gaccel_register_t g_sceneUpdateSelAccel;
 static gaccel_register_t g_sceneUpdateTouchedAccel;
 static gaccel_register_t g_sceneRecallNextAccel;
+
+// Music sheet viewer
+static int               g_cmdShowMusic      = 0;
+static int               g_cmdMusicNextPage  = 0;
+static int               g_cmdMusicPrevPage  = 0;
+static int               g_cmdMusicToolbar   = 0;
+static gaccel_register_t g_musicToolbarAccel;
+static gaccel_register_t g_showMusicAccel;
+static gaccel_register_t g_musicNextPageAccel;
+static gaccel_register_t g_musicPrevPageAccel;
 
 // Per-scene recall/save actions (1-based slots 1-30, stored 0-based)
 static const int kSceneActionCount = 30;
@@ -213,6 +224,9 @@ static void ResetProjectState(bool isUndo)
     SafesWnd_ResetForProject();
     if (!isUndo)
     {
+        // A real switch: the music window lets go of the old project's scene.
+        // (An undo rebuilds the same scenes, and the window finds its own again.)
+        MusicSheetWnd_OnProjectReset();
         DcaWnd_OnProjectLoad();
         // TransitionWnd_OnProjectLoad() is NOT called here because LTSCENESWND is
         // parsed later in ProcessExtensionLine; it is called from
@@ -402,6 +416,10 @@ static bool RunCommand(int cmd, int /*flag*/)
     if (cmd == g_cmdSceneUpdateSel)       { TransitionWnd_UpdateSelectedScene();    return true; }
     if (cmd == g_cmdSceneUpdateTouched)   { TransitionWnd_UpdateLastTouchedScene(); return true; }
     if (cmd == g_cmdSceneRecallNext)      { TransitionWnd_RecallNextScene();        return true; }
+    if (cmd == g_cmdShowMusic)            { MusicSheetWnd_ShowHide();               return true; }
+    if (cmd == g_cmdMusicNextPage)        { MusicSheetWnd_NextPage();               return true; }
+    if (cmd == g_cmdMusicPrevPage)        { MusicSheetWnd_PrevPage();               return true; }
+    if (cmd == g_cmdMusicToolbar)         { MusicSheetWnd_ToggleToolbar();          return true; }
     // Per-scene recall / save
     for (int i = 0; i < kSceneActionCount; i++)
     {
@@ -427,6 +445,7 @@ static int ToggleAction(int cmd)
     if (cmd == g_cmdShowLayers)     return LayersWnd_IsVisible()     ? 1 : 0;
     if (cmd == g_cmdShowDca)             return DcaWnd_IsVisible()             ? 1 : 0;
     if (cmd == g_cmdShowSafes)           return SafesWnd_IsVisible()           ? 1 : 0;
+    if (cmd == g_cmdShowMusic)           return MusicSheetWnd_IsVisible()      ? 1 : 0;
     // Per-layer recall toggle state
     for (int i = 0; i < kLayerActionCount; i++)
     {
@@ -445,6 +464,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     // Unload path
     if (!rec)
     {
+        MusicSheetWnd_Cleanup();   // before Scenes: it reads the scene list
         TransitionWnd_Cleanup();
         SafesWnd_Cleanup();
         MonitorWnd_Cleanup();
@@ -651,6 +671,41 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
         plugin_register("gaccel", &g_sceneRecallNextAccel);
     }
 
+    // ---- Music sheet viewer ----------------------------------------------
+    g_cmdShowMusic = plugin_register("command_id", (void*)"LT_MUSIC_SHEET");
+    if (g_cmdShowMusic)
+    {
+        memset(&g_showMusicAccel, 0, sizeof(g_showMusicAccel));
+        g_showMusicAccel.desc      = "Live Tools: Music Sheet - Show/Hide";
+        g_showMusicAccel.accel.cmd = (WORD)g_cmdShowMusic;
+        plugin_register("gaccel", &g_showMusicAccel);
+    }
+    // Page turns that work wherever the focus is: for foot pedals.
+    g_cmdMusicNextPage = plugin_register("command_id", (void*)"LT_MUSIC_NEXT_PAGE");
+    if (g_cmdMusicNextPage)
+    {
+        memset(&g_musicNextPageAccel, 0, sizeof(g_musicNextPageAccel));
+        g_musicNextPageAccel.desc      = "Live Tools: Music Sheet - Next page";
+        g_musicNextPageAccel.accel.cmd = (WORD)g_cmdMusicNextPage;
+        plugin_register("gaccel", &g_musicNextPageAccel);
+    }
+    g_cmdMusicPrevPage = plugin_register("command_id", (void*)"LT_MUSIC_PREV_PAGE");
+    if (g_cmdMusicPrevPage)
+    {
+        memset(&g_musicPrevPageAccel, 0, sizeof(g_musicPrevPageAccel));
+        g_musicPrevPageAccel.desc      = "Live Tools: Music Sheet - Previous page";
+        g_musicPrevPageAccel.accel.cmd = (WORD)g_cmdMusicPrevPage;
+        plugin_register("gaccel", &g_musicPrevPageAccel);
+    }
+    g_cmdMusicToolbar = plugin_register("command_id", (void*)"LT_MUSIC_TOGGLE_TOOLBAR");
+    if (g_cmdMusicToolbar)
+    {
+        memset(&g_musicToolbarAccel, 0, sizeof(g_musicToolbarAccel));
+        g_musicToolbarAccel.desc      = "Live Tools: Music Sheet - Show/hide toolbar (full page)";
+        g_musicToolbarAccel.accel.cmd = (WORD)g_cmdMusicToolbar;
+        plugin_register("gaccel", &g_musicToolbarAccel);
+    }
+
     // ---- Register per-layer recall actions (slots 1-20, by index) --------
     for (int i = 0; i < kLayerActionCount; i++)
     {
@@ -700,6 +755,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int ReaperPluginEntry(HINSTANCE hInstance,
     LayersWnd_Init(hInstance);
     plugin_register("timer", (void*)LayersEngine::TimerCallback);  // track-order sync
     DcaWnd_Init(hInstance);
+    MusicSheetWnd_Init(hInstance);
 
     return 1; // success
 }
@@ -731,6 +787,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowDca,         "DCA Groups...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdLiveOpt,     "Live Optimizer...");
         AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowSafes,      "Safes...");
+        AppendMenuA(hSub,  MF_STRING, (UINT_PTR)g_cmdShowMusic,      "Music Sheet...");
         AppendMenuA(hMenu, MF_POPUP,  (UINT_PTR)hSub,             "Live Tools");
         s_hLiveToolsMenu = hSub;
     }
@@ -738,7 +795,7 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
     {
         // Update check states
         // Menu positions: 0=Scenes, 1=Monitor, 2=MeterBridge, 3=LiveLock, 4=MuteGroups,
-        // 5=Layers, 6=DCA, 7=Optimizer, 8=Safes
+        // 5=Layers, 6=DCA, 7=Optimizer, 8=Safes, 9=Music Sheet
         CheckMenuItem(s_hLiveToolsMenu,  0, MF_BYPOSITION | (TransitionWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  1, MF_BYPOSITION | (MonitorWnd_IsVisible()        ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  2, MF_BYPOSITION | (MeterBridgeWnd_IsVisible()    ? MF_CHECKED : MF_UNCHECKED));
@@ -748,5 +805,6 @@ static void MenuHook(const char* menustr, HMENU hMenu, int flag)
         CheckMenuItem(s_hLiveToolsMenu,  6, MF_BYPOSITION | (DcaWnd_IsVisible()            ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  7, MF_BYPOSITION | (LiveOptimizeWnd_IsVisible()   ? MF_CHECKED : MF_UNCHECKED));
         CheckMenuItem(s_hLiveToolsMenu,  8, MF_BYPOSITION | (SafesWnd_IsVisible()          ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(s_hLiveToolsMenu,  9, MF_BYPOSITION | (MusicSheetWnd_IsVisible()     ? MF_CHECKED : MF_UNCHECKED));
     }
 }

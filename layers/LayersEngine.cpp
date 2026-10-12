@@ -149,11 +149,14 @@ bool LayersEngine::StrToGuid(const char* s, GUID& out)
 // moving tracks between folders: nothing in the move said "change the folder",
 // the new position simply meant a different one.
 //
-// Reordering must never restructure the project, so tracks are permuted only
-// among slots that already belong to the same folder parent, and a track that
-// opens or closes a folder is never relocated at all. Folder membership is
-// then a property of how the moves are chosen rather than a check that can be
-// skipped.
+// So folder membership is never left to chance. It changes only on purpose:
+// a layer track that knows which folder it was captured in (LayerTrack::
+// parent - scenes record it) is moved into that folder, or out to the top
+// level, before anything is reordered. Every move keeps the tree well formed:
+// a track leaving the end of a folder hands its folder-closing depth to the
+// track above it, and a track placed at the end of one takes it over. Folder
+// parents themselves never move. After that, tracks are only permuted among
+// slots of the same folder parent, so ordering cannot change a folder again.
 // ---------------------------------------------------------------------------
 
 // Innermost folder parent for every project index, derived by walking the
@@ -207,18 +210,233 @@ static int LayersLiveTrackIndex(MediaTrack* tr)
 // Tracks the layer does not hold are never moved, and recalling a layer whose
 // order already matches the project performs no moves at all.
 // ---------------------------------------------------------------------------
+// ---- Moving a track without breaking a folder ------------------------------
+// REAPER keeps folders as a running depth: a folder parent has I_FOLDERDEPTH
+// +1, and the last track of a folder carries the -1 (or -2, -3 ... when it
+// ends several at once) that closes it. A plain move ignores that, so moving
+// a folder's last track drags the folder's end along with it, and dropping a
+// track after a folder's last track leaves it outside. These helpers keep the
+// depths consistent: they are the only way the layer pass moves a track.
+
+static int LayersDepth(MediaTrack* tr)
+{
+    int* p = tr ? (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr) : nullptr;
+    return p ? *p : 0;
+}
+
+static void LayersSetDepth(MediaTrack* tr, int d)
+{
+    if (tr) GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", &d);
+}
+
+static MediaTrack* LayersParent(MediaTrack* tr)
+{
+    return tr ? (MediaTrack*)GetSetMediaTrackInfo(tr, "P_PARTRACK", nullptr) : nullptr;
+}
+
+// Take x out of the folder structure where it stands: whatever folders it
+// closed are closed by the track above it instead, and x is left at depth 0,
+// ready to be dropped anywhere. Folder parents are refused (moving one would
+// take its children with it or orphan them).
+static bool LayersDetach(MediaTrack* x)
+{
+    const int fd = LayersDepth(x);
+    if (fd > 0) return false;
+    if (fd < 0)
+    {
+        const int xi = LayersLiveTrackIndex(x);
+        MediaTrack* prev = (xi > 0) ? GetTrack(0, xi - 1) : nullptr;
+        if (!prev) return false;
+        LayersSetDepth(prev, LayersDepth(prev) + fd);
+        LayersSetDepth(x, 0);
+    }
+    return true;
+}
+
+static void LayersMoveTo(MediaTrack* x, int beforeIdx)
+{
+    if (LayersLiveTrackIndex(x) == beforeIdx) return;   // already there
+    SetOnlyTrackSelected(x);
+    ReorderSelectedTracks(beforeIdx, 0);
+}
+
+// x directly after y, at y's level: if y closed folders, x closes them now.
+static bool LayersMoveAfter(MediaTrack* x, MediaTrack* y)
+{
+    if (x == y || LayersDepth(y) > 0 || !LayersDetach(x)) return false;
+    LayersMoveTo(x, LayersLiveTrackIndex(y) + 1);
+    const int fy = LayersDepth(y);
+    if (fy < 0) { LayersSetDepth(x, fy); LayersSetDepth(y, 0); }
+    return true;
+}
+
+// Index of the track that closes the folder p opens (p's own index when p is
+// not a folder parent).
+static int LayersFolderEndIdx(MediaTrack* p)
+{
+    const int pi = LayersLiveTrackIndex(p);
+    if (pi < 0 || LayersDepth(p) < 1) return pi;
+    const int n = CountTracks(0);
+    int cum = 0;
+    for (int t = pi; t < n; ++t)
+    {
+        cum += LayersDepth(GetTrack(0, t));
+        if (cum <= 0) return t;
+    }
+    return n - 1;
+}
+
+// x after the whole of y, at y's level: straight after y, or when y is a
+// folder parent, after the track that closes y's folder - "after AUD" in a
+// layer means after AUD's folder, never inside it.
+static bool LayersMoveAfterAll(MediaTrack* x, MediaTrack* y)
+{
+    if (x == y) return false;
+    if (LayersDepth(y) < 1) return LayersMoveAfter(x, y);
+    if (!LayersDetach(x)) return false;
+    LayersMoveTo(x, LayersFolderEndIdx(y) + 1);
+    return true;
+}
+
+// x directly before z, at z's level.
+static bool LayersMoveBefore(MediaTrack* x, MediaTrack* z)
+{
+    if (x == z || !LayersDetach(x)) return false;
+    const int zi = LayersLiveTrackIndex(z);
+    if (LayersLiveTrackIndex(x) + 1 != zi) LayersMoveTo(x, zi);
+    return true;
+}
+
+// x as the first track inside folder w.
+static bool LayersMoveIntoFirst(MediaTrack* x, MediaTrack* w)
+{
+    if (x == w || LayersDepth(w) < 1 || !LayersDetach(x)) return false;
+    LayersMoveTo(x, LayersLiveTrackIndex(w) + 1);
+    return true;
+}
+
+// x out at the top level, directly after the outermost folder it is in.
+static bool LayersMoveOutToTop(MediaTrack* x)
+{
+    MediaTrack* top = LayersParent(x);
+    if (!top) return true;                          // already at the top level
+    while (MediaTrack* up = LayersParent(top)) top = up;
+    if (!LayersDetach(x)) return false;
+    if (!LayersParent(x)) return true;              // detaching it was enough
+
+    // The track that closes `top`: walk its folder until the depth is back
+    // to where it started.
+    const int n = CountTracks(0);
+    int cum = 0, endIdx = -1;
+    for (int t = LayersLiveTrackIndex(top); t < n; ++t)
+    {
+        cum += LayersDepth(GetTrack(0, t));
+        if (cum <= 0) { endIdx = t; break; }
+    }
+    if (endIdx < 0) return false;
+    LayersMoveTo(x, endIdx + 1);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// LayersApplyFolders - put every layer track that knows its folder into it.
+//
+// Done before ordering, one track at a time in the layer's order, so a track
+// can be placed next to a layer neighbour that is already where it belongs:
+// after the nearest earlier layer track in the same folder, else before the
+// nearest later one, else as the folder's first track (or, for the top level,
+// just after the folder it is leaving). Tracks whose folder is gone from the
+// project, or is no longer a folder, are left alone.
+// ---------------------------------------------------------------------------
+static void LayersApplyFolders(const LayerDef& layer, int limit, const GUIDTrackMap& projByGUID)
+{
+    static const GUID kZero = {};
+
+    // The layer's tracks in order, with their wanted parent resolved.
+    struct Want { MediaTrack* tr; MediaTrack* parent; bool known; };
+    std::vector<Want> want;
+    for (int li = 0; li < limit; ++li)
+    {
+        const LayerTrack& lt = layer.tracks[li];
+        if (lt.isSpacer) continue;
+        auto it = projByGUID.find(lt.guid);
+        if (it == projByGUID.end() || !it->second) continue;
+        Want w = { it->second, nullptr, false };
+        if (lt.hasParent)
+        {
+            if (memcmp(&lt.parent, &kZero, sizeof(GUID)) == 0)
+                w.known = true;                                   // top level
+            else
+            {
+                auto pit = projByGUID.find(lt.parent);
+                if (pit != projByGUID.end() && pit->second && LayersDepth(pit->second) >= 1)
+                { w.parent = pit->second; w.known = true; }
+            }
+        }
+        want.push_back(w);
+    }
+
+    for (size_t i = 0; i < want.size(); ++i)
+    {
+        const Want& w = want[i];
+        if (!w.known || w.tr == w.parent) continue;
+        if (LayersDepth(w.tr) > 0) continue;                      // folder parents stay put
+        if (LayersParent(w.tr) == w.parent) continue;             // already in it
+
+        // Neighbours in the layer that are already at the wanted level. A
+        // folder parent counts (as a whole: after it means after its folder).
+        MediaTrack* before = nullptr;   // nearest earlier one
+        for (size_t k = i; k-- > 0;)
+            if (want[k].tr != w.tr && LayersParent(want[k].tr) == w.parent)
+            { before = want[k].tr; break; }
+        MediaTrack* after = nullptr;    // nearest later one
+        if (!before)
+            for (size_t k = i + 1; k < want.size(); ++k)
+                if (want[k].tr != w.tr && LayersParent(want[k].tr) == w.parent)
+                { after = want[k].tr; break; }
+
+        if (before)        LayersMoveAfterAll(w.tr, before);
+        else if (after)    LayersMoveBefore(w.tr, after);
+        else if (w.parent) LayersMoveIntoFirst(w.tr, w.parent);
+        else               LayersMoveOutToTop(w.tr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ApplyLayerTrackOrder – put the layer's tracks into the layer's folders, then
+// into the layer's order
+//
+// A layer records the order of its own channels relative to each other, not
+// where they sit in the project: the slot index of a channel in the Layers
+// window is a row number in that window, and the window lists only the
+// layer's own tracks plus its spacer rows. Recall used to pass that row number
+// straight to ReorderSelectedTracks as an absolute project index, which is why
+// recalling a layer hauled its tracks to the top of the project and shoved
+// everything else down — the whole project got rearranged to reproduce an
+// order the user had only ever expressed among a handful of channels. Spacer
+// rows made it worse, since they occupy a row but no track, so every slot
+// after one was off by a further place.
+//
+// The layer's tracks are instead put in order relative to each other, with the
+// fewest moves that achieves it: the longest run already in order stays put and
+// each out-of-order channel is dropped next to its neighbour in the layer.
+// Tracks the layer does not hold are never moved, and recalling a layer whose
+// order already matches the project performs no moves at all.
+// ---------------------------------------------------------------------------
 static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
                                  const GUIDTrackMap& projByGUID)
 {
+    // Folders first: after this, every track the layer placed is in the
+    // folder it was captured in.
+    LayersApplyFolders(layer, limit, projByGUID);
+
     std::vector<MediaTrack*> parentAt;
     LayersBuildFolderParentMap(parentAt);
     const int nTracks = (int)parentAt.size();
 
-    // Candidates, in the layer's own order: tracks the layer holds that are in
-    // the project and carry no folder structure of their own. A non-zero
-    // I_FOLDERDEPTH opens or closes a folder, and moving one without its
-    // siblings rewrites the tree, so those never move.
-    struct Cand { MediaTrack* tr; MediaTrack* parent; };
+    // The layer's tracks that are in the project, in the layer's order, with
+    // their folder parent right now.
+    struct Cand { MediaTrack* tr; MediaTrack* parent; bool anchor; };
     std::vector<Cand> cands;
     cands.reserve(limit);
     for (int li = 0; li < limit; li++)
@@ -227,22 +445,17 @@ static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
         auto it = projByGUID.find(layer.tracks[li].guid);
         if (it == projByGUID.end() || !it->second) continue;
         MediaTrack* tr = it->second;
-
         const int cur = LayersLiveTrackIndex(tr);
         if (cur < 0 || cur >= nTracks) continue;
-
-        int fd = 0;
-        int* pfd = (int*)GetSetMediaTrackInfo(tr, "I_FOLDERDEPTH", nullptr);
-        if (pfd) fd = *pfd;
-        if (fd != 0) continue;
-
-        cands.push_back({ tr, parentAt[cur] });
+        // A folder parent never moves (it would carry its children off or
+        // orphan them), but it is still in the layer's order: it is a fixed
+        // landmark the other tracks are placed around.
+        cands.push_back({ tr, parentAt[cur], LayersDepth(tr) > 0 });
     }
     if (cands.size() < 2) return;
 
-    // Group by folder parent. Permuting within a group can only ever put a
-    // track at an index another member of the same group occupies, so the
-    // track keeps its parent by construction.
+    // One folder level at a time: permuting among tracks of the same parent
+    // only ever puts a track next to another track of that parent.
     std::vector<MediaTrack*> parents;
     for (const auto& c : cands)
         if (std::find(parents.begin(), parents.end(), c.parent) == parents.end())
@@ -250,14 +463,78 @@ static void ApplyLayerTrackOrder(const LayerDef& layer, int limit,
 
     for (MediaTrack* parent : parents)
     {
-        std::vector<MediaTrack*> group;   // already in the layer's order
+        std::vector<const Cand*> seq;   // this level, in the layer's order
         for (const auto& c : cands)
-            if (c.parent == parent) group.push_back(c.tr);
-        if (group.size() < 2) continue;
+            if (c.parent == parent) seq.push_back(&c);
+        if (seq.size() < 2) continue;
 
-        // Fewest moves: channels already in order relative to each other stay
-        // put, so moving one channel is one move (see TrackOrder.h).
-        TrackOrder_ApplyMinimal(group, [](MediaTrack* tr) { SetOnlyTrackSelected(tr); });
+        // Landmarks that are in the layer's order relative to each other
+        // (the longest such run); a folder that is out of order is left
+        // where it is and ignored as a landmark.
+        std::vector<int> anchorAt, anchorPos;
+        for (int i = 0; i < (int)seq.size(); ++i)
+            if (seq[i]->anchor) { anchorAt.push_back(i); anchorPos.push_back(LayersLiveTrackIndex(seq[i]->tr)); }
+        std::vector<bool> isAnchor(seq.size(), false);
+        {
+            const std::vector<bool> ak = TrackOrder_KeepSet(anchorPos);
+            for (size_t a = 0; a < anchorAt.size(); ++a) if (ak[a]) isAnchor[(size_t)anchorAt[a]] = true;
+        }
+
+        // A movable track can stay put only if it already sits between the
+        // landmarks on either side of it in the layer: after the end of the
+        // previous one's folder, before the next one.
+        std::vector<int> movIdx, movPos;
+        {
+            int lo = -1;   // index the track must be after
+            for (int i = 0; i < (int)seq.size(); ++i)
+            {
+                if (seq[i]->anchor)
+                {
+                    if (isAnchor[(size_t)i]) lo = LayersFolderEndIdx(seq[i]->tr);
+                    continue;
+                }
+                int hi = nTracks + 1;
+                for (int j = i + 1; j < (int)seq.size(); ++j)
+                    if (isAnchor[(size_t)j]) { hi = LayersLiveTrackIndex(seq[j]->tr); break; }
+                const int pos = LayersLiveTrackIndex(seq[i]->tr);
+                movIdx.push_back(i);
+                // Out of bounds: give it a position no run can use, so it is moved.
+                movPos.push_back((pos > lo && pos < hi) ? pos : -1);
+            }
+        }
+        std::vector<bool> stays(seq.size(), false);
+        for (size_t i = 0; i < seq.size(); ++i) if (isAnchor[i]) stays[i] = true;
+        {
+            // Longest run in order among the tracks that are within bounds.
+            std::vector<int> inPos, inAt;
+            for (size_t m = 0; m < movIdx.size(); ++m)
+                if (movPos[m] >= 0) { inPos.push_back(movPos[m]); inAt.push_back(movIdx[m]); }
+            const std::vector<bool> keep = TrackOrder_KeepSet(inPos);
+            for (size_t m = 0; m < inAt.size(); ++m) if (keep[m]) stays[(size_t)inAt[m]] = true;
+        }
+
+        // Everything else goes right after the track before it in the layer
+        // (after the whole folder, if that is a landmark), or, at the start,
+        // right before the first track that stays. Ignored landmarks take no
+        // part. Fewest moves: one per track that is out of place.
+        const Cand* placedPrev = nullptr;
+        for (size_t i = 0; i < seq.size(); ++i)
+        {
+            if (seq[i]->anchor && !isAnchor[i]) continue;
+            if (!stays[i])
+            {
+                if (placedPrev)
+                    LayersMoveAfterAll(seq[i]->tr, placedPrev->tr);
+                else
+                {
+                    const Cand* next = nullptr;
+                    for (size_t j = i + 1; j < seq.size() && !next; ++j)
+                        if (stays[j]) next = seq[j];
+                    if (next) LayersMoveBefore(seq[i]->tr, next->tr);
+                }
+            }
+            placedPrev = seq[i];
+        }
     }
 }
 
@@ -786,6 +1063,23 @@ void LayersEngine::SyncLayerOrderFromReaper(int idx)
                 if (!ld.tracks[li].isSpacer)
                     ld.tracks[li] = sorted[si++];
             changed = true;
+        }
+    }
+
+    // ---- Part 1b: which folder each track is in now -------------------------
+    // So a channel moved into or out of a folder by hand stays there the
+    // next time this layer is recalled. In memory only: like the order, it is
+    // what the next scene save captures.
+    {
+        std::unordered_map<GUID, GUID, GUIDHash, GUIDEqual> parentOf;
+        TrackOrder_ParentGuids(parentOf);
+        for (auto& lt : ld.tracks)
+        {
+            if (lt.isSpacer) continue;
+            auto it = parentOf.find(lt.guid);
+            if (it == parentOf.end()) continue;
+            lt.parent    = it->second;
+            lt.hasParent = true;
         }
     }
 

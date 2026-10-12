@@ -78,6 +78,10 @@ add_library(reaper_transitions SHARED
   # Scenes
   scenes/TransitionWnd.cpp
   scenes/SafesWnd.cpp
+  # Music sheets
+  music/MusicSheet.cpp
+  music/MusicSheetRender.cpp
+  music/MusicSheetWnd.cpp
   # Layers
   layers/LayersEngine.cpp
   layers/LayersWnd.cpp
@@ -117,6 +121,7 @@ target_include_directories(reaper_transitions PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/core
   ${CMAKE_CURRENT_SOURCE_DIR}/scenes
+  ${CMAKE_CURRENT_SOURCE_DIR}/music
   ${CMAKE_CURRENT_SOURCE_DIR}/layers
   ${CMAKE_CURRENT_SOURCE_DIR}/dca
   ${CMAKE_CURRENT_SOURCE_DIR}/mute
@@ -129,7 +134,10 @@ target_include_directories(reaper_transitions PRIVATE
 
 if(MSVC)
   target_compile_options(reaper_transitions PRIVATE /EHsc /W3)
-  target_link_libraries(reaper_transitions PRIVATE Shlwapi comctl32 PowrProf Psapi Advapi32)
+  # gdiplus decodes the attached images and the PDF pages Windows rasterises
+  # for us; shcore bridges a WinRT stream to the IStream GDI+ reads.
+  target_link_libraries(reaper_transitions PRIVATE Shlwapi comctl32 PowrProf Psapi Advapi32
+                                                   Gdiplus Shcore RuntimeObject)
   target_link_options(reaper_transitions PRIVATE
     $<$<NOT:$<CONFIG:Debug>>:/OPT:REF>
     $<$<NOT:$<CONFIG:Debug>>:/OPT:ICF>

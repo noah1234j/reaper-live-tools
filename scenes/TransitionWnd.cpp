@@ -4,6 +4,7 @@
 #include "SafesWnd.h"
 #include "LayersEngine.h"
 #include "../layers/LayersWnd.h"
+#include "../music/MusicSheetWnd.h"
 #include "api.h"
 #include "resource.h"
 #include "ReaperTheme.h"
@@ -161,6 +162,10 @@ static bool g_placeMarker = false;
 static bool g_stopRecBeforeRecall = false;
 static bool g_startRecAfterRecall = false;
 
+// Bring the music sheet window up on a recall when the scene has a sheet.
+// (An open window follows recalls regardless; this is about opening it.)
+static bool g_openSheetOnRecall = false;
+
 // Scene list interaction settings
 static bool g_singleClickRecall   = false;  // single click recalls a scene
 static bool g_altClickDelete      = false;  // Alt+click deletes a scene
@@ -240,6 +245,19 @@ static bool    g_gripDragging   = false;
 static int     g_gripDragY0     = 0;
 static int     g_gripDragShrink0 = 0;
 static void    LayoutNotes(HWND hwnd);
+
+// ---- Layer buttons --------------------------------------------------------
+// A column of A, B, C... buttons down the right of the notes box, one per
+// layer slot. There are as many as the scene with the most layers has, so the
+// column does not change length from scene to scene; a slot the live layer set
+// (the last recalled scene's) does not have is greyed out, and the active
+// layer is drawn filled. Clicking one activates that layer.
+static const int kLayerBtnMax = 32;
+static HWND g_layerBtns[kLayerBtnMax] = {};
+static int  g_layerBtnCount  = 0;    // buttons shown
+static int  g_layerBtnLive   = -1;   // live layer count they were last synced to
+static int  g_layerBtnActive = -2;   // active layer they were last synced to
+static HWND g_layerBtnTip    = nullptr;
 
 // Footer: the status line and the version, stacked at the very bottom of the
 // sidebar. Unlike the rest of the column they track the bottom of the client
@@ -496,6 +514,7 @@ void TransitionWnd_RecallScene(int index)
         LoadEditorFromSnapshot(g_wnd, snap);
     }
     LayersWnd_Refresh();
+    MusicSheetWnd_OnSceneRecalled(TransitionWnd_SheetOwnerOf(index), g_openSheetOnRecall);
     Undo_OnStateChangeEx("Recall Scene", -1, -1);
     // Start recording after recall if enabled
     if (g_startRecAfterRecall)
@@ -704,6 +723,7 @@ void TransitionWnd_ResetSettings()
     g_placeMarker        = false;
     g_stopRecBeforeRecall = false;
     g_startRecAfterRecall = false;
+    g_openSheetOnRecall  = false;
     g_singleClickRecall  = false;
     g_altClickDelete     = false;
     g_ctrlClickOverwrite = false;
@@ -767,6 +787,13 @@ bool TransitionWnd_ProcessSettingsLine(const char* line)
         int val = 0;
         sscanf(line + 18, "%d", &val);
         g_chunkAllInstant = (val != 0);
+        return true;
+    }
+    if (strncmp(line, "LTSHEETOPEN ", 12) == 0)
+    {
+        int val = 0;
+        sscanf(line + 12, "%d", &val);
+        g_openSheetOnRecall = (val != 0);
         return true;
     }
     if (strncmp(line, "LTRECALLLOG ", 12) == 0)
@@ -857,6 +884,7 @@ void TransitionWnd_SaveSettings(ProjectStateContext* ctx)
     ctx->AddLine("LTCHUNKNOTIFY %d", g_chunkRecallNotify ? 1 : 0);
     ctx->AddLine("LTDURATIONDEBUG %d", g_durationDebug ? 1 : 0);
     ctx->AddLine("LTRECORDER %d %d", g_stopRecBeforeRecall ? 1 : 0, g_startRecAfterRecall ? 1 : 0);
+    ctx->AddLine("LTSHEETOPEN %d", g_openSheetOnRecall ? 1 : 0);
 
     // Per-project window state – snapshot dock/float/rect so reloading the project
     // restores exactly what the user had open.
@@ -964,9 +992,118 @@ static int NotesFillHeight(HWND hwnd)
 }
 
 // ---------------------------------------------------------------------------
+// Layer buttons – see g_layerBtns.
+// ---------------------------------------------------------------------------
+
+// How many buttons to show: the largest layer set any scene holds, or the live
+// one if that is larger.
+static int LayerBtnWanted()
+{
+    int n = LayersEngine::Get().GetLayerCount();
+    for (const auto& snap : g_snapshots)
+        if (snap && (int)snap->m_layers.size() > n) n = (int)snap->m_layers.size();
+    return n < kLayerBtnMax ? n : kLayerBtnMax;
+}
+
+// A..Z, then 27, 28... for the (unlikely) slots past Z.
+static void LayerBtnLabel(int slot, char* buf, int bufSize)
+{
+    if (slot < 26) snprintf(buf, bufSize, "%c", 'A' + slot);
+    else           snprintf(buf, bufSize, "%d", slot + 1);
+}
+
+static void CreateLayerButtons(HWND hwnd)
+{
+    for (int i = 0; i < kLayerBtnMax; ++i)
+    {
+        char lbl[8];
+        LayerBtnLabel(i, lbl, sizeof(lbl));
+        g_layerBtns[i] = CreateWindowExA(0, "Button", lbl,
+            WS_CHILD | BS_OWNERDRAW,
+            0, 0, 10, 10, hwnd, (HMENU)(INT_PTR)(IDC_LAYERBTN_FIRST + i),
+            g_hInstance, nullptr);
+        ReaperTheme_TrackHot(g_layerBtns[i]);   // hover, like the painted buttons
+    }
+
+#ifdef _WIN32
+    // Hover shows the layer's name; the text is asked for when it is shown,
+    // so it is always the live set's.
+    g_layerBtnTip = CreateWindowExA(WS_EX_TOPMOST, TOOLTIPS_CLASSA, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        hwnd, nullptr, g_hInstance, nullptr);
+    if (g_layerBtnTip)
+    {
+        for (int i = 0; i < kLayerBtnMax; ++i)
+        {
+            TOOLINFOA ti = {};
+            ti.cbSize   = sizeof(ti);
+            ti.uFlags   = TTF_IDISHWND | TTF_SUBCLASS;
+            ti.hwnd     = hwnd;
+            ti.uId      = (UINT_PTR)g_layerBtns[i];
+            ti.lpszText = LPSTR_TEXTCALLBACKA;
+            SendMessageA(g_layerBtnTip, TTM_ADDTOOLA, 0, (LPARAM)&ti);
+        }
+    }
+#endif
+}
+
+// Bring the buttons in line with the scenes and the live layer set. Cheap
+// when nothing changed, so the UI timer calls it every tick.
+static void SyncLayerButtons(HWND hwnd)
+{
+    if (!g_layerBtns[0]) return;
+    LayersEngine& le = LayersEngine::Get();
+    const int want   = LayerBtnWanted();
+    const int live   = le.GetLayerCount();
+    const int active = le.GetActiveLayer();
+
+    const bool countChanged = (want != g_layerBtnCount);
+    if (!countChanged && live == g_layerBtnLive && active == g_layerBtnActive) return;
+
+    g_layerBtnCount  = want;
+    g_layerBtnLive   = live;
+    g_layerBtnActive = active;
+
+    for (int i = 0; i < kLayerBtnMax; ++i)
+    {
+        EnableWindow(g_layerBtns[i], i < live);
+        InvalidateRect(g_layerBtns[i], nullptr, FALSE);
+    }
+    if (countChanged) LayoutNotes(hwnd);   // shows/hides and makes room
+}
+
+static void DrawLayerButton(const DRAWITEMSTRUCT* dis)
+{
+    const int  slot   = (int)dis->CtlID - IDC_LAYERBTN_FIRST;
+    const bool inSet  = slot < LayersEngine::Get().GetLayerCount();
+    const bool active = inSet && slot == LayersEngine::Get().GetActiveLayer();
+    const bool down   = (dis->itemState & ODS_SELECTED) != 0;
+
+    // The same face as the painted buttons above them; the active layer is
+    // drawn checked, in the selection colour, like the Scenes / Cue List
+    // toggles. A slot the live set lacks is drawn disabled.
+    HDC  hdc = dis->hDC;
+    RECT rc  = dis->rcItem;
+    COLORREF fg;
+    ReaperTheme_PaintButtonFace(hdc, rc, active, down && inSet, ReaperTheme_IsHot(dis->hwndItem),
+                                inSet, &fg);
+
+    char lbl[8];
+    LayerBtnLabel(slot, lbl, sizeof(lbl));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, fg);
+    DrawTextA(hdc, lbl, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+// ---------------------------------------------------------------------------
 // LayoutNotes – size the notes box to fill down to the footer, less whatever
 // the user has pulled it up by, and reseat the grip under it. Runs after the
 // WM_SIZE sidebar pass, so x/width are read from the live controls.
+//
+// The layer buttons take a column off the notes box's right edge. The grip
+// keeps the full sidebar width LayoutMain gave it, so it is the width the
+// notes box and the column share.
 // ---------------------------------------------------------------------------
 static void LayoutNotes(HWND hwnd)
 {
@@ -986,15 +1123,55 @@ static void LayoutNotes(HWND hwnd)
     int h = fillH - g_notesShrink;
     if (h < minH) h = minH;
 
-    RECT nr, gr;
-    GetWindowRect(hNotes, &nr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&nr, 2);
+    RECT gr;
     GetWindowRect(hGrip,  &gr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&gr, 2);
     const int gripH = g_gripInitRect.bottom - g_gripInitRect.top;
 
-    SetWindowPos(hNotes, nullptr, nr.left, g_notesInitRect.top,
-                 nr.right - nr.left, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    const int fullW = gr.right - gr.left;
+
+    // Layer button column: square-ish buttons, shrunk to fit if the notes box
+    // is too short for all of them.
+    int colW = 0;
+    const int n = g_layerBtns[0] ? g_layerBtnCount : 0;
+    if (n > 0)
+    {
+        // Same height as the sidebar's push buttons (Recall), a little wider
+        // than tall. Measured off a live control rather than MapDialogRect,
+        // which SWELL does not have.
+        int bh0 = 20;
+        if (HWND hRef = GetDlgItem(hwnd, IDC_RECALL))
+        {
+            RECT rr; GetWindowRect(hRef, &rr);
+            if (rr.bottom > rr.top) bh0 = rr.bottom - rr.top;
+        }
+        colW = bh0 * 5 / 4;
+        const int gap = 2;
+        int bh = bh0;
+        if (n * (bh + gap) - gap > h) bh = (h + gap) / n - gap;
+        if (bh < 8) bh = 8;
+        const int colLeft = gr.left + fullW - colW;
+        for (int i = 0; i < kLayerBtnMax; ++i)
+        {
+            if (i < n)
+                SetWindowPos(g_layerBtns[i], nullptr, colLeft,
+                             g_notesInitRect.top + i * (bh + gap), colW, bh,
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            else
+                ShowWindow(g_layerBtns[i], SW_HIDE);
+        }
+        colW += 3;   // gutter between the notes box and the column
+    }
+    else if (g_layerBtns[0])
+    {
+        for (int i = 0; i < kLayerBtnMax; ++i) ShowWindow(g_layerBtns[i], SW_HIDE);
+    }
+
+    int notesW = fullW - colW;
+    if (notesW < 20) notesW = 20;
+    SetWindowPos(hNotes, nullptr, gr.left, g_notesInitRect.top,
+                 notesW, h, SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(hGrip, nullptr, gr.left, g_notesInitRect.top + h,
-                 gr.right - gr.left, gripH, SWP_NOZORDER | SWP_NOACTIVATE);
+                 fullW, gripH, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1352,6 +1529,21 @@ static int SubsceneBlockEnd(int parentIdx)
     return end;
 }
 
+// The scene whose music sheet a row shows: its own, or for a subscene its
+// parent's (the music on the stand does not change within a song).
+TransitionSnapshot* TransitionWnd_SheetOwnerOf(int snapIdx)
+{
+    if (snapIdx < 0 || snapIdx >= (int)g_snapshots.size()) return nullptr;
+    if (g_snapshots[snapIdx]->m_isSpacer) return nullptr;
+    int owner = snapIdx;
+    if (g_snapshots[snapIdx]->m_isSub)
+    {
+        const int parent = ParentSceneIndex(snapIdx);
+        if (parent >= 0) owner = parent;
+    }
+    return g_snapshots[owner].get();
+}
+
 // How many subscenes hang off the scene at idx. Counts subscenes, not rows —
 // SubsceneBlockEnd's range can also contain spacers.
 static int SubsceneCount(int idx)
@@ -1610,6 +1802,25 @@ static void UpdateSceneButtons(HWND hwnd)
                      SelectedSnapshotIndex(hwnd, nullptr) >= 0;
     EnableWindow(GetDlgItem(hwnd, IDC_ADDSUB_BTN),     one);
     EnableWindow(GetDlgItem(hwnd, IDC_RECALLFILT_BTN), one);
+    // Owner-drawn, and what it shows depends on the scene, so repaint it too.
+    HWND hSheet = GetDlgItem(hwnd, IDC_SHEET_BTN);
+    EnableWindow(hSheet, one);
+    InvalidateRect(hSheet, nullptr, FALSE);
+}
+
+// The scene holding the sheet the music button acts on: the one selected
+// scene, or its parent for a subscene. Null unless exactly one is selected.
+static TransitionSnapshot* SelectedSheetOwner(HWND hwnd)
+{
+    HWND hList = GetDlgItem(hwnd, IDC_LIST);
+    if (!hList || ListView_GetSelectedCount(hList) != 1) return nullptr;
+    return TransitionWnd_SheetOwnerOf(SelectedSnapshotIndex(hwnd, nullptr));
+}
+
+void TransitionWnd_RefreshSheetButton()
+{
+    if (g_wnd && IsWindow(g_wnd))
+        InvalidateRect(GetDlgItem(g_wnd, IDC_SHEET_BTN), nullptr, FALSE);
 }
 
 // ---------------------------------------------------------------------------
@@ -1816,6 +2027,9 @@ static void LoadEditorFromSnapshot(HWND hwnd, TransitionSnapshot* snap)
                      LayersEngine::Get().GetLayer(activeLyr).name);
         SetDlgItemText(hwnd, IDC_LAYER_STATUS, layerBuf);
     }
+
+    // The music button shows the selected scene's sheet.
+    InvalidateRect(GetDlgItem(hwnd, IDC_SHEET_BTN), nullptr, FALSE);
 
     g_syncingEditor = false;
 }
@@ -2252,6 +2466,8 @@ static void RestoreLayerState(TransitionSnapshot* snap)
             lt.folderCompact = clt.folderCompact;
             lt.showTcp     = clt.showTcp;
             lt.showMcp     = clt.showMcp;
+            lt.parent      = clt.parent;
+            lt.hasParent   = clt.hasParent;
             ld.tracks.push_back(lt);
         }
         newLayers.push_back(ld);
@@ -2355,6 +2571,9 @@ static void DoRecall(HWND hwnd, int listIndex)
     if (g_durationDebug) QueryPerformanceCounter(&t2);
     RestoreLayerState(snap);
     if (g_durationDebug) QueryPerformanceCounter(&t3);
+
+    // After the timing above: bringing up a chart is not part of the recall.
+    MusicSheetWnd_OnSceneRecalled(TransitionWnd_SheetOwnerOf(snapIdx), g_openSheetOnRecall);
 
     if (g_durationDebug && freq.QuadPart > 0)
     {
@@ -3180,6 +3399,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
         CheckDlgButton(hwnd, IDC_GSET_CHUNK_ALL_INSTANT, g_chunkAllInstant    ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_RECALL_LOG,        g_recallLog          ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hwnd, IDC_GSET_MATCH_THEME,       ReaperTheme_MatchTheme() ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hwnd, IDC_GSET_SHEET_OPEN,        g_openSheetOnRecall  ? BST_CHECKED : BST_UNCHECKED);
 
         char buf[64];
         snprintf(buf, sizeof(buf), "%.2f", instant ? 2.0 : g_defaultDuration);
@@ -3330,6 +3550,7 @@ static INT_PTR CALLBACK GlobalSettingsDialogProc(HWND hwnd, UINT msg, WPARAM wPa
             g_durationDebug       = (IsDlgButtonChecked(hwnd, IDC_GSET_DURATION_DEBUG)    == BST_CHECKED);
             g_chunkAllInstant     = (IsDlgButtonChecked(hwnd, IDC_GSET_CHUNK_ALL_INSTANT) == BST_CHECKED);
             g_recallLog           = (IsDlgButtonChecked(hwnd, IDC_GSET_RECALL_LOG)        == BST_CHECKED);
+            g_openSheetOnRecall   = (IsDlgButtonChecked(hwnd, IDC_GSET_SHEET_OPEN)        == BST_CHECKED);
             MarkProjectDirty(nullptr);  // settings are saved per-project via SaveExtensionConfig
 
             // Dark mode is machine-wide (ExtState), not per project.
@@ -4831,6 +5052,16 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
             }
 
+            // ---- Layer buttons beside the notes box --------------------
+            // Created after the sidebar controls were collected above, so
+            // LayoutNotes places them rather than the proportional pass.
+            CreateLayerButtons(hwnd);
+            SyncLayerButtons(hwnd);
+            ReaperTheme_TrackHot(GetDlgItem(hwnd, IDC_SHEET_BTN));
+
+            // Charts can be dropped on a scene row (or the music button).
+            DragAcceptFiles(hwnd, TRUE);
+
             // The window may already have been resized to the saved rect.
             LayoutMain(hwnd);
         }
@@ -4882,6 +5113,17 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             DeleteObject(pen);
             return TRUE;
         }
+        if (dis && dis->CtlID >= IDC_LAYERBTN_FIRST &&
+                   dis->CtlID <  IDC_LAYERBTN_FIRST + kLayerBtnMax)
+        {
+            DrawLayerButton(dis);
+            return TRUE;
+        }
+        if (dis && dis->CtlID == IDC_SHEET_BTN)
+        {
+            MusicSheetWnd_DrawSheetButton(dis, SelectedSheetOwner(hwnd));
+            return TRUE;
+        }
         if (dis && dis->CtlID == IDC_NOTES_GRIP)
         {
             // Two short rules centred in the strip, the usual "drag me" cue.
@@ -4919,6 +5161,8 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                                  RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
                 }
             }
+
+            SyncLayerButtons(hwnd);
 
             TransitionEngine& eng = TransitionEngine::Get();
 
@@ -5012,6 +5256,21 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return TRUE;
         }
 
+        // ---- Layer buttons -----------------------------------------------
+        if (id >= IDC_LAYERBTN_FIRST && id < IDC_LAYERBTN_FIRST + kLayerBtnMax)
+        {
+            const int slot = id - IDC_LAYERBTN_FIRST;
+            LayersEngine& le = LayersEngine::Get();
+            if (evt == BN_CLICKED && slot < le.GetLayerCount() &&
+                slot != le.GetActiveLayer())
+            {
+                le.ActivateLayer(slot);
+                LayersWnd_Refresh();
+                SyncLayerButtons(hwnd);
+            }
+            return TRUE;
+        }
+
         // ---- Button / checkbox handlers ----------------------------------
         switch (id)
         {
@@ -5043,6 +5302,30 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         case IDC_LAYERS_BTN:
             LayersWnd_ShowHide();
             break;
+
+        case IDC_SHEET_BTN:
+        {
+            // No sheet: attach one and show it. A sheet: the trash zone at the
+            // right end removes it, anywhere else opens it.
+            TransitionSnapshot* owner = SelectedSheetOwner(hwnd);
+            if (!owner || evt != BN_CLICKED) break;
+            if (owner->m_sheet.Attached())
+            {
+                HWND  hBtn = GetDlgItem(hwnd, IDC_SHEET_BTN);
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hBtn, &pt);
+                if (MusicSheetWnd_SheetButtonTrashHit(hBtn, pt, owner))
+                    MusicSheetWnd_Detach(hwnd, owner);
+                else
+                    MusicSheetWnd_ShowScene(owner);
+            }
+            else if (MusicSheetWnd_Attach(hwnd, owner))
+            {
+                MusicSheetWnd_ShowScene(owner);
+            }
+            break;
+        }
 
         case IDC_CUE_SETUP_BTN:
         {
@@ -5083,6 +5366,24 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     case WM_NOTIFY:
     {
         NMHDR* hdr = (NMHDR*)lParam;
+#ifdef _WIN32
+        if (g_layerBtnTip && hdr->hwndFrom == g_layerBtnTip && hdr->code == TTN_GETDISPINFOA)
+        {
+            // The layer's name in the live set, or why the button is grey.
+            NMTTDISPINFOA* di = (NMTTDISPINFOA*)lParam;
+            static char tip[160];
+            const int slot = GetDlgCtrlID((HWND)di->hdr.idFrom) - IDC_LAYERBTN_FIRST;
+            LayersEngine& le = LayersEngine::Get();
+            char lbl[8];
+            LayerBtnLabel(slot, lbl, sizeof(lbl));
+            if (slot >= 0 && slot < le.GetLayerCount())
+                snprintf(tip, sizeof(tip), "%s: %s", lbl, le.GetLayer(slot).name);
+            else
+                snprintf(tip, sizeof(tip), "%s: not in the current scene", lbl);
+            di->lpszText = tip;
+            return TRUE;
+        }
+#endif
         if (hdr->idFrom == IDC_LIST)
         {
             if (hdr->code == NM_CUSTOMDRAW)
@@ -5236,6 +5537,45 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return FALSE;
     }
 
+    case WM_DROPFILES:
+    {
+        // A chart dropped from Explorer: onto a scene row, that scene (and
+        // it is selected, so the sidebar shows what happened); anywhere
+        // else, the selected scene. A subscene's row means its scene.
+        HDROP drop = (HDROP)wParam;
+        POINT pt = {};
+        DragQueryPoint(drop, &pt);                  // dialog client coordinates
+        TransitionSnapshot* owner = nullptr;
+        HWND hListD = GetDlgItem(hwnd, IDC_LIST);
+        RECT lr;
+        GetWindowRect(hListD, &lr);
+        MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&lr, 2);
+        if (hListD && pt.x >= lr.left && pt.x < lr.right && pt.y >= lr.top && pt.y < lr.bottom)
+        {
+            LVHITTESTINFO hti = {};
+            hti.pt = pt;
+            MapWindowPoints(hwnd, hListD, &hti.pt, 1);
+            const int row = ListView_HitTest(hListD, &hti);
+            const int si  = g_cueMode
+                ? ((row >= 0 && row < (int)g_cueList.size()) ? g_cueList[row] : -1)
+                : RowToSnap(row);
+            owner = TransitionWnd_SheetOwnerOf(si);
+            if (owner)
+            {
+                ListView_SetItemState(hListD, -1, 0, LVIS_SELECTED);
+                ListView_SetItemState(hListD, row, LVIS_SELECTED | LVIS_FOCUSED,
+                                      LVIS_SELECTED | LVIS_FOCUSED);
+            }
+        }
+        else
+        {
+            owner = SelectedSheetOwner(hwnd);
+        }
+        MusicSheetWnd_AttachDrop(hwnd, owner, drop);
+        InvalidateRect(GetDlgItem(hwnd, IDC_SHEET_BTN), nullptr, FALSE);
+        return TRUE;
+    }
+
     case WM_CONTEXTMENU:
     {
         int  x = GET_X_LPARAM(lParam);
@@ -5328,6 +5668,12 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
     case WM_DESTROY:
         KillTimer(hwnd, UI_TIMER_ID);
+        // The buttons go with the window; the tooltip is owned by it too.
+        for (HWND& b : g_layerBtns) b = nullptr;
+        g_layerBtnTip   = nullptr;
+        g_layerBtnCount = 0;
+        g_layerBtnLive  = -1;
+        g_layerBtnActive = -2;
         // Restore list subclass
         if (s_origListProc)
         {

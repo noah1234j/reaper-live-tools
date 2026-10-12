@@ -94,6 +94,18 @@ int ReaperTheme_HeadingHeight();
 // Apply it to one control by id. Geometry is the caller's business.
 void ReaperTheme_ApplyHeadingFont(HWND hDlg, int ctlId);
 
+// The face of a push button, for owner-drawn buttons that sit beside the
+// painted stock ones: in Dark mode the same rounded face, frame and
+// selection colour; otherwise the Windows button colours. Fills all of rc
+// (the corners in the dialog background) and hands back the text colour.
+void ReaperTheme_PaintButtonFace(HDC hdc, const RECT& rc, bool checked, bool pressed,
+                                 bool hot, bool enabled, COLORREF* fgOut);
+
+// Hover for an owner-drawn button: TrackHot once after creating it, then
+// IsHot when drawing. (The painted stock buttons track their own.)
+void ReaperTheme_TrackHot(HWND hBtn);
+bool ReaperTheme_IsHot(HWND hBtn);
+
 // Call first thing in a dialog proc. Non-zero means handled: return it.
 INT_PTR ReaperTheme_CtlColor(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
 

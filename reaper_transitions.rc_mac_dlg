@@ -47,12 +47,18 @@ PUSHBUTTON      "Cue Setup...", IDC_CUE_SETUP_BTN,  207, 37, 48, 13
 PUSHBUTTON      "Settings...",  IDC_SETTINGS_BTN,   158, 54, 46, 13
 PUSHBUTTON      "Layers...",    IDC_LAYERS_BTN,     207, 54, 48, 13
 
+// ---- Music sheet: full width. Owner-drawn, so it can show a paperclip
+// and the file name, with a trash zone at its right end once a sheet is
+// attached to the selected scene.
+CONTROL         "Attach Music...", IDC_SHEET_BTN, "Button", BS_OWNERDRAW | WS_TABSTOP,
+158, 71, 97, 13
+
 // ---- Scene notes (multiline, last control in the sidebar stack) -------
 // The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
 // a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
 // run time, so the height below is only the default.
-LTEXT           "Notes:", IDC_STATIC,       158, 72, 97,  8
-EDITTEXT        IDC_SNAPNOTES,              158, 82, 97, 116,
+LTEXT           "Notes:", IDC_STATIC,       158, 89, 97,  8
+EDITTEXT        IDC_SNAPNOTES,              158, 99, 97, 99,
 ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
 CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
 158, 198, 97, 6
@@ -110,7 +116,7 @@ SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_SNAP_SETTINGS)
 #ifndef SET_IDD_GLOBAL_SETTINGS_STYLE
 #define SET_IDD_GLOBAL_SETTINGS_STYLE SWELL_DLG_FLAGS_AUTOGEN
 #endif
-SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_GLOBAL_SETTINGS,SET_IDD_GLOBAL_SETTINGS_STYLE,"Global Settings",205,461,SET_IDD_GLOBAL_SETTINGS_SCALE)
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_GLOBAL_SETTINGS,SET_IDD_GLOBAL_SETTINGS_STYLE,"Global Settings",205,491,SET_IDD_GLOBAL_SETTINGS_SCALE)
 BEGIN
 GROUPBOX        "New Scene Defaults", IDC_STATIC, 5, 5, 194, 80
 
@@ -184,10 +190,26 @@ GROUPBOX        "Appearance", IDC_STATIC, 5, 409, 194, 26
 CONTROL         "Dark mode (REAPER theme colours)", IDC_GSET_MATCH_THEME, "Button",
 BS_AUTOCHECKBOX | WS_TABSTOP, 10, 421, 185, 10
 
-DEFPUSHBUTTON   "OK",     IDOK,      75, 440, 50, 14
-PUSHBUTTON      "Cancel", IDCANCEL, 135, 440, 50, 14
+GROUPBOX        "Music Sheets", IDC_STATIC, 5, 439, 194, 26
+CONTROL         "Open the music sheet when a scene is recalled", IDC_GSET_SHEET_OPEN, "Button",
+BS_AUTOCHECKBOX | WS_TABSTOP, 10, 451, 185, 10
+
+DEFPUSHBUTTON   "OK",     IDOK,      75, 470, 50, 14
+PUSHBUTTON      "Cancel", IDCANCEL, 135, 470, 50, 14
 END
 SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_GLOBAL_SETTINGS)
+
+
+#ifndef SET_IDD_MUSICSHEET_SCALE
+#define SET_IDD_MUSICSHEET_SCALE SWELL_DLG_SCALE_AUTOGEN
+#endif
+#ifndef SET_IDD_MUSICSHEET_STYLE
+#define SET_IDD_MUSICSHEET_STYLE SWELL_DLG_FLAGS_AUTOGEN|SWELL_DLG_WS_RESIZABLE|SWELL_DLG_WS_OPAQUE
+#endif
+SWELL_DEFINE_DIALOG_RESOURCE_BEGIN(IDD_MUSICSHEET,SET_IDD_MUSICSHEET_STYLE,"Music",360,420,SET_IDD_MUSICSHEET_SCALE)
+BEGIN
+END
+SWELL_DEFINE_DIALOG_RESOURCE_END(IDD_MUSICSHEET)
 
 
 #ifndef SET_IDD_CHUNK_RECALL_PLUGINS_SCALE

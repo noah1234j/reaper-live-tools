@@ -25,6 +25,26 @@
 #include <vector>
 #include <cstdint>
 
+// Every track's folder parent, keyed by the track's GUID: the parent's GUID,
+// or the zero GUID for a track at the top level. Map is any GUID->GUID map.
+template <typename Map>
+inline void TrackOrder_ParentGuids(Map& out)
+{
+    out.clear();
+    const int n = CountTracks(nullptr);
+    for (int t = 0; t < n; ++t)
+    {
+        MediaTrack* tr = GetTrack(nullptr, t);
+        if (!tr) continue;
+        GUID* g = GetTrackGUID(tr);
+        if (!g) continue;
+        GUID pg = {};
+        if (MediaTrack* par = (MediaTrack*)GetSetMediaTrackInfo(tr, "P_PARTRACK", nullptr))
+            if (GUID* pgp = GetTrackGUID(par)) pg = *pgp;
+        out[*g] = pg;
+    }
+}
+
 // 0-based project position of a track right now.
 inline int TrackOrder_LiveIndex(MediaTrack* tr)
 {

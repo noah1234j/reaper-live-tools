@@ -61,5 +61,11 @@ bool TransitionWnd_ProcessSettingsLine(const char* line);
 void TransitionWnd_ResetSettings();
 void TransitionWnd_OnProjectLoad();   // restore window state after project load
 
+// Music sheets. A subscene has no sheet of its own; it shows its parent's, so
+// this maps a row to the scene that holds the sheet (null for none/spacer).
+TransitionSnapshot* TransitionWnd_SheetOwnerOf(int snapIdx);
+// Repaint the sidebar's music button after an attach/detach elsewhere.
+void TransitionWnd_RefreshSheetButton();
+
 extern bool g_skipUnchangedParams;
 extern bool g_chunkAllInstant;

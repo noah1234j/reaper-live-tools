@@ -31,6 +31,17 @@ struct LayerTrack
     // still means.
     bool showTcp        = true;
     bool showMcp        = true;
+
+    // The folder the track sat in when this was captured: its folder parent's
+    // GUID, or the zero GUID for the top level. Recall moves the track into
+    // (or out of) that folder before putting the layer in order, so a scene
+    // saved with a channel inside a folder brings it back inside. Unset
+    // (hasParent false) for layers that never recorded it - older scenes, or
+    // a layer built in the Layers window - and folders are then left as they
+    // are. Not written to the layer config: scenes carry it, and the active
+    // layer keeps it current while tracks are moved by hand.
+    GUID parent         = {};
+    bool hasParent      = false;
 };
 
 // ---------------------------------------------------------------------------

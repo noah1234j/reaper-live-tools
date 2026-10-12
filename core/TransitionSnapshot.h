@@ -11,6 +11,8 @@
 #include <ctime>
 #include <unordered_map>
 
+#include "../music/MusicSheet.h"
+
 class ProjectStateContext; // defined in reaper_plugin.h
 
 // ---------------------------------------------------------------------------
@@ -283,6 +285,10 @@ struct CapturedLayerTrack
     // LayerTrack::folderCompact, so a recalled layer folds its folders the way
     // they were folded when the scene was saved. 0 (open) for older scenes.
     int  folderCompact = 0;
+    // LayerTrack::parent / hasParent: the folder the track was in when the
+    // scene was saved (zero GUID: top level). Unset for older scenes.
+    GUID parent    = {};
+    bool hasParent = false;
 };
 
 struct CapturedLayer
@@ -325,6 +331,11 @@ public:
 
     // Per-scene safes (recall filters), applied on every recall of this scene; see SafeSet.
     SafeSet     m_safes;
+
+    // The song's chart, and what has been drawn on it. A subscene has none of
+    // its own: it is a variation within a song, and the music on the stand
+    // does not change between them — the viewer reads the parent's.
+    MusicSheet  m_sheet;
 
     int         m_slot     = 0;
     std::string m_name;
