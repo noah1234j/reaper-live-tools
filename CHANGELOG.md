@@ -1,5 +1,27 @@
 # Changelog
 
+## [v0.0.50-beta] — 2026-10-12
+
+### Added
+
+- **Music sheets**: each scene can have a chart attached, a PDF (any number of pages) or an image. The Scenes sidebar has a new **Attach Music...** button under Settings / Layers; once a sheet is attached it shows a paperclip and the file name, opens the sheet when clicked, and has a trash zone at its right end that removes it (after asking). A subscene shows its scene's sheet. Charts can also be dragged from Explorer onto a scene row, the music button, or the Music window. An attached chart is copied into a **Music Sheets** folder beside the `.rpp` and linked from there (one already inside the project folder is linked where it is; an unsaved project links the original), so the project folder carries its charts and moving or deleting the original breaks nothing. A file that has gone missing is reported with **Locate File...**, and its markings are kept.
+
+- **Music window** (*Live Tools: Music Sheet - Show/Hide*, or **Extensions > Live Tools > Music Sheet...**): resizable, dockable, in the same colours as the other windows. A toolbar runs down the left: **Page**, **2-Up** and **Scroll** views, the pencil, text and eraser, six colours, Undo, and the page buttons. Its chevron collapses it for a full-page view, leaving a floating chevron in the lower left to bring it back and floating page buttons in the lower right. Turn pages with the arrows, Page Up / Down, the mouse wheel, or a click on the left / right third of the page, and from anywhere with the new *Music Sheet - Next page* / *Previous page* actions (for foot pedals); *Music Sheet - Show/hide toolbar* collapses the toolbar. The window follows recalls: recalling another song swaps its chart in, recalling a subscene of the song on screen leaves the page where it is.
+
+- **Annotations**: a pencil, typed notes and an eraser, in six colours. Enter finishes a note, Shift+Enter starts a new line. With the text tool, drag a note to move it, click it to edit it, and click the round handle above it to turn it a quarter turn (Shift+click turns it back). Double-click a note to edit it with any tool. Undo with the toolbar button or Ctrl+Z. Marks are stored as lines and text rather than pixels, so they stay put at any window size, and are saved with the scene.
+
+- **Open the music sheet when a scene is recalled** (Global Settings > Music Sheets): brings the Music window up on a recall when the scene has a sheet, without taking keyboard focus.
+
+- **Layer buttons**: a column of **A, B, C...** buttons beside the Scenes notes box, one per layer slot. Click one to activate that layer; the active one is highlighted, and a slot the current scene's layer set does not have is greyed out. Hover for the layer's name.
+
+### Changed
+
+- **Scenes put tracks back in their folders**: a scene now records which folder each of its layer's tracks is in, and recalling it moves tracks into or out of folders to match — a channel saved inside a folder in one scene and outside it in another goes in and out with the recall. Folders are never broken: a folder's last track can move, with the folder's end passing to the track that becomes last, and folder tracks themselves stay put. The *Track order* safe still stops it. **Re-save scenes** where folder placement matters; scenes saved before this keep their tracks' folders as they are.
+
+- Layer recall places tracks around folders correctly: a track that belongs after a folder goes after the whole folder, never in front of it.
+
+- The layer buttons and the music button match the other Scenes buttons in Dark mode.
+
 ## [v0.0.49-beta] — 2026-10-07
 
 ### Added
