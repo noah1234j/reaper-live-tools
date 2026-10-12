@@ -317,6 +317,72 @@ COLORREF ReaperTheme_Line()
 }
 
 #ifdef _WIN32
+// ---- Button face, shared ------------------------------------------------
+// The one place a push button's face is decided, so the owner-drawn buttons
+// (the layer letters, the music sheet button) look like the painted stock
+// ones beside them. Dark mode: a face a step off the dialog background in a
+// rounded ReaperTheme_Line frame, the list selection colour when checked.
+// Off: the Windows button colours, square, like the native buttons there.
+void ReaperTheme_PaintButtonFace(HDC hdc, const RECT& rc, bool checked, bool pressed,
+                                 bool hot, bool enabled, COLORREF* fgOut)
+{
+    const ReaperListColors& lc = ReaperTheme_List();
+    const COLORREF dlg  = ReaperTheme_DialogBg();
+    const bool     dark = ReaperTheme_MatchTheme();
+    COLORREF face, fg, frame;
+    if (dark)
+    {
+        const COLORREF text = ReaperTheme_Text();
+        if (checked)
+        {
+            face = pressed ? Blend(lc.selBg, dlg, 25)
+                 : hot     ? Blend(lc.selBg, lc.selFg, 10) : lc.selBg;
+            fg   = lc.selFg;
+        }
+        else
+        {
+            face = Blend(dlg, text, pressed ? 30 : hot ? 22 : 14);
+            fg   = text;
+        }
+        if (!enabled)
+        {
+            face = Blend(dlg, text, 8);
+            fg   = Blend(face, text, 45);
+        }
+        frame = ReaperTheme_Line();
+    }
+    else
+    {
+        if (checked) { face = lc.selBg; fg = lc.selFg; }
+        else
+        {
+            face = ReaperTheme_Sys(COLOR_BTNFACE);
+            fg   = ReaperTheme_Sys(COLOR_BTNTEXT);
+            if (hot) face = Blend(face, lc.selBg, 15);
+        }
+        if (pressed) face = Blend(face, ReaperTheme_Sys(COLOR_BTNSHADOW), 50);
+        if (!enabled) { face = dlg; fg = lc.muted; }
+        frame = ReaperTheme_Sys(COLOR_BTNSHADOW);
+    }
+
+    // Corners show the dialog behind the rounded frame.
+    HBRUSH hbDlg = CreateSolidBrush(dlg);
+    FillRect(hdc, &rc, hbDlg);
+    DeleteObject(hbDlg);
+
+    HBRUSH  hbFace = CreateSolidBrush(face);
+    HPEN    hpFrm  = CreatePen(PS_SOLID, 1, frame);
+    HGDIOBJ obr = SelectObject(hdc, hbFace);
+    HGDIOBJ opn = SelectObject(hdc, hpFrm);
+    if (dark) RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 4, 4);
+    else      Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(hdc, obr);
+    SelectObject(hdc, opn);
+    DeleteObject(hbFace);
+    DeleteObject(hpFrm);
+    if (fgOut) *fgOut = fg;
+}
+
 // uxtheme.h clashes with the REAPER SDK (both declare GetThemeColor), so
 // SetWindowTheme is resolved at runtime instead of including the header.
 typedef HRESULT (WINAPI *SetWindowTheme_t)(HWND, LPCWSTR, LPCWSTR);
@@ -521,9 +587,6 @@ static void PaintButton(HWND h, HDC hdcOut)
     const int w = rc.right - rc.left, ht = rc.bottom - rc.top;
     if (w <= 0 || ht <= 0) return;
 
-    const ReaperListColors& lc = ReaperTheme_List();
-    const COLORREF dlg      = ReaperTheme_DialogBg();
-    const COLORREF text     = ReaperTheme_Text();
     const UINT     type     = GetWindowLong(h, GWL_STYLE) & BS_TYPEMASK;
     const bool     pushLike = type != BS_PUSHBUTTON && type != BS_DEFPUSHBUTTON;
     const LRESULT  state    = SendMessage(h, BM_GETSTATE, 0, 0);
@@ -531,42 +594,12 @@ static void PaintButton(HWND h, HDC hdcOut)
     const bool     pressed  = (state & BST_PUSHED) != 0;
     const bool     checked  = pushLike && (state & BST_CHECKED) != 0;
 
-    COLORREF face, fg;
-    if (checked)
-    {
-        face = pressed ? Blend(lc.selBg, dlg, 25)
-             : hot     ? Blend(lc.selBg, lc.selFg, 10) : lc.selBg;
-        fg   = lc.selFg;
-    }
-    else
-    {
-        face = Blend(dlg, text, pressed ? 30 : hot ? 22 : 14);
-        fg   = text;
-    }
-    if (!IsWindowEnabled(h))
-    {
-        face = Blend(dlg, text, 8);
-        fg   = Blend(face, text, 45);
-    }
-
     HDC     hdc = CreateCompatibleDC(hdcOut);
     HBITMAP bmp = CreateCompatibleBitmap(hdcOut, w, ht);
     HGDIOBJ ob  = SelectObject(hdc, bmp);
 
-    // Corners show the dialog behind the rounded frame.
-    HBRUSH hbDlg = CreateSolidBrush(dlg);
-    FillRect(hdc, &rc, hbDlg);
-    DeleteObject(hbDlg);
-
-    HBRUSH  hbFace = CreateSolidBrush(face);
-    HPEN    hpFrm  = CreatePen(PS_SOLID, 1, ReaperTheme_Line());
-    HGDIOBJ obr = SelectObject(hdc, hbFace);
-    HGDIOBJ opn = SelectObject(hdc, hpFrm);
-    RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 4, 4);
-    SelectObject(hdc, obr);
-    SelectObject(hdc, opn);
-    DeleteObject(hbFace);
-    DeleteObject(hpFrm);
+    COLORREF fg;
+    ReaperTheme_PaintButtonFace(hdc, rc, checked, pressed, hot, IsWindowEnabled(h) != 0, &fg);
 
     const LRESULT ui = SendMessage(h, WM_QUERYUISTATE, 0, 0);
     wchar_t txt[256] = {};
@@ -586,7 +619,6 @@ static void PaintButton(HWND h, HDC hdcOut)
         RECT rf = rc;
         InflateRect(&rf, -3, -3);
         SetTextColor(hdc, fg);
-        SetBkColor(hdc, face);
         DrawFocusRect(hdc, &rf);
     }
 
@@ -645,6 +677,45 @@ static LRESULT CALLBACK ButtonSubclassProc(HWND h, UINT msg, WPARAM wParam,
         break;
     }
     return DefSubclassProc(h, msg, wParam, lParam);
+}
+
+// Hover for owner-drawn buttons: only the "LT_Hot" flag ButtonSubclassProc
+// keeps, and a repaint when it changes. The owner reads it back with
+// ReaperTheme_IsHot when drawing.
+static LRESULT CALLBACK HotSubclassProc(HWND h, UINT msg, WPARAM wParam,
+                                        LPARAM lParam, UINT_PTR, DWORD_PTR)
+{
+    switch (msg)
+    {
+    case WM_MOUSEMOVE:
+        if (!GetProp(h, "LT_Hot"))
+        {
+            SetProp(h, "LT_Hot", (HANDLE)1);
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, h, 0 };
+            TrackMouseEvent(&tme);
+            InvalidateRect(h, nullptr, FALSE);
+        }
+        break;
+    case WM_MOUSELEAVE:
+        RemoveProp(h, "LT_Hot");
+        InvalidateRect(h, nullptr, FALSE);
+        break;
+    case WM_NCDESTROY:
+        RemoveProp(h, "LT_Hot");
+        RemoveWindowSubclass(h, HotSubclassProc, 0);
+        break;
+    }
+    return DefSubclassProc(h, msg, wParam, lParam);
+}
+
+void ReaperTheme_TrackHot(HWND h)
+{
+    if (h) SetWindowSubclass(h, HotSubclassProc, 0, 0);
+}
+
+bool ReaperTheme_IsHot(HWND h)
+{
+    return h && GetProp(h, "LT_Hot") != nullptr;
 }
 
 // ---- Painted tab strip --------------------------------------------------
@@ -1423,3 +1494,8 @@ COLORREF ReaperTheme_ListCellFg(HWND hList, int row)
     if (!RowSelected(hList, row)) return c.fg;
     return GetFocus() == hList ? c.selFg : c.selInFg;
 }
+
+#ifndef _WIN32
+void ReaperTheme_TrackHot(HWND) {}
+bool ReaperTheme_IsHot(HWND) { return false; }
+#endif

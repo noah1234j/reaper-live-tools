@@ -2,6 +2,7 @@
 #include "ChunkRecallList.h"
 #include "LayersEngine.h"
 #include "GuidUtil.h"
+#include "TrackOrder.h"
 #include "api.h"
 
 #include <cstdio>
@@ -351,6 +352,11 @@ void TransitionSnapshot::Capture(int mask)
                 if (cl.uid == m_layerUid) { prevLayerName = cl.name; break; }
         }
 
+        // Which folder every track is in right now, so the scene brings its
+        // channels back into (or out of) the same folders.
+        std::unordered_map<GUID, GUID, GUIDHash, GUIDEqual> parents;
+        TrackOrder_ParentGuids(parents);
+
         m_layers.clear();
         for (int li = 0; li < le.GetLayerCount(); li++)
         {
@@ -367,6 +373,11 @@ void TransitionSnapshot::Capture(int mask)
                 clt.showTcp  = lt.showTcp;
                 clt.showMcp  = lt.showMcp;
                 clt.folderCompact = lt.folderCompact;
+                if (!lt.isSpacer)
+                {
+                    auto pit = parents.find(lt.guid);
+                    if (pit != parents.end()) { clt.parent = pit->second; clt.hasParent = true; }
+                }
                 cl.tracks.push_back(clt);
             }
             m_layers.push_back(cl);
@@ -532,6 +543,10 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
     if (m_isSub)
         ctx->AddLine("SUB 1");
 
+    // The attached chart and its annotations. Writes nothing when there is
+    // neither, so a project that does not use sheets is unchanged.
+    MusicSheet_Serialize(m_sheet, ctx);
+
     // Folded-away subscenes. Display state, but saving it is the difference
     // between reopening the show as you left it and reopening it flat.
     if (m_collapsed)
@@ -587,7 +602,24 @@ void TransitionSnapshot::Serialize(ProjectStateContext* ctx) const
                     // and stays readable by builds that predate them.
                     // Folder state rides third, after the panel pair, so a
                     // reader that only scans the pair still lines up.
-                    if (clt.folderCompact != 0)
+                    // The parent folder rides fourth, as "P{guid}" (or "P0"
+                    // for the top level): older readers stop after three
+                    // numbers and never see it.
+                    if (clt.hasParent)
+                    {
+                        static const GUID kZero = {};
+                        char parentStr[44] = "P0";
+                        if (memcmp(&clt.parent, &kZero, sizeof(GUID)) != 0)
+                        {
+                            char pg[40];
+                            LayersEngine::GuidToStr(clt.parent, pg);
+                            snprintf(parentStr, sizeof(parentStr), "P%s", pg);
+                        }
+                        ctx->AddLine("LAYERTRACK %s %d %d %d %s", guidStr,
+                                     clt.showTcp ? 1 : 0, clt.showMcp ? 1 : 0,
+                                     clt.folderCompact, parentStr);
+                    }
+                    else if (clt.folderCompact != 0)
                         ctx->AddLine("LAYERTRACK %s %d %d %d", guidStr,
                                      clt.showTcp ? 1 : 0, clt.showMcp ? 1 : 0,
                                      clt.folderCompact);
@@ -928,6 +960,14 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
                         clt.showMcp = (mcp != 0);
                         clt.folderCompact = fc;
                     }
+                    // Optional parent folder: " P{guid}" or " P0".
+                    if (sp)
+                        if (const char* pp = strstr(sp, " P"))
+                        {
+                            pp += 2;
+                            clt.hasParent = true;
+                            if (*pp != '0') LayersEngine::StrToGuid(pp, clt.parent);
+                        }
                     cl.tracks.push_back(clt);
                 }
             }
@@ -947,6 +987,10 @@ TransitionSnapshot* TransitionSnapshot::Deserialize(const char* headerLine,
             int v = 0;
             sscanf(trimmed + 4, "%d", &v);
             ss->m_isSub = (v != 0);
+        }
+        else if (MusicSheet_ProcessLine(ss->m_sheet, trimmed))
+        {
+            // Consumed: SHEET / SHEETSTROKE / SHEETTEXT.
         }
         else if (strncmp(trimmed, "COLLAPSED ", 10) == 0)
         {

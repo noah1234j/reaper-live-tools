@@ -74,6 +74,13 @@
 #define IDC_SPLITTER             2150   // draggable divider between list and sidebar
 #define IDC_ADDSUB_BTN           2151   // "Add Subscene" button (main Scenes window sidebar)
 #define IDC_RECALLFILT_BTN       2152   // "Recall Filters..." button (main Scenes window sidebar)
+#define IDC_SHEET_BTN            2153   // music sheet button: attach, or open + trash when attached
+
+// ---- Music sheet viewer (IDD_MUSICSHEET) -----------------------------------
+// An empty, resizable dialog: toolbar, pages and annotations are all painted
+// by MusicSheetWnd. The only child is the in-place text editor.
+#define IDD_MUSICSHEET           231
+#define IDC_SHEET_TEXTEDIT       3700
 
 // Plugin version, shown in the Scenes sidebar footer. Bump alongside the
 // README banner, the CHANGELOG heading and the git tag when cutting a release.
@@ -99,6 +106,10 @@
 #define IDC_SAFESLAYERLBL        2206
 #define IDC_SAFE_LYR_ORDER       2207   // Layers tab: "Track order" safe
 #define IDC_SAFE_LYR_NAME        2208   // Layers tab: "Track name" safe
+
+// Scenes window: the A, B, C... layer buttons beside the notes box, created
+// at run time. One id per layer slot, IDC_LAYERBTN_FIRST + slot, up to 32.
+#define IDC_LAYERBTN_FIRST       3600   // ..3631
 
 // Tab strip across the top of the Safes window: Project safes vs the safes
 // applied to every subscene recall. Both tabs drive the same grid.
@@ -159,6 +170,7 @@
 #define IDC_GSET_CHUNK_ALL_INSTANT  2256   // "Chunk all on instant path" checkbox
 #define IDC_GSET_RECALL_LOG         2259   // "Write recall log to file" checkbox
 #define IDC_GSET_MATCH_THEME        2260   // "Dark mode" checkbox
+#define IDC_GSET_SHEET_OPEN         2261   // "Open music sheet on recall" checkbox
 
 // ---- Scenes window dock toggle + marker option ----------------------------
 // (2145-2147 now used – see IDC_SNAPNAME etc. above)
