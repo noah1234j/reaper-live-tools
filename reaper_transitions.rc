@@ -58,18 +58,22 @@ BEGIN
     PUSHBUTTON      "Settings...",  IDC_SETTINGS_BTN,   158, 54, 46, 13
     PUSHBUTTON      "Layers...",    IDC_LAYERS_BTN,     207, 54, 48, 13
 
+    // ---- Layer buttons: A, B, C... in one row, created at run time and laid
+    // out across this placeholder (see LayoutLayerRow).
+    LTEXT           "", IDC_LAYERROW,           158, 71, 97, 13
+
     // ---- Music sheet: full width. Owner-drawn, so it can show a paperclip
     // and the file name, with a trash zone at its right end once a sheet is
     // attached to the selected scene.
     CONTROL         "Attach Music...", IDC_SHEET_BTN, "Button", BS_OWNERDRAW | WS_TABSTOP,
-                    158, 71, 97, 13
+                    158, 88, 97, 13
 
     // ---- Scene notes (multiline, last control in the sidebar stack) -------
     // The notes box is the only sidebar control that grows. IDC_NOTES_GRIP is
     // a drag handle sitting on its bottom edge; LayoutNotes() sizes both at
     // run time, so the height below is only the default.
-    LTEXT           "Notes:", IDC_STATIC,       158, 89, 97,  8
-    EDITTEXT        IDC_SNAPNOTES,              158, 99, 97, 99,
+    LTEXT           "Notes:", IDC_STATIC,       158, 106, 97,  8
+    EDITTEXT        IDC_SNAPNOTES,              158, 116, 97, 82,
                     ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL | WS_BORDER
     CONTROL         "", IDC_NOTES_GRIP, "Button", BS_OWNERDRAW | WS_CHILD | WS_VISIBLE,
                     158, 198, 97, 6

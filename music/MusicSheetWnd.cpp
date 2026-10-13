@@ -110,6 +110,14 @@ static int g_view    = VIEW_PAGE;
 static int g_page    = 0;        // first page shown (page / two-up)
 static int g_scrollY = 0;        // scroll mode, pixels
 
+// Zoom: 1 is "fit", the size the view picks for the window. Above that the
+// pages grow about the pointer (Ctrl+wheel) and are panned by dragging or the
+// wheel. g_panX / g_panY shift the zoomed pages from their centred place;
+// scroll mode pans vertically with g_scrollY instead.
+static double g_zoom = 1.0;
+static int    g_panX = 0, g_panY = 0;
+static const double kZoomMax = 5.0;
+
 enum { TOOL_NONE = 0, TOOL_PEN, TOOL_TEXT, TOOL_ERASE };
 static int g_tool  = TOOL_NONE;  // always starts as "just look": no stray marks on stage
 static int g_color = 0;
@@ -167,6 +175,14 @@ static bool        g_rotatedThisDrag = false;   // the angle changed (undo pushe
 static bool        g_rotDragging = false;       // the knob moved: a drag, not a click
 static POINT       g_rotDownPt   = {};     // where the knob was pressed
 
+// Resizing a note (text tool): dragging the handle at its corner scales it
+// about its centre.
+static bool        g_resizing    = false;
+static bool        g_resizedThisDrag = false;
+static float       g_resizeOrigH = 0.0f;
+static SheetPoint  g_resizeOrigPos;
+static double      g_resizeStartDist = 1.0;
+
 // Moving a note (text tool): pressed on a note, it follows the pointer once
 // the pointer has moved a few pixels; released without moving, it opens for
 // editing instead.
@@ -177,6 +193,7 @@ static int         g_moveIdx     = -1;
 static POINT       g_moveDownPt  = {};
 static SheetPoint  g_moveOrigPos;
 static int         g_panY0 = 0, g_panScroll0 = 0;
+static int         g_panX0 = 0, g_panStartX = 0, g_panStartY = 0;
 static int         g_wheelAcc = 0;
 
 // ---------------------------------------------------------------------------
@@ -220,6 +237,8 @@ static INT_PTR CALLBACK SheetDlgProc(HWND, UINT, WPARAM, LPARAM);
 static void CommitTextEdit(bool keep);
 static void SyncDoc();
 static void Redraw();
+static void ClampScroll();
+static void ClampScrollFwd() { ClampScroll(); }
 
 // ===========================================================================
 // Small helpers
@@ -636,8 +655,9 @@ static RECT ContentRect()
 static int Margin() { return g_tbCollapsed ? 2 : 8; }
 
 // Where each visible page goes, in client coordinates. `totalH` (scroll mode)
-// is the height of the whole stack, for clamping the scroll.
-static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
+// is the height of the whole stack, for clamping the scroll. With `all`, every
+// page comes back, on screen or not (for working out the pan limits).
+static void LayoutPagesEx(std::vector<PagePlace>& out, int* totalH, bool all)
 {
     out.clear();
     if (totalH) *totalH = 0;
@@ -649,6 +669,7 @@ static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
     const int  W = (c.right - c.left) - 2 * m;
     const int  H = (c.bottom - c.top) - 2 * m;
     if (W < 10 || H < 10) return;
+    const double z = g_zoom;
 
     auto aspect = [](int p) -> double {   // height / width
         const SheetDocPage& pg = g_doc->pages[(size_t)p];
@@ -657,19 +678,33 @@ static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
 
     if (g_view == VIEW_SCROLL)
     {
+        const int Wz = (int)(W * z + 0.5);
+        const int x0 = c.left + m + (W - Wz) / 2 - g_panX;
         int y = c.top + m - g_scrollY;
         int stack = 0;
         for (int p = 0; p < n; ++p)
         {
-            const int ph = (int)(W * aspect(p) + 0.5);
-            RECT r = { c.left + m, y, c.left + m + W, y + ph };
-            if (r.bottom >= c.top && r.top < c.bottom) out.push_back({ p, r });
+            const int ph = (int)(Wz * aspect(p) + 0.5);
+            RECT r = { x0, y, x0 + Wz, y + ph };
+            if (all || (r.bottom >= c.top && r.top < c.bottom)) out.push_back({ p, r });
             y     += ph + m;
             stack += ph + m;
         }
         if (totalH) *totalH = stack + m;
         return;
     }
+
+    // Fitted, then grown about the middle of the view and panned.
+    const double cx = c.left + m + W / 2.0, cy = c.top + m + H / 2.0;
+    auto place = [&](int page, double l, double t, double r, double b)
+    {
+        RECT rr;
+        rr.left   = (LONG)std::lround(cx + (l - cx) * z) - g_panX;
+        rr.top    = (LONG)std::lround(cy + (t - cy) * z) - g_panY;
+        rr.right  = (LONG)std::lround(cx + (r - cx) * z) - g_panX;
+        rr.bottom = (LONG)std::lround(cy + (b - cy) * z) - g_panY;
+        out.push_back({ page, rr });
+    };
 
     if (g_view == VIEW_TWO && g_page + 1 < n)
     {
@@ -683,8 +718,8 @@ static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
         const int w0 = (int)(h / a0 + 0.5), w1 = (int)(h / a1 + 0.5), hh = (int)(h + 0.5);
         const int x0 = c.left + m + (W - (w0 + gap + w1)) / 2;
         const int y0 = c.top  + m + (H - hh) / 2;
-        out.push_back({ g_page,     { x0, y0, x0 + w0, y0 + hh } });
-        out.push_back({ g_page + 1, { x0 + w0 + gap, y0, x0 + w0 + gap + w1, y0 + hh } });
+        place(g_page,     x0, y0, x0 + w0, y0 + hh);
+        place(g_page + 1, x0 + w0 + gap, y0, x0 + w0 + gap + w1, y0 + hh);
         return;
     }
 
@@ -694,7 +729,79 @@ static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
     if (h > H) { h = H; w = (int)(H / a + 0.5); }
     const int x0 = c.left + m + (W - w) / 2;
     const int y0 = c.top  + m + (H - h) / 2;
-    out.push_back({ g_page, { x0, y0, x0 + w, y0 + h } });
+    place(g_page, x0, y0, x0 + w, y0 + h);
+}
+
+static void LayoutPages(std::vector<PagePlace>& out, int* totalH)
+{
+    LayoutPagesEx(out, totalH, false);
+}
+
+// Keep a zoomed view on the music: the pages may be panned until their edge
+// meets the window's edge, no further; a page smaller than the window stays
+// centred.
+static void ClampPan()
+{
+    if (g_zoom <= 1.0) { g_zoom = 1.0; g_panX = g_panY = 0; return; }
+    const int keepX = g_panX, keepY = g_panY;
+    g_panX = g_panY = 0;
+    std::vector<PagePlace> all;
+    LayoutPagesEx(all, nullptr, true);
+    if (all.empty()) return;
+    RECT bb = all[0].r;
+    for (const auto& pl : all) UnionRect(&bb, &bb, &pl.r);
+    const RECT c = ContentRect();
+    const int  m = Margin();
+    const int  vw = (c.right - c.left) - 2 * m, vh = (c.bottom - c.top) - 2 * m;
+    const int  bw = bb.right - bb.left,         bh = bb.bottom - bb.top;
+    auto clampAxis = [](int v, int extent, int view) {
+        if (extent <= view) return 0;
+        const int lim = (extent - view) / 2;
+        return v < -lim ? -lim : (v > lim ? lim : v);
+    };
+    g_panX = clampAxis(keepX, bw, vw);
+    g_panY = (g_view == VIEW_SCROLL) ? 0 : clampAxis(keepY, bh, vh);
+}
+
+// Zoom to `z`, keeping the music under `at` (client coordinates) where it is.
+static void ZoomAt(POINT at, double z)
+{
+    if (z < 1.0) z = 1.0;
+    if (z > kZoomMax) z = kZoomMax;
+    const double z0 = g_zoom;
+    if (z == z0) return;
+    const RECT c = ContentRect();
+    const int  m = Margin();
+    const double cx = c.left + m + ((c.right - c.left) - 2 * m) / 2.0;
+    const double cy = c.top  + m + ((c.bottom - c.top) - 2 * m) / 2.0;
+
+    // The fitted-layout point under the pointer, then the pan that puts it
+    // back under the pointer at the new zoom.
+    const double fx = cx + (at.x + g_panX - cx) / z0;
+    g_panX = (int)std::lround(cx + (fx - cx) * z - at.x);
+    if (g_view == VIEW_SCROLL)
+    {
+        const double top = c.top + m;
+        const double docY = (at.y - top + g_scrollY) / z0;
+        g_scrollY = (int)std::lround(docY * z - (at.y - top));
+    }
+    else
+    {
+        const double fy = cy + (at.y + g_panY - cy) / z0;
+        g_panY = (int)std::lround(cy + (fy - cy) * z - at.y);
+    }
+    g_zoom = z;
+    ClampPan();
+    ClampScrollFwd();
+    Redraw();
+}
+
+static void ZoomFit()
+{
+    if (g_zoom == 1.0 && !g_panX && !g_panY) return;
+    g_zoom = 1.0; g_panX = g_panY = 0;
+    ClampScrollFwd();
+    Redraw();
 }
 
 static void ClampScroll()
@@ -800,14 +907,71 @@ static bool NoteHit(HDC hdc, const RECT& page, const SheetText& t, POINT p, int 
     return InRect(r, local);
 }
 
-// The rotate handle: a knob a little above the note's top edge, turning with it.
-static const int kKnobR = 7;
-
-static POINT KnobPos(HDC hdc, const RECT& page, const SheetText& t)
+// The note's outline on screen, turned: the screen-aligned box around it.
+static RECT NoteBBox(HDC hdc, const RECT& page, const SheetText& t)
 {
-    const RECT  r = NoteRect(hdc, page, t);
+    const RECT r = NoteRect(hdc, page, t);
+    if (t.angle == 0.0f) return r;
     const POINT c = NoteCentre(r);
-    return Rotate({ c.x, r.top - 18 }, c, t.angle);
+    const POINT k[4] = { Rotate({ r.left, r.top }, c, t.angle),     Rotate({ r.right, r.top }, c, t.angle),
+                         Rotate({ r.right, r.bottom }, c, t.angle), Rotate({ r.left, r.bottom }, c, t.angle) };
+    RECT bb = { k[0].x, k[0].y, k[0].x, k[0].y };
+    for (const POINT& q : k)
+    {
+        if (q.x < bb.left) bb.left = q.x;   if (q.x > bb.right)  bb.right  = q.x;
+        if (q.y < bb.top)  bb.top  = q.y;   if (q.y > bb.bottom) bb.bottom = q.y;
+    }
+    return bb;
+}
+
+// Handles on the note under the pointer (text tool): two round buttons over
+// its top-right corner that turn it a quarter each way, and a square at its
+// bottom-right corner that resizes it. Placed on the screen-aligned outline,
+// so they stay put and upright whichever way the note is turned.
+enum { NH_NONE = 0, NH_ROT_CCW, NH_ROT_CW, NH_RESIZE };
+static const int kHandleR = 10;
+
+static POINT HandlePos(const RECT& bb, int h)
+{
+    switch (h)
+    {
+    case NH_ROT_CW:  return { bb.right + 4,                   bb.top - kHandleR - 6 };
+    case NH_ROT_CCW: return { bb.right + 4 - 2 * kHandleR - 4, bb.top - kHandleR - 6 };
+    case NH_RESIZE:  return { bb.right + 3,                   bb.bottom + 3 };
+    default:         return { 0, 0 };
+    }
+}
+
+static int HandleAt(const RECT& bb, POINT p)
+{
+    const int hs[3] = { NH_ROT_CW, NH_ROT_CCW, NH_RESIZE };
+    for (int h : hs)
+    {
+        const POINT c = HandlePos(bb, h);
+        const int r = kHandleR + 2, dx = p.x - c.x, dy = p.y - c.y;
+        if (dx * dx + dy * dy <= r * r) return h;
+    }
+    return NH_NONE;
+}
+
+// Where a note may sit: its turned outline kept on the page. `pos` is the
+// top-left of the unturned box, so the outline's half-size is worked out from
+// the box and the angle, the centre clamped, and pos rebuilt from it.
+static SheetPoint ClampNoteOnPage(HDC hdc, const RECT& page, const SheetText& t, SheetPoint pos)
+{
+    SheetText probe = t;
+    probe.pos = { 0, 0 };
+    const RECT r0 = NoteRect(hdc, page, probe);
+    const double w = r0.right - r0.left, h = r0.bottom - r0.top;
+    const double a = t.angle * 3.14159265358979 / 180.0;
+    const double ex = std::fabs(std::cos(a)) * w / 2 + std::fabs(std::sin(a)) * h / 2;
+    const double ey = std::fabs(std::sin(a)) * w / 2 + std::fabs(std::cos(a)) * h / 2;
+    const double PW = page.right - page.left, PH = page.bottom - page.top;
+    if (PW <= 0 || PH <= 0) return pos;
+    double cx = pos.x * PW + w / 2, cy = pos.y * PH + h / 2;      // page-relative centre
+    cx = (2 * ex >= PW) ? PW / 2 : (cx < ex ? ex : (cx > PW - ex ? PW - ex : cx));
+    cy = (2 * ey >= PH) ? PH / 2 : (cy < ey ? ey : (cy > PH - ey ? PH - ey : cy));
+    return { (float)((cx - w / 2) / PW), (float)((cy - h / 2) / PH) };
 }
 
 // ===========================================================================
@@ -841,10 +1005,15 @@ static int TextW(HDC hdc, const char* s)
     return r.right - r.left;
 }
 
-// One column of square buttons, top to bottom:
-//   collapse | Page 2-Up Scroll | Pencil Text Eraser | colours | Undo | < page >
-// with More pinned to the bottom. Collapsed: a floating expand chevron in the
-// lower left and floating < > in the lower right, over the music.
+// One column of square buttons. From the top:
+//   collapse | Pencil Text Eraser | colours | Undo | More
+// and at the foot, only when there is more than one page to show:
+//   Page 2-Up Scroll | < page >
+// Collapsed: a floating expand chevron in the lower left, and (again only with
+// pages to turn) floating < > in the lower right, over the music.
+//
+// The window may be made smaller than the column: what does not fit is cut
+// off, and the music is cropped rather than the window refusing to shrink.
 static void LayoutToolbar(HDC hdc, int cw, int ch)
 {
     g_tb.clear();
@@ -857,16 +1026,20 @@ static void LayoutToolbar(HDC hdc, int cw, int ch)
     const int gap = 3;
     const int grp = 10;                 // between groups
     SelectObject(hdc, o);
+    const bool pages = PageCount() > 1;
 
     if (g_tbCollapsed)
     {
         g_tbW = 0;
         const int y = ch - pad - sq;
         AddTb(TB_EXPAND, pad, y, pad + sq, y + sq);
-        AddTb(TB_NEXT, cw - pad - sq, y, cw - pad, y + sq);
-        AddTb(TB_PREV, cw - pad - 2 * sq - gap, y, cw - pad - sq - gap, y + sq);
-        g_minClientW = 3 * sq + 4 * pad + 2 * gap;
-        g_minClientH = sq + 2 * pad + 60;
+        if (pages)
+        {
+            AddTb(TB_NEXT, cw - pad - sq, y, cw - pad, y + sq);
+            AddTb(TB_PREV, cw - pad - 2 * sq - gap, y, cw - pad - sq - gap, y + sq);
+        }
+        g_minClientW = 120;
+        g_minClientH = 100;
         return;
     }
 
@@ -875,27 +1048,32 @@ static void LayoutToolbar(HDC hdc, int cw, int ch)
     auto add = [&](int id, int h) { AddTb(id, x, y, x + sq, y + h); y += h + gap; };
 
     add(TB_COLLAPSE, sq);                          y += grp - gap;
-    add(TB_VIEW_PAGE, sq);
-    add(TB_VIEW_TWO, sq);
-    add(TB_VIEW_SCROLL, sq);                       y += grp - gap;
     add(TB_PEN, sq);
     add(TB_TEXT, sq);
     add(TB_ERASE, sq);                             y += grp - gap;
     for (int i = 0; i < kSheetPaletteCount; ++i) add(TB_COLOR0 + i, sq - 6);
     y += grp - gap;
-    add(TB_UNDO, sq);                              y += grp - gap;
-    add(TB_PREV, sq);
-    add(TB_PAGELBL, th * 2 + 4);                   // "1-2" over "/ 3"
-    add(TB_NEXT, sq);
+    add(TB_UNDO, sq);
+    add(TB_MORE, sq);
 
-    // More sits at the foot of the column, or right after Undo if the
-    // window is shorter than the column.
-    const int moreY = (ch - pad - sq > y + grp) ? ch - pad - sq : y + grp;
-    AddTb(TB_MORE, x, moreY, x + sq, moreY + sq);
+    if (pages)
+    {
+        // Pinned to the foot; below the rest when the window is too short.
+        const int footH = 3 * (sq + gap) + (grp - gap) + sq + gap + (th * 2 + 4) + gap + sq;
+        int fy = ch - pad - footH;
+        if (fy < y + grp) fy = y + grp;
+        y = fy;
+        add(TB_VIEW_PAGE, sq);
+        add(TB_VIEW_TWO, sq);
+        add(TB_VIEW_SCROLL, sq);                   y += grp - gap;
+        add(TB_PREV, sq);
+        add(TB_PAGELBL, th * 2 + 4);               // "1-2" over "/ 3"
+        add(TB_NEXT, sq);
+    }
 
     g_tbW        = sq + 2 * pad + 1;               // +1: the rule on its right
-    g_minClientW = g_tbW + 160;
-    g_minClientH = moreY + sq + pad;
+    g_minClientW = g_tbW + 80;
+    g_minClientH = 100;
 }
 static bool TbEnabled(int id)
 {
@@ -1174,9 +1352,30 @@ static void DrawNote(HDC hdc, const RECT& page, const SheetText& t)
 #endif
 }
 
-// The handle on the note under the pointer (text tool): a stalk up from the
-// top edge to a round knob, both turning with the note, and a dotted outline
-// of the note so it is clear which one the handle belongs to.
+// A small round arrow for the rotate buttons: an open arc with a head,
+// clockwise or not.
+static void DrawTurnArrow(HDC hdc, POINT c, bool cw, COLORREF ink)
+{
+    const int r = kHandleR - 3;
+    HPEN    pen = CreatePen(PS_SOLID, 2, ink);
+    HGDIOBJ op  = SelectObject(hdc, pen);
+    // Arc from the top round three quarters, ending on the left (cw) or right.
+    SetArcDirection(hdc, cw ? AD_CLOCKWISE : AD_COUNTERCLOCKWISE);
+    const POINT start = { c.x, c.y - r };
+    const POINT end   = cw ? POINT{ c.x - r, c.y } : POINT{ c.x + r, c.y };
+    Arc(hdc, c.x - r, c.y - r, c.x + r + 1, c.y + r + 1, start.x, start.y, end.x, end.y);
+    SetArcDirection(hdc, AD_COUNTERCLOCKWISE);
+    // The head, at the end of the arc. Both arcs end on their side point
+    // travelling upward (clockwise round to the left, anticlockwise round to
+    // the right), so both heads point up.
+    POINT head[3] = { { end.x - 3, end.y + 2 }, { end.x, end.y - 2 }, { end.x + 3, end.y + 2 } };
+    Polyline(hdc, head, 3);
+    SelectObject(hdc, op);
+    DeleteObject(pen);
+}
+
+// The handles on the note under the pointer (text tool): a dotted outline of
+// the note (turned with it), the two turn buttons and the resize square.
 static void DrawRotateHandle(HDC hdc, const RECT& page, const SheetText& t)
 {
     const RECT  r = NoteRect(hdc, page, t);
@@ -1187,8 +1386,6 @@ static void DrawRotateHandle(HDC hdc, const RECT& page, const SheetText& t)
                      { r.right + 3, r.bottom + 3 }, { r.left - 3, r.bottom + 3 },
                      { r.left - 3, r.top - 3 } };
     for (POINT& q : box) q = Rotate(q, c, t.angle);
-    const POINT top  = Rotate({ c.x, r.top - 3 }, c, t.angle);
-    const POINT knob = KnobPos(hdc, page, t);
 
     HPEN    pen = CreatePen(PS_DOT, 1, ink);
     HGDIOBJ op  = SelectObject(hdc, pen);
@@ -1197,20 +1394,33 @@ static void DrawRotateHandle(HDC hdc, const RECT& page, const SheetText& t)
     SelectObject(hdc, op);
     DeleteObject(pen);
 
+    const RECT bb = NoteBBox(hdc, page, t);
     HPEN    solid = CreatePen(PS_SOLID, 1, ink);
     HBRUSH  fill  = CreateSolidBrush(RGB(255, 255, 255));
     op = SelectObject(hdc, solid);
     HGDIOBJ ob = SelectObject(hdc, fill);
-    MoveToEx(hdc, top.x, top.y, nullptr);
-    LineTo(hdc, knob.x, knob.y);
-    Ellipse(hdc, knob.x - kKnobR, knob.y - kKnobR, knob.x + kKnobR + 1, knob.y + kKnobR + 1);
-    // An open arc inside, so it reads as "turn" rather than a dot.
-    Arc(hdc, knob.x - 4, knob.y - 4, knob.x + 5, knob.y + 5,
-        knob.x + 4, knob.y, knob.x, knob.y - 4);
+    for (int h : { NH_ROT_CCW, NH_ROT_CW })
+    {
+        const POINT k = HandlePos(bb, h);
+        Ellipse(hdc, k.x - kHandleR, k.y - kHandleR, k.x + kHandleR + 1, k.y + kHandleR + 1);
+    }
+    const POINT rz = HandlePos(bb, NH_RESIZE);
+    const int   hs = kHandleR - 3;
+    Rectangle(hdc, rz.x - hs, rz.y - hs, rz.x + hs + 1, rz.y + hs + 1);
     SelectObject(hdc, op);
     SelectObject(hdc, ob);
     DeleteObject(solid);
     DeleteObject(fill);
+
+    DrawTurnArrow(hdc, HandlePos(bb, NH_ROT_CCW), false, ink);
+    DrawTurnArrow(hdc, HandlePos(bb, NH_ROT_CW),  true,  ink);
+    // Two short diagonals in the resize square: "drag this corner".
+    HPEN    dpen = CreatePen(PS_SOLID, 1, ink);
+    HGDIOBJ odp  = SelectObject(hdc, dpen);
+    MoveToEx(hdc, rz.x - 2, rz.y + 3, nullptr); LineTo(hdc, rz.x + 4, rz.y - 3);
+    MoveToEx(hdc, rz.x + 1, rz.y + 3, nullptr); LineTo(hdc, rz.x + 4, rz.y);
+    SelectObject(hdc, odp);
+    DeleteObject(dpen);
 }
 
 static void DrawMarks(HDC hdc, const PagePlace& pl)
@@ -1256,9 +1466,6 @@ static void DrawMarks(HDC hdc, const PagePlace& pl)
             if (g_edit && pl.page == g_editPage && i == g_editTextIdx) continue;  // being edited
             DrawNote(hdc, pl.r, sp->texts[(size_t)i]);
         }
-        if (g_tool == TOOL_TEXT && !g_edit && g_hotNotePage == pl.page &&
-            g_hotNoteIdx >= 0 && g_hotNoteIdx < (int)sp->texts.size())
-            DrawRotateHandle(hdc, pl.r, sp->texts[(size_t)g_hotNoteIdx]);
     }
     SelectClipRgn(hdc, nullptr);
     DeleteObject(clip);
@@ -1312,6 +1519,7 @@ static void Paint(HWND hwnd)
     HGDIOBJ ob  = SelectObject(mem, bb);
 
     LayoutToolbar(mem, cw, ch);
+    ClampPan();
     ClampScroll();
     if (!g_tbCollapsed) PaintToolbar(mem, ch);
 
@@ -1362,7 +1570,30 @@ static void Paint(HWND hwnd)
             RECT sh = pl.r;
             OffsetRect(&sh, 2, 2);
             FillSolid(mem, sh, Blend(ground, RGB(0, 0, 0), 40));
-            if (HBITMAP b = ScaledBitmap(hdc, pl.page, w, h, keep))
+            if (g_zoom != 1.0)
+            {
+                // Zoomed: stretch only what is on screen, straight from the
+                // rendered page - a cached copy at this size could be huge.
+                RECT vis;
+                if (IntersectRect(&vis, &pl.r, &c))
+                {
+                    const SheetDocPage& src = g_doc->pages[(size_t)pl.page];
+                    HDC     sdc = CreateCompatibleDC(hdc);
+                    HGDIOBJ os  = SelectObject(sdc, src.bmp);
+                    const double kx = (double)src.w / w, ky = (double)src.h / h;
+                    const int sx = (int)((vis.left - pl.r.left) * kx), sy = (int)((vis.top - pl.r.top) * ky);
+                    const int sw = (int)((vis.right - vis.left) * kx + 0.5), sh2 = (int)((vis.bottom - vis.top) * ky + 0.5);
+#ifdef _WIN32
+                    SetStretchBltMode(mem, HALFTONE);
+                    SetBrushOrgEx(mem, 0, 0, nullptr);
+#endif
+                    StretchBlt(mem, vis.left, vis.top, vis.right - vis.left, vis.bottom - vis.top,
+                               sdc, sx, sy, sw > 0 ? sw : 1, sh2 > 0 ? sh2 : 1, SRCCOPY);
+                    SelectObject(sdc, os);
+                    DeleteDC(sdc);
+                }
+            }
+            else if (HBITMAP b = ScaledBitmap(hdc, pl.page, w, h, keep))
             {
                 HDC     bdc = CreateCompatibleDC(hdc);
                 HGDIOBJ obb = SelectObject(bdc, b);
@@ -1377,6 +1608,13 @@ static void Paint(HWND hwnd)
             DrawMarks(mem, pl);
             SelectClipRgn(mem, clip);   // DrawMarks cleared it
         }
+        // The note handles, over everything (they can hang off the page).
+        if (g_tool == TOOL_TEXT && !g_edit && g_hotNoteIdx >= 0)
+            for (const auto& pl : places)
+                if (pl.page == g_hotNotePage)
+                    if (const SheetPage* sp = o->m_sheet.PageOrNull(pl.page))
+                        if (g_hotNoteIdx < (int)sp->texts.size())
+                            DrawRotateHandle(mem, pl.r, sp->texts[(size_t)g_hotNoteIdx]);
         SelectClipRgn(mem, nullptr);
         DeleteObject(clip);
         // Pages scrolled out of view are kept while they are still the size
@@ -1450,6 +1688,8 @@ static void GoToPage(int page)
     {
         g_page = page;
         ClampView();
+        // Zoomed in: start the new page at its top.
+        if (g_zoom > 1.0) { g_panY = -1000000; ClampPan(); }
     }
     Redraw();
 }
@@ -1473,6 +1713,7 @@ static void SetView(int v)
     CommitTextEdit(true);
     const int cur = CurrentPage();
     g_view = v;
+    g_zoom = 1.0; g_panX = g_panY = 0;
     char buf[8];
     snprintf(buf, sizeof(buf), "%d", v);
     SetExtState(kSec, kViewKey, buf, true);
@@ -1865,23 +2106,24 @@ static void ClearHotNote()
     Redraw();
 }
 
-// Is p on the hot note's rotate knob?
-static bool KnobHit(POINT p)
+// Which handle of the hot note is under p (text tool), if any.
+static int HotHandleAt(POINT p)
 {
-    if (g_tool != TOOL_TEXT || g_edit) return false;
+    if (g_tool != TOOL_TEXT || g_edit) return NH_NONE;
     PagePlace pl;
     SheetText* t = HotNote(&pl);
-    if (!t) return false;
+    if (!t) return NH_NONE;
     HDC dc = GetDC(g_wnd);
-    const POINT k = KnobPos(dc, pl.r, *t);
+    const RECT bb = NoteBBox(dc, pl.r, *t);
     ReleaseDC(g_wnd, dc);
-    const int dx = p.x - k.x, dy = p.y - k.y, r = kKnobR + 3;
-    return dx * dx + dy * dy <= r * r;
+    return HandleAt(bb, p);
 }
 
-// Text tool, pointer moving: give the note under it the handle. The handle
-// stays while the pointer is anywhere near that note (the knob sits above
-// it, and the pointer has to cross the gap to reach it).
+static bool KnobHit(POINT p) { return HotHandleAt(p) != NH_NONE; }
+
+// Text tool, pointer moving: give the note under it the handles. They stay
+// while the pointer is anywhere near that note (they sit just outside it,
+// and the pointer has to cross the gap to reach them).
 static void UpdateHotNote(POINT p)
 {
     if (g_tool != TOOL_TEXT || g_edit || OverBar(p)) { ClearHotNote(); return; }
@@ -1890,9 +2132,10 @@ static void UpdateHotNote(POINT p)
         if (SheetText* t = HotNote(&pl))
         {
             HDC dc = GetDC(g_wnd);
-            const bool close = NoteHit(dc, pl.r, *t, p, 28);
+            RECT bb = NoteBBox(dc, pl.r, *t);
             ReleaseDC(g_wnd, dc);
-            if (close) return;
+            InflateRect(&bb, 2 * kHandleR + 14, 2 * kHandleR + 14);
+            if (InRect(bb, p)) return;
         }
     }
     PagePlace pl;
@@ -1935,6 +2178,73 @@ static float QuarterTurn(double deg)
     while (deg > 180.0)   deg -= 360.0;
     while (deg <= -180.0) deg += 360.0;
     return (float)deg;
+}
+
+// One of the turn buttons: a quarter turn that way, one undo step, and the
+// note kept on the page (a long note turned upright can overhang it).
+static void TurnHotNote(bool cw)
+{
+    PagePlace pl;
+    SheetText* t = HotNote(&pl);
+    if (!t) return;
+    PushUndoPage(g_hotNotePage);
+    if (!(t = HotNote(&pl))) return;
+    t->angle = QuarterTurn(t->angle + (cw ? 90.0 : -90.0));
+    HDC dc = GetDC(g_wnd);
+    t->pos = ClampNoteOnPage(dc, pl.r, *t, t->pos);
+    ReleaseDC(g_wnd, dc);
+    NoteEdited();
+    Redraw();
+}
+
+// Dragging the resize corner: the note scales about its centre by how far
+// the pointer is from the centre now, against where the drag began.
+static void ResizeHotNoteTo(POINT p)
+{
+    PagePlace pl;
+    SheetText* t = HotNote(&pl);
+    if (!t) return;
+    HDC dc = GetDC(g_wnd);
+    SheetText orig = *t;
+    orig.height = g_resizeOrigH;
+    orig.pos    = g_resizeOrigPos;
+    const RECT  r0 = NoteRect(dc, pl.r, orig);
+    const POINT c  = NoteCentre(r0);
+    const double d = std::sqrt((double)(p.x - c.x) * (p.x - c.x) + (double)(p.y - c.y) * (p.y - c.y));
+    double k = d / (g_resizeStartDist > 1.0 ? g_resizeStartDist : 1.0);
+    float  nh = (float)(g_resizeOrigH * k);
+    if (nh < 0.008f) nh = 0.008f;
+    if (nh > 0.25f)  nh = 0.25f;
+    if (nh == t->height) { ReleaseDC(g_wnd, dc); return; }
+
+    if (!g_resizedThisDrag)
+    {
+        PushUndoPage(g_hotNotePage);
+        g_resizedThisDrag = true;
+        if (!(t = HotNote(&pl))) { ReleaseDC(g_wnd, dc); return; }
+    }
+    // New size, same centre.
+    SheetText probe = *t;
+    probe.height = nh;
+    probe.pos    = { 0, 0 };
+    const RECT r1 = NoteRect(dc, pl.r, probe);
+    const double PW = pl.r.right - pl.r.left, PH = pl.r.bottom - pl.r.top;
+    SheetPoint np = { (float)((c.x - pl.r.left - (r1.right - r1.left) / 2.0) / PW),
+                      (float)((c.y - pl.r.top  - (r1.bottom - r1.top) / 2.0) / PH) };
+    t->height = nh;
+    t->pos    = ClampNoteOnPage(dc, pl.r, *t, np);
+    ReleaseDC(g_wnd, dc);
+    Redraw();
+}
+
+static void EndResize()
+{
+    if (!g_resizing) return;
+    g_resizing = false;
+    if (GetCapture() == g_wnd) ReleaseCapture();
+    if (g_resizedThisDrag) NoteEdited();
+    g_resizedThisDrag = false;
+    Redraw();
 }
 
 // Dragging the knob: the note turns to face the pointer, in quarter turns.
@@ -1999,9 +2309,11 @@ static void MoveNoteTo(POINT p)
     const float W = (float)(pl.r.right - pl.r.left), H = (float)(pl.r.bottom - pl.r.top);
     if (W <= 0 || H <= 0) return;
     SheetPoint np = { g_moveOrigPos.x + dx / W, g_moveOrigPos.y + dy / H };
-    // Keep the note's corner on the page; the rest may hang over the edge.
-    np.x = np.x < 0 ? 0 : (np.x > 0.98f ? 0.98f : np.x);
-    np.y = np.y < 0 ? 0 : (np.y > 0.98f ? 0.98f : np.y);
+    // The note's outline, turned as it is, stays on the page - right up to
+    // the edge, whichever way it faces.
+    HDC dc = GetDC(g_wnd);
+    np = ClampNoteOnPage(dc, pl.r, pg.texts[(size_t)g_moveIdx], np);
+    ReleaseDC(g_wnd, dc);
     pg.texts[(size_t)g_moveIdx].pos = np;
     Redraw();
 }
@@ -2451,7 +2763,7 @@ bool MusicSheetWnd_SheetButtonTrashHit(HWND hBtn, POINT ptClient, const Transiti
 // ===========================================================================
 enum { MENU_ATTACH = 1, MENU_CLEAR_PAGE, MENU_CLEAR_ALL, MENU_DETACH, MENU_DOCK, MENU_CLOSE,
        MENU_TOOLBAR, MENU_TOOL_NONE, MENU_TOOL_PEN, MENU_TOOL_TEXT, MENU_TOOL_ERASE,
-       MENU_VIEW_PAGE, MENU_VIEW_TWO, MENU_VIEW_SCROLL, MENU_UNDO,
+       MENU_VIEW_PAGE, MENU_VIEW_TWO, MENU_VIEW_SCROLL, MENU_UNDO, MENU_FIT,
        MENU_COLOR0 = 100 };
 
 static void SetToolbarHidden(bool hidden);
@@ -2478,6 +2790,7 @@ static void ShowMenu(POINT screen)
 
     HMENU m = CreatePopupMenu();
     AppendMenuA(m, MF_STRING, MENU_TOOLBAR, g_tbCollapsed ? "Expand Toolbar" : "Collapse Toolbar (Full Page)");
+    AppendMenuA(m, MF_STRING | (g_zoom > 1.0 ? 0 : MF_GRAYED), MENU_FIT, "Fit to Window\tCtrl+0");
     if (g_tbCollapsed)
     {
         // With the bar away, what it held lives here.
@@ -2535,6 +2848,7 @@ static void ShowMenu(POINT screen)
     case MENU_VIEW_TWO:    SetView(VIEW_TWO);    break;
     case MENU_VIEW_SCROLL: SetView(VIEW_SCROLL); break;
     case MENU_UNDO:        DoUndo(); break;
+    case MENU_FIT:         ZoomFit(); break;
     default:
         if (id >= MENU_COLOR0 && id < MENU_COLOR0 + kSheetPaletteCount) SetColor(id - MENU_COLOR0);
         break;
@@ -2592,6 +2906,16 @@ static int SheetTranslateAccel(MSG* msg, accelerator_register_t*)
             return -1;
         return 0;
     }
+    // The wheel with Ctrl or Shift held is a REAPER shortcut too (it can be
+    // bound to actions), so REAPER would take it before the window saw it.
+    // Over the music it is ours: zoom and sideways pan.
+    if (msg->message == WM_MOUSEWHEEL || msg->message == WM_MOUSEHWHEEL)
+    {
+        POINT pt;
+        GetCursorPos(&pt);
+        HWND under = WindowFromPoint(pt);
+        return (under == g_wnd || IsChild(g_wnd, under)) ? -1 : 0;
+    }
     if (msg->hwnd != g_wnd && !IsChild(g_wnd, msg->hwnd)) return 0;
     if (msg->message != WM_KEYDOWN) return 0;
 
@@ -2615,6 +2939,19 @@ static int SheetTranslateAccel(MSG* msg, accelerator_register_t*)
         return 0;
     case 'Z':
         if (ctrl) { DoUndo(); return 1; }
+        return 0;
+    case '0': case VK_NUMPAD0:
+        if (ctrl) { ZoomFit(); return 1; }
+        return 0;
+    case VK_OEM_PLUS: case VK_ADD: case VK_OEM_MINUS: case VK_SUBTRACT:
+        if (ctrl)
+        {
+            const RECT c = ContentRect();
+            const POINT mid = { (c.left + c.right) / 2, (c.top + c.bottom) / 2 };
+            const bool in = (msg->wParam == VK_OEM_PLUS || msg->wParam == VK_ADD);
+            ZoomAt(mid, g_zoom * (in ? 1.25 : 0.8));
+            return 1;
+        }
         return 0;
     }
     return 0;
@@ -2711,6 +3048,8 @@ static void SetOwner(TransitionSnapshot* owner)
         Owner();                 // fills g_ownerIdx
         g_page    = 0;
         g_scrollY = 0;
+        g_zoom    = 1.0;
+        g_panX = g_panY = 0;
     }
     SyncDoc();
     ClampView();
@@ -2909,14 +3248,24 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             if (onPage) BeginStroke(pl, p);
             break;
         case TOOL_TEXT:
-            if (KnobHit(p))
+            if (const int h = HotHandleAt(p))
             {
-                // Each click is a quarter turn (a double-click is two).
-                g_rotating = true;
-                g_rotatedThisDrag = false;
-                g_rotDragging     = false;
-                g_rotDownPt = p;
-                SetCapture(hwnd);
+                if (h == NH_ROT_CW || h == NH_ROT_CCW) { TurnHotNote(h == NH_ROT_CW); break; }
+                // The resize corner.
+                PagePlace hpl;
+                if (SheetText* t = HotNote(&hpl))
+                {
+                    HDC dc = GetDC(hwnd);
+                    const POINT c = NoteCentre(NoteRect(dc, hpl.r, *t));
+                    ReleaseDC(hwnd, dc);
+                    g_resizing        = true;
+                    g_resizedThisDrag = false;
+                    g_resizeOrigH     = t->height;
+                    g_resizeOrigPos   = t->pos;
+                    g_resizeStartDist = std::sqrt((double)(p.x - c.x) * (p.x - c.x) +
+                                                  (double)(p.y - c.y) * (p.y - c.y));
+                    SetCapture(hwnd);
+                }
                 break;
             }
             if (onPage)
@@ -2961,11 +3310,15 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     break;
                 }
             }
-            if (g_view == VIEW_SCROLL)
+            if (g_view == VIEW_SCROLL || g_zoom > 1.0)
             {
+                // Drag the music: up and down (and sideways when zoomed).
                 g_panning    = true;
+                g_panX0      = p.x;
                 g_panY0      = p.y;
                 g_panScroll0 = g_scrollY;
+                g_panStartX  = g_panX;
+                g_panStartY  = g_panY;
                 SetCapture(hwnd);
             }
             else
@@ -2987,11 +3340,15 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         if (g_drawing)  { ExtendStroke(p); return 0; }
         if (g_erasing)  { EraseAt(p); return 0; }
         if (g_rotating) { RotateHotNoteTo(p); return 0; }
+        if (g_resizing) { ResizeHotNoteTo(p); return 0; }
         if (g_notePressed) { MoveNoteTo(p); return 0; }
         UpdateHotNote(p);
         if (g_panning)
         {
-            g_scrollY = g_panScroll0 - (p.y - g_panY0);
+            g_panX = g_panStartX - (p.x - g_panX0);
+            if (g_view == VIEW_SCROLL) g_scrollY = g_panScroll0 - (p.y - g_panY0);
+            else                       g_panY    = g_panStartY  - (p.y - g_panY0);
+            ClampPan();
             ClampScroll();
             Redraw();
             return 0;
@@ -3015,7 +3372,7 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 #ifdef _WIN32
     case WM_MOUSELEAVE:
         if (g_hot != TB_NONE && g_pressed == TB_NONE) { g_hot = TB_NONE; Redraw(); }
-        if (!g_rotating) ClearHotNote();
+        if (!g_rotating && !g_resizing) ClearHotNote();
         return 0;
 #endif
 
@@ -3024,6 +3381,7 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         POINT p = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         if (g_drawing)  { EndStroke(true); return 0; }
         if (g_rotating) { EndRotate(true); return 0; }
+        if (g_resizing) { EndResize(); return 0; }
         if (g_notePressed) { EndNotePress(true); return 0; }
         if (g_erasing)
         {
@@ -3061,6 +3419,7 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
         {
             if (g_drawing) EndStroke(true);
             EndRotate(false);
+            EndResize();
             EndNotePress(false);
             g_erasing = false;
             g_panning = false;
@@ -3073,11 +3432,33 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
     {
         CommitTextEdit(true);
         const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const WORD keys = GET_KEYSTATE_WPARAM(wParam);
+        const RECT c = ContentRect();
+        if (keys & MK_CONTROL)
+        {
+            // Zoom about the pointer: each notch 15% in or out.
+            POINT at = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(hwnd, &at);
+            ZoomAt(at, g_zoom * std::pow(1.15, delta / 120.0));
+            return 0;
+        }
+        if (keys & MK_SHIFT)
+        {
+            g_panX -= delta * ((c.right - c.left) / 6) / 120;
+            ClampPan();
+            Redraw();
+            return 0;
+        }
         if (g_view == VIEW_SCROLL)
         {
-            const RECT c = ContentRect();
             g_scrollY -= delta * ((c.bottom - c.top) / 6) / 120;
             ClampScroll();
+            Redraw();
+        }
+        else if (g_zoom > 1.0)
+        {
+            g_panY -= delta * ((c.bottom - c.top) / 6) / 120;
+            ClampPan();
             Redraw();
         }
         else
@@ -3098,12 +3479,15 @@ static INT_PTR CALLBACK SheetDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             ScreenToClient(hwnd, &p);
             PagePlace pl;
             const char* cur = IDC_ARROW;
+            const int hh = (g_resizing ? NH_RESIZE : HotHandleAt(p));
             if (g_notePressed && g_noteMoving) cur = IDC_SIZEALL;
-            else if (g_rotating || KnobHit(p)) cur = IDC_HAND;
+            else if (hh == NH_RESIZE) cur = IDC_SIZENWSE;
+            else if (hh != NH_NONE) cur = IDC_HAND;
             else if (!OverBar(p) && PageAt(p, pl))
             {
                 if (g_tool == TOOL_PEN || g_tool == TOOL_ERASE) cur = IDC_CROSS;
                 else if (g_tool == TOOL_TEXT) cur = NoteAt(pl, p) >= 0 ? IDC_SIZEALL : IDC_IBEAM;
+                else if (g_zoom > 1.0) cur = IDC_SIZEALL;
                 else if (g_view == VIEW_SCROLL) cur = IDC_SIZENS;
             }
             SetCursor(LoadCursor(nullptr, cur));

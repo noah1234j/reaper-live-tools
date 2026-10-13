@@ -75,6 +75,7 @@
 #define IDC_ADDSUB_BTN           2151   // "Add Subscene" button (main Scenes window sidebar)
 #define IDC_RECALLFILT_BTN       2152   // "Recall Filters..." button (main Scenes window sidebar)
 #define IDC_SHEET_BTN            2153   // music sheet button: attach, or open + trash when attached
+#define IDC_LAYERROW             2154   // placeholder: where the A, B, C... layer buttons go
 
 // ---- Music sheet viewer (IDD_MUSICSHEET) -----------------------------------
 // An empty, resizable dialog: toolbar, pages and annotations are all painted

@@ -245,14 +245,17 @@ static bool    g_gripDragging   = false;
 static int     g_gripDragY0     = 0;
 static int     g_gripDragShrink0 = 0;
 static void    LayoutNotes(HWND hwnd);
+static void    LayoutLayerRow(HWND hwnd);
 
 // ---- Layer buttons --------------------------------------------------------
-// A column of A, B, C... buttons down the right of the notes box, one per
-// layer slot. There are as many as the scene with the most layers has, so the
-// column does not change length from scene to scene; a slot the live layer set
-// (the last recalled scene's) does not have is greyed out, and the active
-// layer is drawn filled. Clicking one activates that layer.
-static const int kLayerBtnMax = 32;
+// A row of A, B, C... buttons above the music sheet button (IDC_LAYERROW is
+// the placeholder they are laid across), one per layer slot, up to
+// kLayerBtnShown of them - always all eight, so the row never changes length;
+// a slot the live layer set (the last recalled scene's) does not have is
+// greyed out, and the active layer is drawn filled. Clicking one activates
+// that layer.
+static const int kLayerBtnMax   = 32;
+static const int kLayerBtnShown = 8;    // what fits the row at a readable size
 static HWND g_layerBtns[kLayerBtnMax] = {};
 static int  g_layerBtnCount  = 0;    // buttons shown
 static int  g_layerBtnLive   = -1;   // live layer count they were last synced to
@@ -995,14 +998,11 @@ static int NotesFillHeight(HWND hwnd)
 // Layer buttons – see g_layerBtns.
 // ---------------------------------------------------------------------------
 
-// How many buttons to show: the largest layer set any scene holds, or the live
-// one if that is larger.
+// How many buttons to show: always the full row, A to H, so it looks the same
+// in every project. Slots the live layer set does not have are greyed out.
 static int LayerBtnWanted()
 {
-    int n = LayersEngine::Get().GetLayerCount();
-    for (const auto& snap : g_snapshots)
-        if (snap && (int)snap->m_layers.size() > n) n = (int)snap->m_layers.size();
-    return n < kLayerBtnMax ? n : kLayerBtnMax;
+    return kLayerBtnShown;
 }
 
 // A..Z, then 27, 28... for the (unlikely) slots past Z.
@@ -1070,7 +1070,7 @@ static void SyncLayerButtons(HWND hwnd)
         EnableWindow(g_layerBtns[i], i < live);
         InvalidateRect(g_layerBtns[i], nullptr, FALSE);
     }
-    if (countChanged) LayoutNotes(hwnd);   // shows/hides and makes room
+    if (countChanged) LayoutLayerRow(hwnd);   // shows/hides
 }
 
 static void DrawLayerButton(const DRAWITEMSTRUCT* dis)
@@ -1097,13 +1097,37 @@ static void DrawLayerButton(const DRAWITEMSTRUCT* dis)
 }
 
 // ---------------------------------------------------------------------------
+// LayoutLayerRow – the layer buttons, left to right across IDC_LAYERROW.
+// Every button is an eighth of the row (less the gaps), so they keep one size
+// however many there are; slots past the last layer leave the row's end empty.
+// ---------------------------------------------------------------------------
+static void LayoutLayerRow(HWND hwnd)
+{
+    if (!g_layerBtns[0]) return;
+    HWND hRow = GetDlgItem(hwnd, IDC_LAYERROW);
+    if (!hRow) return;
+    RECT rr;
+    GetWindowRect(hRow, &rr);
+    MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&rr, 2);
+    const int gap = 2;
+    const int rowW = rr.right - rr.left;
+    int bw = (rowW - (kLayerBtnShown - 1) * gap) / kLayerBtnShown;
+    if (bw < 8) bw = 8;
+    const int n = g_layerBtnCount;
+    for (int i = 0; i < kLayerBtnMax; ++i)
+    {
+        if (i < n)
+            SetWindowPos(g_layerBtns[i], nullptr, rr.left + i * (bw + gap), rr.top,
+                         bw, rr.bottom - rr.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        else
+            ShowWindow(g_layerBtns[i], SW_HIDE);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LayoutNotes – size the notes box to fill down to the footer, less whatever
 // the user has pulled it up by, and reseat the grip under it. Runs after the
 // WM_SIZE sidebar pass, so x/width are read from the live controls.
-//
-// The layer buttons take a column off the notes box's right edge. The grip
-// keeps the full sidebar width LayoutMain gave it, so it is the width the
-// notes box and the column share.
 // ---------------------------------------------------------------------------
 static void LayoutNotes(HWND hwnd)
 {
@@ -1126,50 +1150,10 @@ static void LayoutNotes(HWND hwnd)
     RECT gr;
     GetWindowRect(hGrip,  &gr); MapWindowPoints(HWND_DESKTOP, hwnd, (POINT*)&gr, 2);
     const int gripH = g_gripInitRect.bottom - g_gripInitRect.top;
-
     const int fullW = gr.right - gr.left;
 
-    // Layer button column: square-ish buttons, shrunk to fit if the notes box
-    // is too short for all of them.
-    int colW = 0;
-    const int n = g_layerBtns[0] ? g_layerBtnCount : 0;
-    if (n > 0)
-    {
-        // Same height as the sidebar's push buttons (Recall), a little wider
-        // than tall. Measured off a live control rather than MapDialogRect,
-        // which SWELL does not have.
-        int bh0 = 20;
-        if (HWND hRef = GetDlgItem(hwnd, IDC_RECALL))
-        {
-            RECT rr; GetWindowRect(hRef, &rr);
-            if (rr.bottom > rr.top) bh0 = rr.bottom - rr.top;
-        }
-        colW = bh0 * 5 / 4;
-        const int gap = 2;
-        int bh = bh0;
-        if (n * (bh + gap) - gap > h) bh = (h + gap) / n - gap;
-        if (bh < 8) bh = 8;
-        const int colLeft = gr.left + fullW - colW;
-        for (int i = 0; i < kLayerBtnMax; ++i)
-        {
-            if (i < n)
-                SetWindowPos(g_layerBtns[i], nullptr, colLeft,
-                             g_notesInitRect.top + i * (bh + gap), colW, bh,
-                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW);
-            else
-                ShowWindow(g_layerBtns[i], SW_HIDE);
-        }
-        colW += 3;   // gutter between the notes box and the column
-    }
-    else if (g_layerBtns[0])
-    {
-        for (int i = 0; i < kLayerBtnMax; ++i) ShowWindow(g_layerBtns[i], SW_HIDE);
-    }
-
-    int notesW = fullW - colW;
-    if (notesW < 20) notesW = 20;
     SetWindowPos(hNotes, nullptr, gr.left, g_notesInitRect.top,
-                 notesW, h, SWP_NOZORDER | SWP_NOACTIVATE);
+                 fullW, h, SWP_NOZORDER | SWP_NOACTIVATE);
     SetWindowPos(hGrip, nullptr, gr.left, g_notesInitRect.top + h,
                  fullW, gripH, SWP_NOZORDER | SWP_NOACTIVATE);
 }
@@ -1382,9 +1366,10 @@ static void LayoutMain(HWND hwnd)
         EndDeferWindowPos(hdwp);
     }
 
-    // Both of these depend on the widths just assigned above.
+    // These depend on the widths just assigned above.
     LayoutFooter(hwnd);
     LayoutNotes(hwnd);
+    LayoutLayerRow(hwnd);
 
     InvalidateRect(hwnd, nullptr, TRUE);
 }
@@ -5052,9 +5037,10 @@ static INT_PTR CALLBACK DialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                 }
             }
 
-            // ---- Layer buttons beside the notes box --------------------
+            // ---- Layer buttons above the music sheet button -------------
             // Created after the sidebar controls were collected above, so
-            // LayoutNotes places them rather than the proportional pass.
+            // LayoutLayerRow places them (across IDC_LAYERROW) rather than
+            // the proportional pass.
             CreateLayerButtons(hwnd);
             SyncLayerButtons(hwnd);
             ReaperTheme_TrackHot(GetDlgItem(hwnd, IDC_SHEET_BTN));
