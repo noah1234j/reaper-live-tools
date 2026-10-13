@@ -1,5 +1,25 @@
 # Changelog
 
+## [v0.0.51-beta] — 2026-10-13
+
+### Added
+
+- **Zoom in the Music window**: Ctrl+mouse wheel zooms in and out about the pointer (Ctrl+= / Ctrl+- from the keyboard, Ctrl+0 or *Fit to Window* on the menu to go back). Zoomed in, drag the music or use the wheel to move around it (Shift+wheel goes sideways).
+
+- **Resize notes**: with the text tool, drag the square at a note's bottom-right corner to make it bigger or smaller.
+
+### Changed
+
+- **Turning notes**: the handle at a note's top-right corner is now two buttons, one turning it a quarter clockwise and one anticlockwise.
+
+- A turned note can be dragged right up to the edge of the page.
+
+- **Music toolbar**: the Page / 2-Up / Scroll buttons sit at the foot of the column with the page buttons, and the rest moves up. All of them are hidden for a one-page sheet, as are the floating page buttons when the toolbar is collapsed.
+
+- The Music window can be made as small as you like; the music is cropped instead of the window refusing to shrink.
+
+- **Layer buttons**: now a row of eight (A-H) above the music sheet button, always all eight; the notes box gets its full width back. Slots the current scene has no layer for are greyed out.
+
 ## [v0.0.50-beta] — 2026-10-12
 
 ### Added
